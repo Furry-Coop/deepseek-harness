@@ -43,6 +43,7 @@ function mountColumn(): { column: HTMLElement; quiet: () => boolean } {
       collapsed={false} width={300}
       useSessions={neverHook} useSessionStatus={useSessionStatus} useSessionRetainInfo={neverHook}
       usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])} useShortcuts={selector => selector([])}
+      useNewSessionActions={selector => selector(false)}
       useResource={useResource} useWorkspaces={neverHook}
       {...allowAllAccess}
       startSession={vi.fn()} toggleSidebar={vi.fn()} t={t}

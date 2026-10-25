@@ -94,12 +94,14 @@ export function SidebarRoot({
   usePanels,
   useShortcuts,
   usePanelInfo,
+  useNewSessionActions,
   t,
   renderSlot,
 }: SidebarRootComponentProps) {
   const panels = usePanels(snapshot => snapshot)
   const shortcut = useShortcuts(rows => rows.find(row => row.id === 'sidebar.left.toggle'))
   const newShortcut = useShortcuts(rows => rows.find(row => row.id === 'session.new'))
+  const hasNewSessionActions = useNewSessionActions(occupied => occupied)
   const toggleLabel = collapsed ? t('toggle.open') : t('toggle.collapse')
   // Wide content stays mounted while the collapse animates (fading via
   // .collapsed .wide), unmounts at settle, and remounts right away on expand.
@@ -256,25 +258,32 @@ export function SidebarRoot({
       </div>
 
       {/* The label fades before the hover/focus shortcut, including on translucent backgrounds. */}
-      <Tooltip label={t('session.new.label')} shortcutKeys={newShortcut?.keys} delayMs={500} side={captionTooltipSide} disabled={wide}>
-        <button
-          type="button"
-          className={css.newSession}
-          aria-label={t('session.new.label')}
-          aria-keyshortcuts={newShortcut?.aria}
-          onClick={() => { startSession() }}
-        >
-          <span className={css.newSessionLabelMask}><span className={css.newSessionContent}>
-            {wide
-              ? <IconNewChatOutlineMedium size={14} />
-              : <IconNewChatOutlineRegular size={windowsTitlebar ? 16 : 18} />}
-            {wide && <span className={clsx(css.newSessionLabel, css.wide)}>{t('session.new')}</span>}
-          </span></span>
-          {wide && newShortcut !== undefined && newShortcut.keys.length > 0 && <span className={css.newSessionShortcut} aria-hidden="true">
-            <ShortcutKeys keys={newShortcut.keys} />
-          </span>}
-        </button>
-      </Tooltip>
+      <div className={clsx(css.newSessionGroup, hasNewSessionActions && css.grouped)}>
+        <Tooltip label={t('session.new.label')} shortcutKeys={newShortcut?.keys} delayMs={500} side={captionTooltipSide} disabled={wide}>
+          <button
+            type="button"
+            className={css.newSession}
+            aria-label={t('session.new.label')}
+            aria-keyshortcuts={newShortcut?.aria}
+            onClick={() => { startSession() }}
+          >
+            <span className={css.newSessionLabelMask}><span className={css.newSessionContent}>
+              {wide
+                ? <IconNewChatOutlineMedium size={14} />
+                : <IconNewChatOutlineRegular size={windowsTitlebar ? 16 : 18} />}
+              {wide && <span className={clsx(css.newSessionLabel, css.wide)}>{t('session.new')}</span>}
+            </span></span>
+            {wide && newShortcut !== undefined && newShortcut.keys.length > 0 && <span className={css.newSessionShortcut} aria-hidden="true">
+              <ShortcutKeys keys={newShortcut.keys} />
+            </span>}
+          </button>
+        </Tooltip>
+        {hasNewSessionActions && (
+          <div className={css.newSessionActions} role="group" aria-label={t('session.new.group')}>
+            {renderSlot('sidebar.session.new.action', { wide })}
+          </div>
+        )}
+      </div>
 
       {panels.length > 0 && (
         <nav className={css.panelList} aria-label={t('panels.label')}>

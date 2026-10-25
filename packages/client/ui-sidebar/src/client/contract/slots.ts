@@ -7,7 +7,9 @@
  * `sidebar.settings` registrant's (ui-settings), followed by optional footer
  * actions in `sidebar.footer.action`.
  */
-import type { InjectFace, PropsLocale, PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type {
+  InjectFace, PropsLocale, PropsRenderSlots, PropsRuntime,
+} from '@deepseek-ai/dsh-client-ui-slots'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { ShortcutCatalogEntry } from '@deepseek-ai/dsh-client-shortcuts/client'
@@ -51,6 +53,67 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * package's 'sidebar' entry; each action receives only the column state.
      */
     'sidebar.footer.action': { kind: 'list'; scope: 'root'; owner: SidebarFooterActionOwnerProps }
+    /**
+     * Additional New Session actions directly under the shell's native button,
+     * in ascending `order` and flush against it as one rounded button group.
+     * Declared by this package's 'sidebar' entry. The shell keeps the native
+     * upper button, the outer outline, the divider, and the group's accessible
+     * name; an entry supplies its localized label, optional disabled state, and
+     * business callback through the host's `sidebar.new-session.action` Factory,
+     * which renders the standard row with its button semantics, pending guard,
+     * rejection report, and optional local icon seat. Removing every entry
+     * restores the native single button with its full outline.
+     */
+    'sidebar.session.new.action': { kind: 'list'; scope: 'root'; owner: SidebarNewSessionActionOwnerProps }
+  }
+}
+
+/**
+ * Owner share of the New Session action list: the column state only. An entry
+ * renders one host-standard row through the `'sidebar.new-session.action'`
+ * factory, which owns the button semantics, pending guard, rejection report,
+ * and the optional local icon seat.
+ */
+export interface SidebarNewSessionActionOwnerProps {
+  /** Whether the sidebar renders wide content (false = 56px rail). */
+  readonly wide: boolean
+}
+
+/** Input of one host-standard New Session action row. */
+export interface SidebarNewSessionActionProps {
+  /** Whether the sidebar renders wide content (false = 56px rail). */
+  readonly wide: boolean
+  /** Localized row text; also the accessible name in the collapsed rail. */
+  readonly label: string
+  /** Whether the action currently refuses invocation. */
+  readonly disabled?: boolean
+  /** Invoke the action; the host guards repeated clicks and reports a rejection. */
+  readonly onInvoke: () => void | Promise<void>
+}
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotFactoryMap {
+    /**
+     * Host-standard one-row New Session action: the shell owns the button,
+     * pending guard, failure report, and optional local icon seat; an action
+     * supplies only its data and business callback.
+     */
+    'sidebar.new-session.action': {
+      scope: 'root'
+      props: SidebarNewSessionActionProps
+      locale: 'sidebar'
+      inject: {
+        /**
+         * Report one rejected action to the shell-owned transient notice.
+         * @param detail - readable reason provided by the action.
+         */
+        reportFailure: (detail: string) => void
+      }
+      slots: {
+        /** Optional leading glyph replacing the shell's generic New Session icon. */
+        icon: { scope: 'root' }
+      }
+    }
   }
 }
 
@@ -126,7 +189,17 @@ export type SidebarRootInjected = {
   /** Select the global panel addressed by a sidebar row. */
   selectPanel: (id: MainPanelId) => void
   /** Private reactive sources bound to framework selector hooks. */
-  hooks: { panels: ObservableSnapshot<readonly SidebarPanelMetadata[]>; shortcuts: ObservableSnapshot<readonly ShortcutCatalogEntry[]> }
+  hooks: {
+    panels: ObservableSnapshot<readonly SidebarPanelMetadata[]>
+    shortcuts: ObservableSnapshot<readonly ShortcutCatalogEntry[]>
+    /**
+     * Whether any plugin contributes a `sidebar.session.new.action` entry.
+     * The shell renders the grouped outline and the action container only
+     * while true, so a deployment without contributions keeps the native
+     * single button and its full outline.
+     */
+    newSessionActions: ObservableSnapshot<boolean>
+  }
 }
 
 /**
@@ -141,6 +214,7 @@ export type SidebarRootComponentProps =
     | 'sidebar.brand.name'
     | 'sidebar.toggle.badge'
     | 'sidebar.panellist'
+    | 'sidebar.session.new.action'
     | 'sidebar.workspaces'
     | 'sidebar.settings'
     | 'sidebar.footer.action'

@@ -536,7 +536,7 @@ export function SearchResultItem({ result, currentId, onOpen, onUnarchive, t }: 
  * @param props.onRenameRequest - open the rename dialog from a title double-click (id + current title).
  * @param props.renderSlot - child-seat renderer for the row's action lists
  * (`sidebar.workspaces.session.menu.item` / `sidebar.workspaces.session.row.action`),
- * its leading decoration, and its hover-card section.
+ * its leading decoration, its trailing badges, and its hover-card section.
  * @param props.onReveal - scroll this row into view after search navigation, then acknowledge it.
  * @param props.drag - optional row-drag target wiring; blank rows cannot start a drag.
  * @param props.t - the browser root's locale seat.
@@ -561,6 +561,7 @@ export function SessionNodeItem({
   | 'sidebar.workspaces.session.row.action'
   | 'sidebar.session.row.leading'
   | 'sidebar.session.row.hover'
+  | 'sidebar.session.row.badge'
 >) {
   const row = node
   const title = displayTitle(node, t)
@@ -648,12 +649,22 @@ export function SessionNodeItem({
           (rename/fork/archive) would all act on content that does not
           exist — both trailing cells stay off until the first prompt. */}
       {!row.blank && (
-        <span
-          className={css.time}
-          aria-hidden={primaryStatus.trailingLabel === undefined ? undefined : true}
-        >
-          {primaryStatus.trailingLabel ?? timeLabel(row.updatedAt, now, t)}
-        </span>
+        <>
+          {/* Plugin badges share the host container's width budget directly
+              before the native time or compact status text. Occupants render
+              the standard badge through their Factory; an entry that knows
+              nothing about the row returns no content, so the container has no
+              `.rowBadge` child and is hidden. */}
+          <span className={css.rowBadges}>
+            {renderSlot('sidebar.session.row.badge', { sessionId: node.id })}
+          </span>
+          <span
+            className={css.time}
+            aria-hidden={primaryStatus.trailingLabel === undefined ? undefined : true}
+          >
+            {primaryStatus.trailingLabel ?? timeLabel(row.updatedAt, now, t)}
+          </span>
+        </>
       )}
       {/* Trails the time so the marker occupies the same right-edge cell as
           the hover pin button that replaces it. */}

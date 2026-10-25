@@ -12,11 +12,17 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type { SidebarPanelMetadata, SidebarRootInjected } from './contract/slots.ts'
 import { HeaderLeadingControls } from './HeaderLeadingControls.tsx'
+import {
+  NewSessionActionFailure,
+  NewSessionActionRow,
+  type NewSessionActionFailureState,
+} from './NewSessionAction.tsx'
 import { SidebarRoot } from './SidebarRoot.tsx'
 import { en, zh, type SidebarKey } from './locales.ts'
 
 export type {
   SidebarBrandMarkOwnerProps, SidebarBrandNameOwnerProps, SidebarFooterActionOwnerProps,
+  SidebarNewSessionActionOwnerProps, SidebarNewSessionActionProps,
   SidebarPanelIconOwnerProps, SidebarPanelMetadata,
   SidebarRootComponentProps, SidebarRootInjected, SidebarSectionOwnerProps, SidebarSettingsOwnerProps,
 } from './contract/slots.ts'
@@ -62,6 +68,49 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.slots.subscribe('sidebar.panellist', syncPanels), 'ui-sidebar: panel entries')
   ctx.effect(() => ctx.locale.subscribe(syncPanels), 'ui-sidebar: panel labels')
 
+  // Occupancy of the additional New Session actions: the shell only switches
+  // to the grouped outline and mounts the action container while at least one
+  // entry exists, so an unoccupied slot leaves the native button untouched.
+  const newSessionActions = createSnapshotStore(false)
+  const syncNewSessionActions = (): void => {
+    const occupied = ctx.slots.entriesOfSlot('sidebar.session.new.action').length > 0
+    if (newSessionActions.getSnapshot() !== occupied) newSessionActions.set(occupied)
+  }
+  ctx.effect(
+    () => ctx.slots.subscribe('sidebar.session.new.action', syncNewSessionActions),
+    'ui-sidebar: new-session action entries',
+  )
+  syncNewSessionActions()
+
+  // One shell-owned transient failure notice serves every action row; it
+  // lives in the frame-wide overlay so withdrawing a contribution cannot
+  // remove a notice already shown.
+  const actionFailure = createSnapshotStore<NewSessionActionFailureState | null>(null)
+  let actionFailureSeq = 0
+  const reportActionFailure = (detail: string): void => {
+    actionFailureSeq += 1
+    actionFailure.set({ seq: actionFailureSeq, detail })
+  }
+  ctx.effect(() => ctx.slots.registerFactory({
+    name: 'sidebar.new-session.action',
+    scope: 'root',
+    locale: NS,
+    inject: () => ({ reportFailure: reportActionFailure }),
+    slots: { icon: { scope: 'root' } },
+  }, NewSessionActionRow), 'ui-sidebar: new-session action row')
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register(
+    {
+      name: 'shell.overlay',
+      id: 'sidebar.new-session-action-failure',
+      locale: NS,
+      inject: () => ({
+        hooks: { actionFailure },
+        clearActionFailure: () => { actionFailure.set(null) },
+      }),
+    },
+    NewSessionActionFailure,
+  ))
+
   const injectProps = (): SidebarRootInjected => ({
     // The shell's New Session button rides the Workspace UI's shared action
     // (current Session Workspace, then recent Workspace).
@@ -71,7 +120,7 @@ export function apply(ctx: ClientContext): void {
       if (id === 'plugins' || id === 'schedules') ctx.get('productAnalytics')?.track('sidebar_menu_click', { menu_name: id === 'plugins' ? 'plugin' : 'cron' })
       ctx.layout.selectPanel(id)
     },
-    hooks: { panels, shortcuts: ctx.shortcuts.catalog },
+    hooks: { panels, shortcuts: ctx.shortcuts.catalog, newSessionActions },
   })
   ctx.slots.inject('sidebar', () => ctx.slots.register({
     name: 'sidebar',
@@ -81,6 +130,7 @@ export function apply(ctx: ClientContext): void {
       'sidebar.brand.name': { kind: 'single', scope: 'root' },
       'sidebar.toggle.badge': { kind: 'single', scope: 'root' },
       'sidebar.panellist': { kind: 'list', scope: 'root' },
+      'sidebar.session.new.action': { kind: 'list', scope: 'root' },
       'sidebar.workspaces': { kind: 'single', scope: 'root' },
       'sidebar.settings': { kind: 'single', scope: 'root' },
       'sidebar.footer.action': { kind: 'list', scope: 'root' },

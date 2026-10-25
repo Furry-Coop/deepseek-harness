@@ -8,6 +8,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
+import type { SessionCreateOperationContext } from '../../types.ts'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { AgentContext } from '../scope.ts'
 import type { SessionSearchResultItem } from '../sessions/manager.ts'
@@ -82,7 +83,9 @@ export interface ISessions {
    * Create a Session for a new conversation on the Host. The Host reuses the
    * named blank Session while it is reusable and otherwise creates another; the
    * Session runs the named preset, or the Host default when none is named.
-   * @param opts - target workspace or directory, an optional blank Session to reuse, and an optional Agent preset.
+   * @param opts - target workspace or directory, an optional blank Session to
+   *   reuse, an optional Agent preset, and an optional creation-policy
+   *   operation that prepares and registers the result.
    * @returns the catalogued identity the Host created or reused; retain it before borrowing its binding.
    */
   create(opts?: {
@@ -90,6 +93,7 @@ export interface ISessions {
     cwd?: string
     sessionId?: SessionId
     agentPreset?: string
+    operation?: SessionCreateOperationContext
   }): Promise<SessionId>
   /**
    * Resolve an already discovered direct-parent address without opening it.

@@ -226,6 +226,37 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
+/* Plugin badges in the trailing cell, before the native time/status text. One
+   host container owns the shared width budget for every contributing plugin;
+   it exists only visually while at least one host badge renders (the slot
+   anchor itself is layout-neutral, so `:empty` cannot decide this). The badge
+   is not interactive: its complete explanation is the native title and
+   accessible name, and a click still bubbles to the row's own open action. */
+.rowBadges {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 96px;
+  overflow: hidden;
+  margin-right: 6px;
+}
+
+.rowBadges:not(:has(> [data-slot] .rowBadge)) {
+  display: none;
+}
+
+.rowBadge {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
 .pinIndicator {
   display: inline-flex;
   flex: none;

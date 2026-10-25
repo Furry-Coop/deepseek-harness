@@ -33,8 +33,14 @@
   en: 9fb88260380bf093
   zh: 3bace2b96ecd4a82
 /deepseek-ai-dsh-client-ui-workspace/use-this-package/active-schedule-markers:
-  en: 8d82539e4e4e890d
-  zh: 7b97a3927de90ea8
+  en: 28481400a5478a74
+  zh: a18c80f5d5da2ccd
+/deepseek-ai-dsh-client-ui-workspace/use-this-package/session-row-badges:
+  en: 6a55b97910fb88d1
+  zh: fc10d498b922fc1d
+/deepseek-ai-dsh-client-ui-workspace/use-this-package/session-creation-lifecycle-and-workspace-continuation:
+  en: 957118be1e0c47df
+  zh: a1e37d5cf89c059d
 /deepseek-ai-dsh-client-ui-workspace/understand-the-implementation:
   en: 721d5a49fe231191
   zh: 3ef1dd720219e00e

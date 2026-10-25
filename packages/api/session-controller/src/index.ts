@@ -23,6 +23,7 @@ import {
   type ApiSessionAgentResult,
 } from './agent.ts'
 import { SessionCommandController, hasPromptContent } from './commands.ts'
+import { SessionCreationPolicyRegistry } from './creation-policy.ts'
 import { SessionControlController } from './control.ts'
 import { SessionHistoryController } from './history.ts'
 import { SessionFileReferences } from './file-references.ts'
@@ -69,7 +70,9 @@ import type {
 } from './types.ts'
 
 export type * from './types.ts'
+export type * from './creation-policy.ts'
 export { ApiSessionNotFound } from './agent.ts'
+export { SessionCreationPolicyRegistry } from './creation-policy.ts'
 export { SessionFileReferences } from './file-references.ts'
 export { SessionSkillCatalog } from './skill-catalog.ts'
 
@@ -148,6 +151,17 @@ export class SessionController extends TypertRemoteService {
   private readonly revealPath: (path: string, signal: AbortSignal) => Promise<void>
   private readonly canOpenPath: () => boolean
   private readonly promotions = new Set<Promise<void>>()
+  /** Process-local ledger of creation policies registered by plugins. */
+  private readonly policyRegistry = new SessionCreationPolicyRegistry()
+
+  /**
+   * Read the live creation-policy ledger so a plugin can register its policy
+   * for its own activation lifetime. The Host never serializes this ledger.
+   * @returns the registry owned by this Session Controller.
+   */
+  get creationPolicies(): SessionCreationPolicyRegistry {
+    return this.policyRegistry
+  }
 
   /**
    * @param ctx - Host context containing the Session capability assembly.
@@ -160,7 +174,7 @@ export class SessionController extends TypertRemoteService {
     const resolved = SessionController.Config(config)
     installModelSelectionProjection(ctx)
     this.agents = new ApiSessionAgentController(ctx)
-    this.commands = new SessionCommandController(ctx, this.agents, process.cwd())
+    this.commands = new SessionCommandController(ctx, this.agents, process.cwd(), this.policyRegistry)
     ctx.effect(() => ctx.fileUploads.registerAgentResolver(async (sessionId) => {
       const result = await this.agents.resolveAgent(sessionId)
       if ('error' in result) throw result.error

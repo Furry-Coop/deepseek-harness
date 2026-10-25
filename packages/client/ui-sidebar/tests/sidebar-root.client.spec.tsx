@@ -3,11 +3,13 @@ import type { GlobalStandardProps } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ShortcutCatalogEntry, ShortcutCommandId } from '@deepseek-ai/dsh-client-shortcuts/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import { allowAllAccess, makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
 import type { ReactNode } from 'react'
 import type {
-  SidebarFooterActionOwnerProps, SidebarRootComponentProps, SidebarSectionOwnerProps,
+  SidebarFooterActionOwnerProps, SidebarNewSessionActionOwnerProps,
+  SidebarRootComponentProps, SidebarSectionOwnerProps,
   SidebarSettingsOwnerProps,
 } from '../src/client/contract/slots.ts'
 import { HeaderLeadingControls, type HeaderLeadingControlsProps } from '../src/client/HeaderLeadingControls.tsx'
@@ -35,16 +37,23 @@ type AttentionSnapshot = Parameters<Parameters<SidebarRootComponentProps['useSes
 const noAttention: AttentionSnapshot = new Map()
 const useSessionStatus: SidebarRootComponentProps['useSessionStatus'] = selector => selector(noAttention)
 
-function mountShell({ collapsed = false, width = 300, shortcuts = [] }: {
+function mountShell({
+  collapsed = false, width = 300, shortcuts = [], newSessionActions = false,
+  newSessionInvoke = () => {}, strict = false,
+}: {
   collapsed?: boolean
   width?: number
   shortcuts?: readonly ShortcutCatalogEntry[]
+  newSessionActions?: boolean
+  newSessionInvoke?: () => void | Promise<void>
+  strict?: boolean
 } = {}) {
   const startSession = vi.fn()
   const toggleSidebar = vi.fn()
   let regionOwner: SidebarSectionOwnerProps | undefined
   let settingsOwner: SidebarSettingsOwnerProps | undefined
   let footerActionOwner: SidebarFooterActionOwnerProps | undefined
+  let newActionOwner: SidebarNewSessionActionOwnerProps | undefined
   const brandMark = <span data-testid="custom-brand-mark">M</span>
   const brandName = <span data-testid="custom-brand-name">Custom Brand</span>
   let current = { collapsed, width }
@@ -52,7 +61,8 @@ function mountShell({ collapsed = false, width = 300, shortcuts = [] }: {
     <SidebarRoot
       collapsed={current.collapsed} width={current.width}
       useSessions={neverHook} useSessionStatus={useSessionStatus} useSessionRetainInfo={neverHook}
-      usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])} useShortcuts={selector => selector(shortcuts)}
+      usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])}
+      useShortcuts={selector => selector(shortcuts)} useNewSessionActions={selector => selector(newSessionActions)}
       useResource={useResource} useWorkspaces={neverHook}
       {...allowAllAccess}
       startSession={startSession} toggleSidebar={toggleSidebar} t={t}
@@ -63,6 +73,12 @@ function mountShell({ collapsed = false, width = 300, shortcuts = [] }: {
         if (key === 'sidebar.brand.mark') return brandMark
         if (key === 'sidebar.brand.name') return brandName
         if (key === 'sidebar.toggle.badge') return null
+        if (key === 'sidebar.session.new.action') {
+          newActionOwner = { wide: owner.wide }
+          return newSessionActions
+            ? <button type="button" onClick={() => { void newSessionInvoke() }}>Nodes 新会话</button>
+            : null
+        }
         if (key === 'sidebar.settings') {
           settingsOwner = owner
           return <div data-testid="settings-seat" data-wide={owner.wide} />
@@ -76,10 +92,14 @@ function mountShell({ collapsed = false, width = 300, shortcuts = [] }: {
       }) as SidebarRootComponentProps['renderSlot']}
     />
   )
-  const view = render(root())
+  const view = render(strict ? <StrictMode>{root()}</StrictMode> : root())
   return {
     startSession,
     toggleSidebar,
+    newActionOwner: () => {
+      if (newActionOwner === undefined) throw new Error('new-session action owner not rendered')
+      return newActionOwner
+    },
     regionOwner: () => {
       if (regionOwner === undefined) throw new Error('region owner not rendered')
       return regionOwner
@@ -114,7 +134,7 @@ describe('SidebarRoot shell', () => {
     expect(Array.from(expanded.querySelectorAll('kbd'), key => key.textContent)).toEqual(['Ctrl', 'N'])
     cleanup()
     render(<HeaderLeadingControls toggleSidebar={vi.fn()} startSession={vi.fn()} selectPanel={vi.fn()} t={t}
-      usePanelInfo={neverHook} useSessions={neverHook} useSessionStatus={neverHook}
+      usePanelInfo={neverHook} useNewSessionActions={selector => selector(false)} useSessions={neverHook} useSessionStatus={neverHook}
       useSessionRetainInfo={neverHook} useResource={useResource} useWorkspaces={neverHook}
       {...allowAllAccess}
       usePanels={select => select([])} useShortcuts={select => select([shortcut])} />)
@@ -136,6 +156,33 @@ describe('SidebarRoot shell', () => {
     expect(b.toggleSidebar).toHaveBeenCalledOnce()
   })
 
+  it('renders one contributed New Session action as a host row under the native button', async () => {
+    const invoke = vi.fn()
+    const b = mountShell({ newSessionActions: true, newSessionInvoke: invoke })
+
+    const action = screen.getByRole('button', { name: 'Nodes 新会话' })
+    expect(action.closest('[role="group"]')?.getAttribute('aria-label')).toBe('New session methods')
+    expect(b.newActionOwner().wide).toBe(true)
+
+    fireEvent.click(action)
+    await vi.waitFor(() => { expect(invoke).toHaveBeenCalledOnce() })
+  })
+
+  it('keeps a contributed action clickable under StrictMode effect replay', async () => {
+    const invoke = vi.fn()
+    mountShell({ newSessionActions: true, newSessionInvoke: invoke, strict: true })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nodes 新会话' }))
+    await vi.waitFor(() => { expect(invoke).toHaveBeenCalledOnce() })
+  })
+
+  it('keeps the native button alone when no action contributes', () => {
+    mountShell()
+
+    expect(screen.queryByRole('group', { name: 'New session methods' })).toBeNull()
+    expect(screen.getAllByRole('button', { name: 'New session' })).toHaveLength(2)
+  })
+
   it('renders generic brand fallbacks when no package fills the slots', () => {
     vi.stubEnv('DSH_CLIENT_COMMIT_HASH', '0123456')
     vi.stubEnv('DSH_CLIENT_GIT_DIRTY', 'true')
@@ -143,7 +190,8 @@ describe('SidebarRoot shell', () => {
     const { container } = render(<SidebarRoot
       collapsed={false} width={300}
       useSessions={neverHook} useSessionStatus={useSessionStatus} useSessionRetainInfo={neverHook}
-      usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])} useShortcuts={selector => selector([])}
+      usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])}
+      useShortcuts={selector => selector([])} useNewSessionActions={selector => selector(false)}
       useResource={useResource} useWorkspaces={neverHook}
       {...allowAllAccess}
       startSession={vi.fn()} toggleSidebar={vi.fn()} t={t}
@@ -164,7 +212,8 @@ describe('SidebarRoot shell', () => {
     render(<SidebarRoot
       collapsed={false} width={300}
       useSessions={neverHook} useSessionStatus={useSessionStatus} useSessionRetainInfo={neverHook}
-      usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])} useShortcuts={selector => selector([])}
+      usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])}
+      useShortcuts={selector => selector([])} useNewSessionActions={selector => selector(false)}
       useResource={useResource} useWorkspaces={neverHook}
       {...allowAllAccess}
       startSession={vi.fn()} toggleSidebar={vi.fn()} t={t}
@@ -180,7 +229,8 @@ describe('SidebarRoot shell', () => {
     render(<SidebarRoot
       collapsed={false} width={300}
       useSessions={neverHook} useSessionStatus={useSessionStatus} useSessionRetainInfo={neverHook}
-      usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])} useShortcuts={selector => selector([])}
+      usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])}
+      useShortcuts={selector => selector([])} useNewSessionActions={selector => selector(false)}
       useResource={useResource} useWorkspaces={neverHook}
       {...allowAllAccess}
       startSession={vi.fn()} toggleSidebar={vi.fn()} t={t}
@@ -228,7 +278,8 @@ describe('SidebarRoot shell', () => {
     render(<SidebarRoot
       collapsed width={56}
       useSessions={neverHook} useSessionStatus={useSessionStatus} useSessionRetainInfo={neverHook}
-      usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])} useShortcuts={selector => selector([])}
+      usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])}
+      useShortcuts={selector => selector([])} useNewSessionActions={selector => selector(false)}
       useResource={useResource} useWorkspaces={neverHook}
       {...allowAllAccess}
       startSession={vi.fn()} toggleSidebar={vi.fn()} t={t}

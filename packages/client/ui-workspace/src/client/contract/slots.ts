@@ -113,6 +113,39 @@ export interface SessionRowScheduleOwnerProps {
   readonly sessionId: SessionId
 }
 
+/**
+ * Owner share of the badge seat: the row identity. An occupant renders one
+ * short label through the `'sidebar.session.badge'` factory, which owns the
+ * shared width budget, clipping, and host styling; an occupant that knows
+ * nothing about the row returns no content, leaving no element or width behind.
+ */
+export interface SessionRowBadgeOwnerProps {
+  /** Session this row shows. */
+  readonly sessionId: SessionId
+}
+
+/** Input of one host-standard Session-row badge. */
+export interface SessionRowBadgeProps {
+  /** Short visible text; the host clips it at the shared width budget. */
+  readonly text: string
+  /** Complete explanation for the pointer tooltip and assistive technology. */
+  readonly title?: string
+}
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotFactoryMap {
+    /**
+     * Host-standard one-row badge: the host owns its inline geometry, shared
+     * width budget, clipping, and accessible name; an occupant supplies only
+     * the text and its complete explanation.
+     */
+    'sidebar.session.badge': {
+      scope: 'root'
+      props: SessionRowBadgeProps
+    }
+  }
+}
+
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
     /** Directory-flow hole under the conversation empty-state picker (declared by the WorkspacePicker entry). */
@@ -134,6 +167,15 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * its trailing status line. Mounted only while that card is open.
      */
     'sidebar.session.row.hover': { kind: 'list'; scope: 'root'; owner: SessionRowScheduleOwnerProps }
+    /**
+     * Short plugin badges in the trailing cell of one Session row, immediately
+     * before the native relative time or compact status text. The seat exists
+     * on every listed row that shows a time — archived rows included — and not
+     * on a blank provisional row. Occupants render through the owner's standard
+     * badge renderer so the host keeps the width budget, inline layout, and
+     * accessible name.
+     */
+    'sidebar.session.row.badge': { kind: 'list'; scope: 'root'; owner: SessionRowBadgeOwnerProps }
     /**
      * The rows of one Session's "..." menu, in ascending `order`. ui-workspace
      * registers the shipped rows here — `pin` (100), `rename` (200), `fork`

@@ -30,6 +30,7 @@ type RowSlotName =
   | 'sidebar.workspaces.session.menu.item'
   | 'sidebar.workspaces.session.row.action'
   | 'sidebar.session.row.leading'
+  | 'sidebar.session.row.badge'
   | 'sidebar.session.row.hover'
 type RowRenderSlot = PropsRenderSlots<RowSlotName>['renderSlot']
 type SessionNodeItemProps = ComponentProps<typeof SessionNodeItemComponent>
@@ -908,8 +909,8 @@ describe('workspace browser rows', () => {
       expect(row.querySelector('[data-state="warning"]')).toBeTruthy()
       expect(row.querySelector('[data-state="ongoing"]')).toBeNull()
       expect(row.textContent).toContain(label)
-      expect(title.nextElementSibling?.textContent).toBe(compactLabel)
-      expect(title.nextElementSibling?.getAttribute('aria-hidden')).toBe('true')
+      expect(title.nextElementSibling?.nextElementSibling?.textContent).toBe(compactLabel)
+      expect(title.nextElementSibling?.nextElementSibling?.getAttribute('aria-hidden')).toBe('true')
       expect(row.textContent).not.toContain('刚刚')
 
       view.rerender(<SessionNodeItem node={{ ...node, running: false }} currentId={undefined} now={0}
@@ -937,8 +938,8 @@ describe('workspace browser rows', () => {
     }
     render(<SessionNodeItem node={node} currentId={undefined} now={0} onOpen={vi.fn()} t={tEn} />)
     const row = screen.getByRole('treeitem')
-    expect(screen.getByText('Needs input').nextElementSibling?.textContent).toBe(compactLabel)
-    expect(screen.getByText('Needs input').nextElementSibling?.getAttribute('aria-hidden')).toBe('true')
+    expect(screen.getByText('Needs input').nextElementSibling?.nextElementSibling?.textContent).toBe(compactLabel)
+    expect(screen.getByText('Needs input').nextElementSibling?.nextElementSibling?.getAttribute('aria-hidden')).toBe('true')
     expect(row.textContent).not.toContain('now')
   })
 
@@ -1148,7 +1149,7 @@ describe('session row schedule seats', () => {
         .querySelector('[data-seat="sidebar.session.row.leading"]')?.parentElement
       expect(cell?.previousElementSibling ?? null).toBeNull()
       expect(cell?.nextElementSibling?.textContent).toBe('Idle Session')
-      expect(cell?.nextElementSibling?.nextElementSibling?.textContent).toBe('刚刚')
+      expect(cell?.nextElementSibling?.nextElementSibling?.nextElementSibling?.textContent).toBe('刚刚')
     }
     assertPlacement()
     // Rerender through the same row: the seat stays leading without the flat
@@ -1213,6 +1214,31 @@ describe('session row schedule seats', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('renders plugin badges before the native time, keeps the row click, and none on a blank row', () => {
+    const onOpen = vi.fn()
+    const renderSlot = vi.fn((key: RowSlotName, owner: object) => {
+      if (key !== 'sidebar.session.row.badge') return null
+      expect(owner).toEqual({ sessionId: idle.id })
+      return <span title="Nodes 模式" aria-label="Nodes 模式">Nodes</span>
+    }) as RowRenderSlot
+    const view = render(<SessionNodeItem node={idle} currentId={undefined} now={0} onOpen={onOpen}
+      renderSlot={renderSlot} t={t} />)
+
+    const badge = screen.getByText('Nodes')
+    expect(badge.getAttribute('title')).toBe('Nodes 模式')
+    expect(badge.getAttribute('aria-label')).toBe('Nodes 模式')
+    const time = screen.getByText('刚刚')
+    expect(badge.compareDocumentPosition(time) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The badge stays non-interactive: its click opens the row like any other part.
+    fireEvent.click(badge)
+    expect(onOpen).toHaveBeenCalledWith(idle.id)
+
+    // A provisional blank row shows neither the time cell nor a badge seat.
+    view.rerender(<SessionNodeItem node={{ ...idle, blank: true }} currentId={undefined} now={0}
+      onOpen={vi.fn()} renderSlot={renderSlot} t={t} />)
+    expect(screen.queryByText('Nodes')).toBeNull()
   })
 })
 

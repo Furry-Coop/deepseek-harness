@@ -53,15 +53,26 @@ import { ForkSessionMenuItem } from './session-actions/ForkSession.tsx'
 import { PinSessionMenuItem, PinSessionRowButton } from './session-actions/PinSession.tsx'
 import { RenameSessionMenuItem, SessionRenameDialog } from './session-actions/RenameSession.tsx'
 import { RowActionToast } from './session-actions/RowActionToast.tsx'
+import { SessionRowBadge } from './SessionRowBadge.tsx'
+// Type-only merge edge: the toast contract declares `workspace.toast` and its
+// shared Factory; exporting one of its types keeps that module in the emitted
+// declarations for consumers that never import the runtime toast.
+import type {} from './contract/toast.ts'
+export type { ToastDisplay, WorkspaceToastProps } from './contract/toast.ts'
 import { registerToasts } from './toast/register.ts'
 import { SessionIdMenuItem } from './session-actions/SessionId.tsx'
 import { WorkspacePicker } from './WorkspacePicker.tsx'
 import { en, zh, type WorkspaceKey } from './locales.ts'
 
-export type { StartSessionOptions, UiWorkspace } from './navigation.ts'
+export type {
+  OpenWorkspaceOptions,
+  StartSessionOperation, StartSessionOptions, StartSessionOutcome, StartSessionPreparation, StartSessionStage,
+  UiWorkspace,
+} from './navigation.ts'
 export type {
   DirectoryFlowOwnerProps, DirectoryFlowSlotName, DirectoryPickingHooks, DirectoryPickingInjected,
-  MenuOpenState, RowToast, SessionRenameTarget, SessionRowOwnerProps, UseMenuOpenState, WorkspaceBrowserInjected,
+  MenuOpenState, RowToast, SessionRenameTarget, SessionRowBadgeOwnerProps, SessionRowBadgeProps,
+  SessionRowOwnerProps, UseMenuOpenState, WorkspaceBrowserInjected,
   SessionRowScheduleOwnerProps,
   WorkspaceBrowserProps,
   WorkspacePickerInjected, WorkspacePickerProps,
@@ -134,6 +145,10 @@ export function apply(ctx: Context): void {
   })
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-workspace: dictionaries')
   const shortcutControls = createWorkspaceShortcutControls()
+  ctx.effect(() => ctx.slots.registerFactory({
+    name: 'sidebar.session.badge',
+    scope: 'root',
+  }, SessionRowBadge), 'ui-workspace: session row badge')
 
   const searchSessions: WorkspaceBrowserInjected['searchSessions'] = async (query, signal) => {
     const result = await sessions.search(query, signal)
@@ -303,6 +318,7 @@ export function apply(ctx: Context): void {
         'sidebar.workspaces.session.row.action': { kind: 'list', scope: 'root' },
         'sidebar.session.row.leading': { kind: 'list', scope: 'root' },
         'sidebar.session.row.hover': { kind: 'list', scope: 'root' },
+        'sidebar.session.row.badge': { kind: 'list', scope: 'root' },
       },
       store: viewStore,
       inject: browserInjected,

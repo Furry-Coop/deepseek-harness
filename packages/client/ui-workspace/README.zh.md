@@ -69,6 +69,14 @@ Session 行渲染运行时的实时 `pendingInteraction` 分类：审批显示**
 
 当成组的与平铺的 Session 行所对应的 Session 存在活动定时任务时，该行显示时钟标记。它是行首 `sidebar.session.row.leading` seat 的占用方，因此仅在该行主状态为 idle 时渲染，绝不与行自身的状态点同时出现；归档行该格同样留空，搜索结果没有该 seat，也不显示标记。它不是按钮，没有 Tab stop，点击其所在区域不会打开整行。标记自身的读取及其「活动」条件的确切含义由 [ui-schedule](../ui-schedule/README.zh.md) 负责。
 
+### 会话行标注
+
+插件可通过 root 作用域的 `sidebar.session.row.badge` list，在 Session 行尾部、原生相对时间或紧凑状态文字之前渲染一段简短标注。每个条目用 `{ text, title? }` 渲染宿主标准的 `sidebar.session.badge` Factory；宿主为所有贡献共用同一宽度预算，长文字省略并保留原生 title 与无障碍名称。标注不是交互控件，点击仍打开整行。对某行无话可说的贡献返回空内容，容器没有标注子元素即隐藏，不留下宽度、间距或分隔；空白临时行和搜索结果不渲染该位置。悬停行时显示的是同一或其他插件另行贡献到既有 `sidebar.session.row.hover` seat 的说明，标注本身不追加悬停文字。
+
+### 会话创建生命周期与工作区接续
+
+`openWorkspace` 可显式携带 `sourceSessionId`；Host 据此解析该 Session 的创建策略，并在选择工作区时保持其模式，而普通新建或快捷键从不继承模式。`startSession` 仍返回 `void`。可选的按次 `operation` 通过 `onFinished` 恰好报告一次实际结局（`session`、`cancelled`，或带创建事实与已知 Session id 的 `failed`），并可在自动打开前执行可选的异步 `prepareSession`；准备拒绝时保留已知 Session 并取消打开。传入 `reuseBlank: false` 时绝不复用已有空白。无目标 Workspace 的调用停留在空白 New Session 页：原生工作区选择继续同一操作，而离开该页、之后另一新建入口或结束调用方 `signal` 都报告 `cancelled`；创建结果在切页后才到达时仍报告实际 session id 与 `navigation: superseded`，不抢回页面。回调同步抛出与异步拒绝都作为诊断被接住，不替换已交付的结局。
+
 -----
 
 `ctx.uiWorkspace.openSession(target)` 会同步替换其拥有的 `mainView` reference，并让主区域返回 Conversation，而不等待 `reference.ready`，因此历史加载会显示在已经选中的 Session 视图内。目标可以是已知 Session id，也可以是持久的直接父子 subagent 地址；显式地址不要求预先加载 parent catalog。`openWorkspace(id, beforeOpen?, options?)` 仅在请求未被后续导航替代时打开工作区空白 Session；显式新会话操作会创建新的 Session。`forkSession(id)` 创建子会话，不导航，也不替代尚未完成的导航。可选的同步准备回调在目标被 retain 后执行，并且仅对仍有效的 Workspace 请求执行，因此过期请求不会搬移 composer 草稿。后续导航或 owner 释放会阻止晚到的 UI 提交，但不取消底层 Session 创建。启动恢复会 retain 主 reference，不改变已选面板，也不取消后续导航。归档主 Session 会释放其 reference 并清除主选择。选择失败时保留当前全局面板。Session 行读取 `usePanelInfo`，在全局面板活跃时不显示 Session 选中样式；仅把焦点移到搜索框或目录选择器不会离开该面板。
