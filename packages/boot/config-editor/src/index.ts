@@ -104,8 +104,9 @@ export class ConfigEditor extends Service {
         if (fiber.state !== FiberState.ACTIVE) throw new Error('Configuration plugin is no longer active')
         const resolved: unknown = fiber.ctx.waterfall(fiber, 'internal/config', next, () => next)
         resolveConfig(fiber.runtime as NonNullable<typeof fiber.runtime>, resolved)
-        // Owner checks see the effective values after expressions and schema
-        // normalization; they run before any profile patch is written.
+        // Owner checks see the interpolated value before persistence. They do
+        // not re-evaluate expressions and do not receive schema normalization
+        // omitted from the volatile form.
         validate?.(resolved as Readonly<Record<string, unknown>>)
         let before: string
         try { before = await readFile(path, 'utf8') }

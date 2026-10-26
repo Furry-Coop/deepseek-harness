@@ -71,11 +71,12 @@ export class AgentPresetRegistry extends TypertRemoteService {
       // The settings service writes selectedDefault through a generic API. Keep
       // the internal-preset rule at that acceptance point so a direct write is
       // rejected before the profile patch or the effective default changes.
-      child.settings.registerValidator(ctx, ['selectedDefault'], (value) => {
+      const disposeValidator = child.settings.registerValidator(ctx, ['selectedDefault'], (value) => {
         if (typeof value === 'string' && this.definitions.get(value)?.config.userSelectable === false) {
           throw new Error(`Agent preset "${value}" is internal and cannot be the default`)
         }
       })
+      child.effect(() => disposeValidator, 'agent-presets.settings-validator')
     })
     ctx.on('session/event', (session, event) => {
       if (event.type === 'agent-preset/selected') ctx.emit('agent-preset/selected', session.id, event.data.agentPreset)
