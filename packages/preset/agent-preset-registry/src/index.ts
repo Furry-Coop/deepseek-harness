@@ -108,7 +108,7 @@ export class AgentPresetRegistry extends TypertRemoteService {
   async register(definition: PresetDefinition): Promise<() => Promise<void>> {
     const context = this.ctx
     if (!definition.id.trim()) throw new Error('Preset id must not be empty')
-    if (definition.userSelectable === false && definition.id === this.defaultId) {
+    if (definition.userSelectable === false && definition.id === this.config.default) {
       throw new Error(`Agent preset "${definition.id}" is not user-selectable and cannot be the deployment default`)
     }
     if (this.definitions.has(definition.id)) throw new Error(`Duplicate agent preset: ${definition.id}`)
@@ -277,7 +277,10 @@ export class AgentPresetRegistry extends TypertRemoteService {
     })
   }
 
-  private async retain(id?: string): Promise<Generation> {
+  private async retain(
+    id?: string,
+    options: { readonly requireUserSelectable?: boolean } = {},
+  ): Promise<Generation> {
     const explicit = id !== undefined
     const wanted = id ?? this.defaultId
     while (true) {
@@ -293,6 +296,13 @@ export class AgentPresetRegistry extends TypertRemoteService {
       if (broken !== undefined || generation === undefined) {
         const reason = broken as string
         throw new RemoteError('agent-preset/invalid', reason, { agentPreset: wanted, reason })
+      }
+      // This check and the retained generation are the same revision: a
+      // definition replaced while activation settled re-enters the loop above.
+      // User paths therefore cannot mount an internal composition even when a
+      // selectable definition was resolved earlier.
+      if (options.requireUserSelectable === true && record.config.userSelectable === false) {
+        throw new RemoteError('agent-preset/not-selectable', `Agent preset "${wanted}" is not user-selectable`, { agentPreset: wanted })
       }
       generation.users++
       return generation
@@ -328,10 +338,15 @@ export class AgentPresetRegistry extends TypertRemoteService {
   /** Bind an unpublished Agent to the current preset revision.
    * @param ctx Agent context from its setup callback.
    * @param id Requested preset, or the default.
+   * @param options `requireUserSelectable` rejects an internal preset on a user path.
    * @returns Bound preset identity.
    */
-  async mount(ctx: Context, id?: string): Promise<AgentPreset> {
-    const generation = await this.retain(id)
+  async mount(
+    ctx: Context,
+    id?: string,
+    options: { readonly requireUserSelectable?: boolean } = {},
+  ): Promise<AgentPreset> {
+    const generation = await this.retain(id, options)
     try {
       await this.bind(ctx, generation)
       return { id: generation.mount.presetId }
@@ -381,11 +396,16 @@ export class AgentPresetRegistry extends TypertRemoteService {
   /** Rebind a blank Agent; the caller owns the blank-session check.
    * @param ctx Agent context.
    * @param id Requested preset.
+   * @param options `requireUserSelectable` defaults to true for this user-facing switch.
    * @returns The bound identity.
    */
-  async recompose(ctx: Context, id: string): Promise<AgentPreset> {
+  async recompose(
+    ctx: Context,
+    id: string,
+    options: { readonly requireUserSelectable?: boolean } = { requireUserSelectable: true },
+  ): Promise<AgentPreset> {
     this.assertUserSelectable(id)
-    const preset = await this.mount(ctx, id)
+    const preset = await this.mount(ctx, id, options)
     try { this.owner.emit('tools/change') }
     catch (error) { this.owner.logger.warn(`Preset tools observer: ${String(error)}`) }
     return preset

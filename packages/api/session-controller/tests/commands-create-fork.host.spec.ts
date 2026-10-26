@@ -16,6 +16,7 @@ import {
   type ApiSessionCreateRequest,
 } from '../src/agent.ts'
 import { SessionCommandController } from '../src/commands.ts'
+import { installModelSelectionProjection } from '../src/model-selection-projection.ts'
 import { installSessionReadTestServices, testSessionPersistence } from './test-remote.ts'
 
 async function expectFailure(operation: Promise<unknown>, code: string): Promise<void> {
@@ -292,6 +293,59 @@ describe('Session fork failures', () => {
     source.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
     const create = vi.spyOn(ctx.agents, 'create')
     const controller = new SessionCommandController(ctx, controllerAgents(ctx), '/default')
+
+    await expectFailure(controller.fork({ sessionId: source.id }), 'agent-preset/not-selectable')
+    expect(create).not.toHaveBeenCalled()
+    await ctx.fiber.dispose()
+  })
+
+  it('rejects a fork whose preset turns internal between observation and the adopted generation', async () => {
+    const ctx = await baseContext()
+    installModelSelectionProjection(ctx)
+    ctx.sessionProjections.register(agentPresetProjectionDefinition)
+    ctx.provide('agentPresets', {
+      resolve: (id: string) => Promise.resolve({ id }),
+      mount: (_ctx: Context, id: string, options?: { requireUserSelectable?: boolean }) => {
+        if (options?.requireUserSelectable === true) {
+          return Promise.reject(new RemoteError('agent-preset/not-selectable', `Agent preset "${id}" is not user-selectable`, { agentPreset: id }))
+        }
+        return Promise.resolve({ id })
+      },
+    } as never)
+    ctx.provide('workspaceRegistry', { list: () => [] } as never)
+    const source = ctx.sessions.create(SessionId('raced-source'), {
+      meta: { cwd: '/workspace', agentPreset: 'internal' },
+    })
+    source.append('turn/start', { turn: 1 })
+    source.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'work' }], source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    source.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    const create = vi.spyOn(ctx.agents, 'create').mockImplementation(async (options: CreateAgentOptions) => {
+      const session = ctx.sessions.create(options.sessionId, { meta: { cwd: '/workspace' } })
+      await options.setup?.(ctx, { id: options.sessionId, status: 'idle', ctx, session } as Agent)
+      return resolvedHandle(ctx, options.sessionId)
+    })
+    const controller = new SessionCommandController(ctx, new ApiSessionAgentController(ctx), '/default')
+
+    await expectFailure(controller.fork({ sessionId: source.id }), 'agent-preset/not-selectable')
+    expect(create).toHaveBeenCalledOnce()
+    await ctx.fiber.dispose()
+  })
+
+  it('rejects a fork whose source records no preset but the effective default is internal', async () => {
+    const ctx = await baseContext()
+    ctx.sessionProjections.register(agentPresetProjectionDefinition)
+    ctx.provide('agentPresets', {
+      resolve: (id?: string) => Promise.resolve(id === undefined
+        ? { id: 'internal', userSelectable: false }
+        : { id }),
+      mount: (_ctx: Context, id: string) => Promise.resolve({ id }),
+    } as never)
+    ctx.provide('workspaceRegistry', { list: () => [] } as never)
+    const source = completedSession(ctx, 'default-source', '/workspace')
+    const create = vi.spyOn(ctx.agents, 'create')
+    const controller = new SessionCommandController(ctx, new ApiSessionAgentController(ctx), '/default')
 
     await expectFailure(controller.fork({ sessionId: source.id }), 'agent-preset/not-selectable')
     expect(create).not.toHaveBeenCalled()

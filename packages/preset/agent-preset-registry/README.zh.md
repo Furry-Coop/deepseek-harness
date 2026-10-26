@@ -45,7 +45,7 @@ kind: "package-reference"
 
 Web 内置定义来自 `dsh-web-app` bundle。定义使用普通插件行；注册表不扫描目录，也不接受 preset 路径。`agent-preset-registry` 条目的 volatile 字段 `selectedDefault` 保留用户默认值，新会话优先使用它而不是部署 `default`。profile patch 仍可能带有已废弃的 `modeSelectionEnabled` 字段；注册表未声明该字段，既不读取也不重写它。
 
-声明为 `userSelectable: false` 的 preset 属于内部定义：列表不显示，`select` 与 `recompose` 拒绝它，保存的默认值若指向它也会回退到部署 `default`，不会用它启动新会话。`resolve`、`readDocument`、`mount`、`acquireScope`、fork 与冷恢复仍可按 id 访问它，因此内部组合和已持久会话保持可恢复。
+声明为 `userSelectable: false` 的 preset 属于内部定义：列表不显示，`select`、`recompose`、用户新建和用户 fork 拒绝它，保存的默认值若指向它也会回退到部署 `default`，不会用它启动新会话。校验作用于实际保留的代际，而不是更早一次解析，因此激活期间的替换不能绕过。`resolve`、`readDocument`、可信 `mount`、`acquireScope` 与冷恢复仍可按 id 访问它，因此内部组合和已持久会话保持可恢复。内部定义可在只有保存覆盖命名它时加载；只有部署 `default` 指向它时才拒绝注册。
 
 注册表不写入任何声明。`read` Remote 把一条声明的子插件列表按 entry-list YAML 方言（含 `!!js` 条件）渲染回来，供客户端展示 preset 的组成；没有任何接口接受 YAML 写回。新建 preset 或覆盖内置 preset 都是 bundle 补丁：插入一行 `@deepseek-ai/dsh-agent-preset`，或按该行 id 写覆盖补丁，再用 `plugin_manager` 安装到 profile；创造模式在对话中编写这类 bundle。
 

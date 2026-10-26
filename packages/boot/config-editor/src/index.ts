@@ -82,11 +82,13 @@ export class ConfigEditor extends Service {
   /** Validate, persist, and reconcile a plugin's next config; ordinary fields keep normal lifecycle rules.
    * @param entry Current Loader entry, also used to detect replacement during the write.
    * @param change Derive a raw config from the current entry and its inherited layer.
+   * @param validate Optional owner check on the resolved effective config, before persistence.
    * @returns Fulfillment after Loader reconciliation completes.
    */
   async edit(
     entry: Entry,
     change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>,
+    validate?: (resolved: Readonly<Record<string, unknown>>) => void,
   ): Promise<void> {
     const run = async (): Promise<void> => {
       const path = this.documentPath
@@ -102,6 +104,9 @@ export class ConfigEditor extends Service {
         if (fiber.state !== FiberState.ACTIVE) throw new Error('Configuration plugin is no longer active')
         const resolved: unknown = fiber.ctx.waterfall(fiber, 'internal/config', next, () => next)
         resolveConfig(fiber.runtime as NonNullable<typeof fiber.runtime>, resolved)
+        // Owner checks see the effective values after expressions and schema
+        // normalization; they run before any profile patch is written.
+        validate?.(resolved as Readonly<Record<string, unknown>>)
         let before: string
         try { before = await readFile(path, 'utf8') }
         catch (error) {

@@ -52,6 +52,8 @@ interface HarnessOptions {
   readonly broken?: ReadonlySet<string>
   /** Declared presets that are internal: mountable by id but not user-selectable. */
   readonly internal?: ReadonlySet<string>
+  /** Presets that become internal between resolve and the user-path mount. */
+  readonly raced?: ReadonlySet<string>
   /** Requested presets whose resolution waits for the paired promise. */
   readonly resolving?: ReadonlyMap<string, Promise<void>>
   /** Workspace placement served to `workspaceId` requests. */
@@ -97,7 +99,15 @@ async function harness(options: HarnessOptions = {}) {
             ...(options.internal?.has(knownId) === true ? { userSelectable: false } : {}),
           }
         }),
-      mount: (_ctx: Context, id?: string) => Promise.resolve().then(() => ({ id: usable(id) })),
+      mount: (_ctx: Context, id?: string, options_?: { readonly requireUserSelectable?: boolean }) => Promise.resolve().then(() => {
+        const knownId = usable(id)
+        if (options_?.requireUserSelectable === true && options.raced?.has(knownId) === true) {
+          throw new RemoteError('agent-preset/not-selectable', `Agent preset "${knownId}" is not user-selectable`, {
+            agentPreset: knownId,
+          })
+        }
+        return { id: knownId }
+      }),
       select: async (agent: Agent, agentPreset: string) => {
         usable(agentPreset)
         if (options.internal?.has(agentPreset) === true) {
@@ -248,6 +258,18 @@ describe('session.create Agent preset identity', () => {
 
     expect(response).toMatchObject({ ok: false, error: { code: 'agent-preset/not-selectable' } })
     expect(presetOf(SessionId('s-internal'))).toBeUndefined()
+  })
+
+  it('rejects a create when the preset turns internal between resolution and the adopted generation', async () => {
+    const { remote, presetOf } = await harness({
+      presets: ['standard', 'internal'],
+      raced: new Set(['internal']),
+    })
+
+    const response = await remote.create({ sessionId: SessionId('s-raced'), agentPreset: 'internal' })
+
+    expect(response).toMatchObject({ ok: false, error: { code: 'agent-preset/not-selectable' } })
+    expect(presetOf(SessionId('s-raced'))).toBeUndefined()
   })
 
   it('leaves the header preset-less when no roster is composed', async () => {

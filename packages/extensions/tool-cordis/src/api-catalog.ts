@@ -172,9 +172,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'The declared composition beside its published metadata.',
       },
       {
-        signature: 'async mount(ctx: Context, id?: string): Promise<AgentPreset>',
+        signature: 'async mount( ctx: Context, id?: string, options: { readonly requireUserSelectable?: boolean } = {}, ): Promise<AgentPreset>',
         description: 'Bind an unpublished Agent to the current preset revision.',
-        parameters: [{ name: 'ctx', description: 'Agent context from its setup callback.' }, { name: 'id', description: 'Requested preset, or the default.' }],
+        parameters: [{ name: 'ctx', description: 'Agent context from its setup callback.' }, { name: 'id', description: 'Requested preset, or the default.' }, { name: 'options', description: '`requireUserSelectable` rejects an internal preset on a user path.' }],
         returns: 'Bound preset identity.',
       },
       {
@@ -196,9 +196,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'The service, or undefined.',
       },
       {
-        signature: 'async recompose(ctx: Context, id: string): Promise<AgentPreset>',
+        signature: 'async recompose( ctx: Context, id: string, options: { readonly requireUserSelectable?: boolean } = { requireUserSelectable: true }, ): Promise<AgentPreset>',
         description: 'Rebind a blank Agent; the caller owns the blank-session check.',
-        parameters: [{ name: 'ctx', description: 'Agent context.' }, { name: 'id', description: 'Requested preset.' }],
+        parameters: [{ name: 'ctx', description: 'Agent context.' }, { name: 'id', description: 'Requested preset.' }, { name: 'options', description: '`requireUserSelectable` defaults to true for this user-facing switch.' }],
         returns: 'The bound identity.',
       },
       {
@@ -731,9 +731,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'Detached layer values alongside their Loader entries.',
       },
       {
-        signature: 'async edit( entry: Entry, change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>, ): Promise<void>',
+        signature: 'async edit( entry: Entry, change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>, validate?: (resolved: Readonly<Record<string, unknown>>) => void, ): Promise<void>',
         description: 'Validate, persist, and reconcile a plugin\'s next config; ordinary fields keep normal lifecycle rules.',
-        parameters: [{ name: 'entry', description: 'Current Loader entry, also used to detect replacement during the write.' }, { name: 'change', description: 'Derive a raw config from the current entry and its inherited layer.' }],
+        parameters: [{ name: 'entry', description: 'Current Loader entry, also used to detect replacement during the write.' }, { name: 'change', description: 'Derive a raw config from the current entry and its inherited layer.' }, { name: 'validate', description: 'Optional owner check on the resolved effective config, before persistence.' }],
         returns: 'Fulfillment after Loader reconciliation completes.',
       },
     ],

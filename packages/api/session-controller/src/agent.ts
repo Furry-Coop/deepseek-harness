@@ -410,7 +410,7 @@ export class ApiSessionAgentController {
       agentPreset: resolvedId,
       setup: async (agentCtx, agent) => {
         this.installSelection(agent)
-        await presets.mount(agentCtx, resolvedId)
+        await presets.mount(agentCtx, resolvedId, options)
       },
     }
   }

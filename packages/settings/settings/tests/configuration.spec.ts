@@ -59,6 +59,26 @@ it('refuses an owner-validated field before persisting or advancing the revision
   expect(ctx.settings.describe().find(row => row.ns === 'first')!.value).toMatchObject({ count: 4 })
 })
 
+it('validates the resolved expression value before persisting', async () => {
+  const { ctx, profile } = await fixture({
+    apply: (pluginCtx) => {
+      pluginCtx.inject(['settings'], (child) => {
+        child.settings.registerValidator(pluginCtx, ['count'], (value) => {
+          if (value === 3) throw new Error('count 3 is reserved')
+        })
+      })
+    },
+  })
+  const beforeFile = readFileSync(profile.patchPath, 'utf8')
+  const before = ctx.settings.describe().find(row => row.ns === 'first')!
+  await expect(ctx.settings.update('first', { count: { __jsExpr: '3' } }))
+    .rejects.toThrow('reserved')
+  const after = ctx.settings.describe().find(row => row.ns === 'first')!
+  expect(after.value).toEqual(before.value)
+  expect(after.revision).toBe(before.revision)
+  expect(readFileSync(profile.patchPath, 'utf8')).toBe(beforeFile)
+})
+
 it('refuses an edit shadowed by a higher home layer', async () => {
   const { ctx, home, profile } = await fixture()
   writeFileSync(join(home, 'cordis.patch.yml'), JSON.stringify([{ id: 'default-model', config: { provider: 'test', model: 'home' } }]))

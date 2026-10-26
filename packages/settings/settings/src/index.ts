@@ -460,12 +460,6 @@ export class SettingsForms extends Service {
         }
       }
       validatePaths(next, form)
-      const fiber = entry.fiber
-      if (fiber !== undefined) {
-        for (const validator of this.validators.get(fiber) ?? []) {
-          validator.validate(readConfigPath(next, validator.path), next)
-        }
-      }
       const strip = (value: Record<string, unknown>, node: z, path: string[] = []): Record<string, unknown> => {
         if (isVolatilePath(schema, path)) return {}
         const result = { ...value }
@@ -477,6 +471,12 @@ export class SettingsForms extends Service {
         return result
       }
       return mergeLayers(strip(raw, form), next) as Record<string, unknown>
+    }, (resolved) => {
+      const fiber = entry.fiber
+      if (fiber === undefined) return
+      for (const validator of this.validators.get(fiber) ?? []) {
+        validator.validate(readConfigPath(resolved, validator.path), resolved)
+      }
     })
     this.describe()
   }

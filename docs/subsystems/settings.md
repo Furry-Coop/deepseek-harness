@@ -10,7 +10,7 @@ A form namespace is the local id of a uniquely addressed entry in the active pro
 
 ## Edits
 
-`update` merges submitted fields. `replace` resets live fields to inherited configuration before applying submitted fields. `mutate` addresses individual paths, preserving secrets absent from a client response. Every write validates the complete Config, then runs the owning plugin's registered field validators, and refuses stale revisions before persistence.
+`update` merges submitted fields. `replace` resets live fields to inherited configuration before applying submitted fields. `mutate` addresses individual paths, preserving secrets absent from a client response. Every write validates the complete Config, resolves configuration expressions, then runs the owning plugin's registered field validators, and refuses stale revisions before persistence.
 
 `settings/document-updated` invalidates form descriptors after Loader configuration changes. It is a UI notification; consumers use `loader/volatile-update` only when they need to refresh registration facts.
 
