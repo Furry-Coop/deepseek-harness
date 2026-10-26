@@ -2,6 +2,7 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentHandle, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
+import { agentPresetProjectionDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
@@ -271,6 +272,29 @@ describe('Session fork failures', () => {
     if (options === undefined) throw new Error('Agent creation was not attempted')
     expect(options.meta).not.toHaveProperty('cwd')
     expect(options.meta).not.toHaveProperty('agentPreset')
+    await ctx.fiber.dispose()
+  })
+
+  it('rejects forking a Session under an internal preset without creating a child', async () => {
+    const ctx = await baseContext()
+    ctx.sessionProjections.register(agentPresetProjectionDefinition)
+    ctx.provide('agentPresets', {
+      resolve: (id: string) => Promise.resolve({ id, userSelectable: false }),
+    } as never)
+    ctx.provide('workspaceRegistry', { list: () => [] } as never)
+    const source = ctx.sessions.create(SessionId('internal-source'), {
+      meta: { cwd: '/workspace', agentPreset: 'internal' },
+    })
+    source.append('turn/start', { turn: 1 })
+    source.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'work' }], source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    source.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    const create = vi.spyOn(ctx.agents, 'create')
+    const controller = new SessionCommandController(ctx, controllerAgents(ctx), '/default')
+
+    await expectFailure(controller.fork({ sessionId: source.id }), 'agent-preset/not-selectable')
+    expect(create).not.toHaveBeenCalled()
     await ctx.fiber.dispose()
   })
 

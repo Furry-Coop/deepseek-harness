@@ -124,6 +124,42 @@ describe('declarative preset revisions', () => {
     ]))
   })
 
+  it('excludes an internal preset from user selection and defaults while keeping id-based mounting', async () => {
+    const ctx = await harness({ live: true })
+    contexts.push(ctx)
+    await declare(ctx, contribution('standard'))
+    await declare(ctx, { ...contribution('internal'), userSelectable: false })
+
+    expect((await ctx.agentPresets.list()).find(row => row.id === 'internal')).toMatchObject({ userSelectable: false })
+    expect((await ctx.agentPresets.remoteExportList()).presets.map(row => row.id)).toEqual(['standard'])
+    expect(await ctx.agentPresets.resolve('internal')).toMatchObject({ id: 'internal', userSelectable: false })
+
+    const agent = await agentOn(ctx, 'internal-selection')
+    await expect(ctx.agentPresets.select(agent, 'internal'))
+      .rejects.toMatchObject({ code: 'agent-preset/not-selectable' })
+    await expect(ctx.agentPresets.recompose(createScope(ctx, {}).ctx, 'internal'))
+      .rejects.toMatchObject({ code: 'agent-preset/not-selectable' })
+
+    const mounted = await agentOn(ctx, 'internal-mount', 'internal')
+    expect(ctx.agentPresets.composedPreset(mounted.ctx)).toBe('internal')
+    expect(ctx.tools.schemas(mounted).map(row => row.name)).toEqual(['internal'])
+    await using lease = await ctx.agentPresets.acquireScope('internal')
+    expect(lease.key).toBeDefined()
+
+    // A generic settings write can persist any string; the effective default
+    // must fall back rather than start a new session on the internal preset.
+    await liveRegistries.get(ctx)!.update({ selectedDefault: 'internal' })
+    expect(ctx.agentPresets.defaultId).toBe('standard')
+    const fresh = await agentOn(ctx, 'internal-default')
+    expect(ctx.agentPresets.composedPreset(fresh.ctx)).toBe('standard')
+  })
+
+  it('rejects an internal preset as the deployment default', async () => {
+    const ctx = await setup()
+    await expect(ctx.agentPresets.register({ id: 'standard', userSelectable: false, plugins: [] }))
+      .rejects.toThrow('not user-selectable')
+  })
+
   it('renders a declaration as entry-list YAML for reading, conditions included', async () => {
     const ctx = await setup()
     await declare(ctx, {

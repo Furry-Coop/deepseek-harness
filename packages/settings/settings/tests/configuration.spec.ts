@@ -36,6 +36,29 @@ it('isolates instances, hides ordinary fields, rejects invalid edits, and redact
   expect(ctx.settings.describe({ redactSecrets: true }).find(row => row.ns === 'first')!.value).toEqual({ count: 2, list: [] })
 })
 
+it('refuses an owner-validated field before persisting or advancing the revision', async () => {
+  const { ctx, profile } = await fixture({
+    apply: (pluginCtx) => {
+      pluginCtx.inject(['settings'], (child) => {
+        child.settings.registerValidator(pluginCtx, ['count'], (value) => {
+          if (value === 3) throw new Error('count 3 is reserved')
+        })
+      })
+    },
+  })
+  const beforeFile = readFileSync(profile.patchPath, 'utf8')
+  const before = ctx.settings.describe().find(row => row.ns === 'first')!
+  await expect(ctx.settings.update('first', { count: 3 })).rejects.toThrow('reserved')
+  await expect(ctx.settings.replace('first', { count: 3 })).rejects.toThrow('reserved')
+  await expect(ctx.settings.mutate('first', [{ op: 'set', path: ['count'], value: 3 }])).rejects.toThrow('reserved')
+  const after = ctx.settings.describe().find(row => row.ns === 'first')!
+  expect(after.value).toEqual(before.value)
+  expect(after.revision).toBe(before.revision)
+  expect(readFileSync(profile.patchPath, 'utf8')).toBe(beforeFile)
+  await ctx.settings.update('first', { count: 4 })
+  expect(ctx.settings.describe().find(row => row.ns === 'first')!.value).toMatchObject({ count: 4 })
+})
+
 it('refuses an edit shadowed by a higher home layer', async () => {
   const { ctx, home, profile } = await fixture()
   writeFileSync(join(home, 'cordis.patch.yml'), JSON.stringify([{ id: 'default-model', config: { provider: 'test', model: 'home' } }]))

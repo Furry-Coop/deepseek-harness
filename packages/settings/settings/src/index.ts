@@ -35,6 +35,14 @@ export interface SettingsDescribeOptions {
   redactSecrets?: boolean
 }
 
+/** One synchronous owner check on a plugin config field's next value. */
+export interface SettingsWriteValidator {
+  /** Field path within the plugin config. */
+  readonly path: readonly string[]
+  /** Throw to reject the write before persistence; return normally to accept. */
+  validate(value: unknown, next: Readonly<Record<string, unknown>>): void
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     /** Schema-derived plugin configuration forms. */
@@ -219,6 +227,20 @@ function inheritedConfig(runtime: Fiber['runtime'] & object, inherited: unknown)
   }
 }
 
+/** Read one field path from a plain config object.
+ * @param value - config root.
+ * @param path - field path.
+ * @returns the value, or undefined when a segment is absent.
+ */
+function readConfigPath(value: Readonly<Record<string, unknown>>, path: readonly string[]): unknown {
+  let node: unknown = value
+  for (const key of path) {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return undefined
+    node = (node as Record<string, unknown>)[key]
+  }
+  return node
+}
+
 /** Project Config schemas into forms and own optional instance-level UI policy. */
 export class SettingsForms extends Service {
   static inject = ['configEditor', 'profileContext']
@@ -226,6 +248,7 @@ export class SettingsForms extends Service {
   private closed = false
   private scheduled = false
   private readonly presentations = new Map<Fiber, { auto?: boolean }>()
+  private readonly validators = new WeakMap<Fiber, SettingsWriteValidator[]>()
 
   constructor(private readonly ownerContext: Context) {
     super(ownerContext, 'settings')
@@ -349,6 +372,36 @@ export class SettingsForms extends Service {
     await this.write(ns, current => mergeLayers(current, input) as Record<string, unknown>, expectedRevision)
   }
 
+  /**
+   * Register a synchronous check on one field of the owner plugin's config.
+   * The check runs inside the same write acceptance as `update`, `replace`, and
+   * `mutate`, before the profile patch changes; throwing rejects the write.
+   * @param owner - plugin context whose fiber owns the validator registration.
+   * @param path - field path within that plugin's config.
+   * @param validate - receives the next field value and complete next config.
+   * @returns the exact disposer; unloading or HMR of the owner also removes it.
+   */
+  registerValidator(
+    owner: Context,
+    path: readonly string[],
+    validate: SettingsWriteValidator['validate'],
+  ): () => void {
+    if (path.length === 0) throw new Error('settings.registerValidator requires a non-empty field path')
+    const fiber = owner.fiber
+    const validator: SettingsWriteValidator = { path: [...path], validate }
+    const dispose = owner.effect(() => {
+      const list = this.validators.get(fiber) ?? []
+      if (!this.validators.has(fiber)) this.validators.set(fiber, list)
+      list.push(validator)
+      return () => {
+        const index = list.indexOf(validator)
+        if (index >= 0) list.splice(index, 1)
+        if (list.length === 0) this.validators.delete(fiber)
+      }
+    }, 'settings.validator')
+    return () => { void dispose() }
+  }
+
   /** Reset all live fields, then set the supplied fields; ordinary config is preserved.
    * @param ns Profile entry id.
    * @param section Complete form values.
@@ -407,6 +460,12 @@ export class SettingsForms extends Service {
         }
       }
       validatePaths(next, form)
+      const fiber = entry.fiber
+      if (fiber !== undefined) {
+        for (const validator of this.validators.get(fiber) ?? []) {
+          validator.validate(readConfigPath(next, validator.path), next)
+        }
+      }
       const strip = (value: Record<string, unknown>, node: z, path: string[] = []): Record<string, unknown> => {
         if (isVolatilePath(schema, path)) return {}
         const result = { ...value }

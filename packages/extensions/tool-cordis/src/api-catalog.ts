@@ -2671,6 +2671,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'ns', description: 'Profile entry id.' }, { name: 'patch', description: 'Fields to merge.' }, { name: 'expectedRevision', description: 'Revision returned by describe.' }],
       },
       {
+        signature: 'registerValidator( owner: Context, path: readonly string[], validate: SettingsWriteValidator[\'validate\'], ): () => void',
+        description: 'Register a synchronous check on one field of the owner plugin\'s config. The check runs inside the same write acceptance as `update`, `replace`, and `mutate`, before the profile patch changes; throwing rejects the write.',
+        parameters: [{ name: 'owner', description: 'plugin context whose fiber owns the validator registration.' }, { name: 'path', description: 'field path within that plugin\'s config.' }, { name: 'validate', description: 'receives the next field value and complete next config.' }],
+        returns: 'the exact disposer; unloading or HMR of the owner also removes it.',
+      },
+      {
         signature: 'async replace(ns: string, section: object, expectedRevision?: number): Promise<void>',
         description: 'Reset all live fields, then set the supplied fields; ordinary config is preserved.',
         parameters: [{ name: 'ns', description: 'Profile entry id.' }, { name: 'section', description: 'Complete form values.' }, { name: 'expectedRevision', description: 'Revision returned by describe.' }],
@@ -6475,7 +6481,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'PresetDefinition',
-    declaration: 'export interface PresetDefinition {\n    readonly id: string;\n    readonly name?: string;\n    readonly description?: string;\n    readonly order?: number;\n    readonly plugins: readonly (Omit<EntryOptions, \'id\' | \'disabled\'> & {\n        id?: string;\n        disabled?: EntryOptions[\'disabled\'] | JsExpr;\n    })[];\n}',
+    declaration: 'export interface PresetDefinition {\n    readonly id: string;\n    readonly name?: string;\n    readonly description?: string;\n    readonly order?: number;\n    readonly userSelectable?: boolean;\n    readonly plugins: readonly (Omit<EntryOptions, \'id\' | \'disabled\'> & {\n        id?: string;\n        disabled?: EntryOptions[\'disabled\'] | JsExpr;\n    })[];\n}',
   },
   {
     name: 'PresetOption',
@@ -7066,8 +7072,12 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type SessionControlFrame = {\n    readonly type: \'baseline\';\n    readonly value: SessionControlBaseline;\n} | ({\n    readonly type: \'projection\';\n} & SessionProjectionUpdate);',
   },
   {
+    name: 'SessionCreateOperationContext',
+    declaration: 'export interface SessionCreateOperationContext {\n    readonly operationId: SessionOperationId;\n    readonly kind: \'new\' | \'workspace\' | \'restore\';\n    readonly policyId?: string;\n    readonly sourceSessionId?: SessionId;\n    readonly reuseBlank?: false;\n}',
+  },
+  {
     name: 'SessionCreateRequest',
-    declaration: 'export interface SessionCreateRequest {\n    readonly workspaceId?: WorkspaceId;\n    readonly cwd?: string;\n    readonly sessionId?: SessionId;\n    readonly agentPreset?: string;\n}',
+    declaration: 'export interface SessionCreateRequest {\n    readonly workspaceId?: WorkspaceId;\n    readonly cwd?: string;\n    readonly sessionId?: SessionId;\n    readonly agentPreset?: string;\n    readonly operation?: SessionCreateOperationContext;\n}',
   },
   {
     name: 'SessionCreateValue',
@@ -7288,6 +7298,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionOpenWorkspacePathValue',
     declaration: 'export interface SessionOpenWorkspacePathValue {\n    readonly opened: true;\n}',
+  },
+  {
+    name: 'SessionOperationId',
+    declaration: 'export type SessionOperationId = Branded<\'session-operation-id\'>;',
   },
   {
     name: 'SessionPage',
@@ -7584,6 +7598,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SettingsSecretView',
     declaration: 'export interface SettingsSecretView {\n    path: string[];\n    set: boolean;\n}',
+  },
+  {
+    name: 'SettingsWriteValidator',
+    declaration: 'export interface SettingsWriteValidator {\n    readonly path: readonly string[];\n    validate(value: unknown, next: Readonly<Record<string, unknown>>): void;\n}',
   },
   {
     name: 'ShellExecRequest',

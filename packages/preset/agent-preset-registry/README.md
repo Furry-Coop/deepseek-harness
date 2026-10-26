@@ -45,6 +45,8 @@ Choose an Agent’s tools, prompt sections and skills through declarative preset
 
 The Web definitions come from the `dsh-web-app` bundle. Definitions are ordinary plugin rows; the registry neither scans directories nor accepts preset paths. The `selectedDefault` volatile field of the `agent-preset-registry` entry retains the user default, which new sessions resolve over the deployment `default`. A profile patch may still carry the retired `modeSelectionEnabled` field; the registry declares no such field and neither reads nor rewrites it.
 
+A preset declared with `userSelectable: false` is internal: the roster omits it, `select` and `recompose` refuse it, and a saved default naming it falls back to the deployment `default` instead of starting a new session on it. `resolve`, `readDocument`, `mount`, `acquireScope`, fork, and cold resume still address it by id, so internal compositions and persisted sessions stay recoverable.
+
 The registry writes no declarations. The `read` Remote renders one declaration’s child list back as entry-list YAML (`!!js` conditions included) so a client can show what a preset composes; nothing accepts YAML back. A new preset or an override of a shipped one is a bundle patch: an `insert` of a `@deepseek-ai/dsh-agent-preset` row, or a patch keyed by that row’s id, installed into the profile with `plugin_manager`; Creator mode authors such bundles in conversation.
 
 <a id="understand-the-implementation"></a>
@@ -97,6 +99,7 @@ Existing Agents retain their plugins and prompts. New Agents build their prefixe
 <a id="known-limitations-and-deferred-work"></a>
 
 - Presets are not security sandboxes: YAML and plugins can execute Host code. A user override replaces the complete child list and does not automatically merge future changes to the builtin list. Old revision implementations are not retained across process restarts.
+- `userSelectable: false` only keeps a composition out of user choices and defaults. It is not an access boundary: a trusted plugin can still mount the preset by id, which is what internal roles and cold recovery rely on.
 
 <a id="dev-note"></a>
 ### Dev Note

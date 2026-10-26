@@ -44,6 +44,7 @@ kind: "package-reference"
 | `name` | 未设置 | 展示名称 |
 | `description` | 未设置 | 展示说明 |
 | `order` | 未设置 | 列表排序 |
+| `userSelectable` | `true` | 是否在用户 roster 中作为新会话模式提供；`false` 时仍可按 id 挂载。 |
 
 声明行的 `id` 是 Loader 编辑地址；`config.id` 是会话保存的 preset 标识符。子插件可省略行 ID，由 Loader 分配。
 
