@@ -1216,9 +1216,13 @@ describe('Agent.cancel()', () => {
       const batch = splices.find(entry => entry.inserted.some(message => message.id === third.id))
       expect(batch?.inserted.map(message => message.id)).toEqual([third.id, fourth.id])
       // The first synchronous cancel removed the whole batch in one splice; a
-      // later cancel on the already-empty queue may append an intent-only fact.
+      // later cancel on the already-empty queue appends an intent-only fact.
       const removal = splices.find(entry => entry.removedCount === 2)
       expect(removal).toMatchObject({ outcome: 'canceled', cause: 'user', removedCount: 2 })
+      const intents = splices.filter(entry => entry.removedCount === undefined && entry.inserted.length === 0)
+      expect(intents.length).toBeGreaterThan(0)
+      expect(intents.every(entry => entry.target === 'next-step' && entry.start === 0
+        && entry.outcome === 'canceled' && entry.cause === 'user')).toBe(true)
     } finally {
       await ctx.fiber.dispose()
     }

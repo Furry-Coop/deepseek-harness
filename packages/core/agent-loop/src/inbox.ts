@@ -72,6 +72,9 @@ export const inboxProjectionDefinition = {
  * @param dispatch - agent-scoped notifications for Inbox lifecycle events.
  */
 export class ReactLoopInbox implements InboxContract {
+  /** One deferred post-append cancel intent; the log rejects reentrant appends. */
+  #queuedIntent = false
+
   constructor(
     private readonly projections: SessionProjectionRegistry,
     private readonly session: Session,
@@ -115,7 +118,16 @@ export class ReactLoopInbox implements InboxContract {
     this.mutate('next-turn', 0, turn, [], true, cause)
   }
 
-  /** Record a user cancellation that removed no pending input; fold leaves state unchanged. */
+  /**
+   * Record a user cancellation that removed no pending input; fold leaves state unchanged.
+   *
+   * The intent is appended immediately when the log is not publishing another
+   * event. A cancellation raised from inside an append's session observer cannot
+   * append reentrantly, so its intent is queued to the post-append microtask;
+   * the cancellation's own abort is never blocked by this bookkeeping. Window:
+   * a physical kill between the reentrant cancel and that microtask loses the
+   * intent — the queue fact cannot be manufactured afterwards.
+   */
   private recordCancelIntent(): void {
     const splice: SessionEventMap['agent/inbox/spliced'] = {
       target: 'next-step',
@@ -127,11 +139,11 @@ export class ReactLoopInbox implements InboxContract {
     try {
       this.session.append('agent/inbox/spliced', splice)
     } catch (error: unknown) {
-      // A cancellation raised from inside another append's observer cannot
-      // append reentrantly. The caller's abort must still run, so defer only
-      // this durable fact; other failures stay visible.
       if (!(error instanceof Error) || !error.message.includes('cannot reenter')) throw error
+      if (this.#queuedIntent) return
+      this.#queuedIntent = true
       queueMicrotask(() => {
+        this.#queuedIntent = false
         try {
           this.session.append('agent/inbox/spliced', splice)
         } catch {
