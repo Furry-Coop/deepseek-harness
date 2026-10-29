@@ -425,11 +425,38 @@ interface SessionEntry {
   announcing: boolean
   appending: boolean
   detachRequested: boolean
+  /** Narrow control writes that must land synchronously after the current append. */
+  readonly afterPublication: (() => void)[]
+  draining: boolean
   detach(): void
 }
 
 /** Store attachment for the append path; module-private to keep Session store-agnostic publicly. */
 const attachments = new WeakMap<Session, SessionEntry>()
+
+/**
+ * Drain control writes queued during one publication, in queue order.
+ *
+ * A nested append's own commit sees `draining` and leaves the remaining queue to
+ * this loop, so tasks stay ordered and a throwing task cannot skip later ones.
+ * @param entry - the store entry whose publication just finished.
+ */
+function drainAfterPublication(entry: SessionEntry): void {
+  if (entry.draining) return
+  entry.draining = true
+  try {
+    while (entry.afterPublication.length > 0) {
+      const task = entry.afterPublication.shift() as () => void
+      try {
+        task()
+      } catch (error: unknown) {
+        entry.emitCtx.logger?.warn(`session "${entry.id}": post-publication task threw: ${String(error)}`)
+      }
+    }
+  } finally {
+    entry.draining = false
+  }
+}
 
 /**
  * Grammar of a {@link PluginRecordType}: `plugin:` followed by
@@ -759,6 +786,27 @@ export class Session {
   }
 
   /**
+   * Run one narrow control write synchronously after the append currently being
+   * published finishes, before store detach.
+   *
+   * A `session/event` observer cannot append reentrantly: the log rejects it to
+   * keep publication atomic. This method queues the caller's own control fact
+   * so it is committed immediately after the current publication, while any
+   * later input stays later in the log. It is not an async framework: callbacks
+   * run in one synchronous drain, in queue order, before detach.
+   * @param task - synchronous control write; the callback must contain its own
+   *   expected append failures (a throwing task is contained and logged).
+   */
+  afterPublication(task: () => void): void {
+    const entry = attachments.get(this)
+    if (entry === undefined || !entry.appending) {
+      task()
+      return
+    }
+    entry.afterPublication.push(task)
+  }
+
+  /**
    * Append one typed event to the log and synchronously notify observers via
    * the store-owned, module-private publication hooks. The hot path never blocks
    * on I/O — persistence plugins buffer asynchronously. Once the event enters
@@ -891,7 +939,10 @@ export class Session {
     } finally {
       if (entry !== undefined) {
         entry.appending = false
-        if (entry.detachRequested && !entry.announcing) entry.detach()
+        // Run this publication's narrow control facts before detach and before
+        // any later append, so a cancel intent cannot land after newer input.
+        drainAfterPublication(entry)
+        if (entry.detachRequested && !entry.announcing && entry.afterPublication.length === 0) entry.detach()
       }
     }
   }
@@ -1223,6 +1274,8 @@ export class SessionStore extends Service {
       announcing: false,
       appending: false,
       detachRequested: false,
+      afterPublication: [],
+      draining: false,
       detach: () => { this.detachEntered(entry) },
     }
     this.store.set(id, entry)
@@ -1246,6 +1299,8 @@ export class SessionStore extends Service {
   /** Remove one exact entered session and emit its paired disposal when announced. */
   private detachEntered(entry: SessionEntry): void {
     entry.detachRequested = false
+    // No publication follows a detached session, so pending control facts are dropped.
+    entry.afterPublication.length = 0
     // A stale capability cannot remove observers or storage belonging to a
     // later same-id lifecycle.
     /* v8 ignore next -- enter() rejects replacement while this single-shot detach capability is live. */

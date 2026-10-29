@@ -126,14 +126,17 @@ export class ReactLoopInbox implements InboxContract {
   /**
    * Record a user cancellation that removed no pending input; fold leaves state unchanged.
    *
-   * The intent is appended immediately when the log is not publishing another
-   * event. A cancellation raised from inside an append's session observer cannot
-   * append reentrantly, so its intent is queued to the post-append microtask;
-   * the cancellation's own abort is never blocked by this bookkeeping. Window:
-   * a physical kill between the reentrant cancel and that microtask loses the
-   * intent — the queue fact cannot be manufactured afterwards.
+   * A cancellation raised from inside an append's session observer cannot
+   * append reentrantly, so its intent is queued to run synchronously right
+   * after that publication and before detach. Keeping the flag set across the
+   * append and all its synchronous observers bounds an observer that cancels
+   * again; later input cannot be appended before the intent, so its log seq
+   * never makes an older cancel look newer. Window: a physical kill between the
+   * reentrant cancel and the post-publication drain loses the intent.
    */
   private recordCancelIntent(): void {
+    if (this.#queuedIntent) return
+    this.#queuedIntent = true
     const splice: SessionEventMap['agent/inbox/spliced'] = {
       target: 'next-step',
       start: 0,
@@ -143,20 +146,20 @@ export class ReactLoopInbox implements InboxContract {
     }
     try {
       this.session.append('agent/inbox/spliced', splice)
+      this.#queuedIntent = false
     } catch (error: unknown) {
-      if (!(error instanceof Error) || !error.message.includes('cannot reenter')) throw error
-      if (this.#queuedIntent) return
-      this.#queuedIntent = true
-      queueMicrotask(() => {
-        // Keep the flag set across the append AND its synchronous observers: an
-        // observer that cancels again must not enqueue an unbounded chain.
+      if (!(error instanceof Error) || !error.message.includes('cannot reenter')) {
+        this.#queuedIntent = false
+        throw error
+      }
+      this.session.afterPublication(() => {
         try {
           this.session.append('agent/inbox/spliced', splice)
-        } catch (error: unknown) {
-          // Not necessarily closing: the session may still be reentrant or
-          // detached without durability. Keep the failure visible instead of
-          // claiming the intent is persisted.
-          this.#warn?.(`inbox cancel intent was not appended after publication: ${String(error)}`)
+        } catch (appendError: unknown) {
+          // Not necessarily closing: the session may still be detached without
+          // durability. Keep the real failure visible instead of claiming the
+          // intent is persisted.
+          this.#warn?.(`inbox cancel intent was not appended after publication: ${String(appendError)}`)
         } finally {
           this.#queuedIntent = false
         }

@@ -826,24 +826,33 @@ describe('Agent.cancel()', () => {
     const agent = await ctx.agentLoop.create(SessionId('intent-recursion'), { provider: 'mock', model: 'mock' })
     let streamed = false
     ctx.on('agent/assistant-stream', ({ frame }) => { if (frame.type === 'chunk') streamed = true })
-    // 空队列的 step/start 取消会因重入被排到 post-append microtask。
+    // 空队列的 step/start 取消会因重入排到本次 publication 的同步 drain。
+    let stepStartSeq = -1
+    let intentSeq = -1
     ctx.on('session/event', (session, event) => {
-      if (session === agent.session && event.type === 'step/start') agent.cancel({ kind: 'user' })
+      if (session !== agent.session) return
+      if (event.type === 'step/start') {
+        stepStartSeq = event.seq
+        agent.cancel({ kind: 'user' })
+      }
     })
-    // 观察 intent 也取消；坏实现会不断排新 microtask。计数上限避免锁死 runner。
+    // 观察 intent 也取消；坏实现会不断排新任务。计数上限避免锁死 runner。
     let intents = 0
     const disposeIntent = ctx.on('session/event', (session, event) => {
       if (session !== agent.session || event.type !== 'agent/inbox/spliced') return
       if (event.data.outcome !== 'canceled' || event.data.removedCount !== undefined) return
       if (intents >= 5) return
       intents += 1
+      intentSeq = event.seq
       agent.cancel({ kind: 'user' })
     })
     send(agent, 'go')
     await waitForIdle(ctx, agent)
-    await new Promise(resolve => setTimeout(resolve, 0))
     disposeIntent()
     expect(intents).toBe(1)
+    // 意图就在触发它的 publication 之后，不会晚于任何后续输入。
+    expect(stepStartSeq).toBeGreaterThanOrEqual(0)
+    expect(intentSeq).toBe(stepStartSeq + 1)
     expect(streamed).toBe(false)
   })
 
