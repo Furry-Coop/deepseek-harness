@@ -51,8 +51,13 @@ type Phase =
 
 type StepEndReason = Extract<TurnEndReason, { kind: 'completed' | 'max-tokens' }>
 
+/** The exact batch a pre-step removed from the inbox until the step is admitted. */
+interface ClaimedBatch {
+  readonly messages: readonly UserMessage[]
+}
+
 type PreparedStep =
-  | { kind: 'reject' }
+  | { kind: 'reject'; preserveClaimed?: true }
   | {
     kind: 'enter'
     messages: UserMessage[]
@@ -99,6 +104,8 @@ export class ReactLoopAgent implements Agent {
   readonly inbox: ReactLoopInbox
   private phase: Phase
   private activityDone: Promise<void> = Promise.resolve()
+  /** Batch removed from the inbox by the current pre-step, until the step is admitted or settled. */
+  private pendingClaim: ClaimedBatch | undefined
 
   /** The agent-scoped registration boundary; the lifecycle owner unwinds it after the driver exits. */
   readonly scope: Scope
@@ -269,6 +276,7 @@ export class ReactLoopAgent implements Agent {
     if (this.phase.kind !== 'running') throw new Error(`agent "${this.id}": pre-step outside running phase`)
     const signal = this.phase.abort.signal
     const claimed = this.inbox.claim(target, position.turn)
+    this.pendingClaim = { messages: claimed }
     const assembly = await this.loopCtx.systemPrompt.assemble(assembleContextFor(this, signal))
     signal.throwIfAborted()
     const decision = await this.dispatch.waterfall(
@@ -285,6 +293,39 @@ export class ReactLoopAgent implements Agent {
     signal.throwIfAborted()
     if (decision.kind === 'reject') return decision
     return { ...decision, assembly }
+  }
+
+  /** Admit the current claim: its messages are consumed by the entered step. */
+  private commitClaim(): void {
+    this.pendingClaim = undefined
+  }
+
+  /**
+   * Settle an un-admitted claim. The exact batch returns to the front of the
+   * pending-step boundary only when the rejecting decision asked for it and no
+   * cancellation interrupted the turn; otherwise the claim is consumed exactly
+   * like the existing keepInbox and error contracts. New input staged after
+   * the claim stays behind the restored batch.
+   * @param preserve - whether the rejecting decision requested preservation.
+   * @param signal - the turn signal, aborted when cancellation won.
+   */
+  private settleClaim(preserve: boolean, signal: AbortSignal): void {
+    const claim = this.pendingClaim
+    this.pendingClaim = undefined
+    if (claim === undefined || claim.messages.length === 0) return
+    // Cancellation owns the outcome once its signal is aborted: a claim it
+    // interrupted is consumed exactly like the existing keepInbox contract,
+    // so a late failure must not resurrect it.
+    if (signal.aborted || !preserve) return
+    // Preserve the claimed order ahead of input staged during pre-step. The
+    // pending-step boundary is the single FIFO that a later turn claim reads
+    // before its own next-turn prompt, so restoring the turn-owning message
+    // there keeps it ahead of a steer that arrived after the claim.
+    const pending = new Set([...this.inbox.nextStep, ...this.inbox.nextTurn].map(message => message.id))
+    for (let index = claim.messages.length - 1; index >= 0; index -= 1) {
+      const message = claim.messages[index]
+      if (message !== undefined && !pending.has(message.id)) this.inbox.prepend('next-step', message)
+    }
   }
 
   /** Whether the assembled tool schemas differ from the logged request header's. */
@@ -317,18 +358,24 @@ export class ReactLoopAgent implements Agent {
         const step = phase.step + 1
         const decision = await this.preStep(target, { turn, step })
         if (decision.kind === 'reject') {
+          this.settleClaim(decision.preserveClaimed === true, signal)
           turnEnds = { kind: 'blocked' }
           return false
         }
-        if (turnEnds && decision.messages.length === 0) break
+        if (turnEnds && decision.messages.length === 0) {
+          this.commitClaim()
+          break
+        }
         // A removed waking message or an enter decision rewritten to empty
         // still owns the initial turn boundary, but it spends no model call.
         if (phase.step === 0 && decision.messages.length === 0) {
+          this.commitClaim()
           turnEnds = { kind: 'completed' }
           return false
         }
         signal.throwIfAborted()
         this.session.append('step/start', { turn, step })
+        this.commitClaim()
         phase.step = step
         const toolRecovery = new ToolCallRecovery()
         const stopRecovery = this.ctx.on('session/event', (session, event) => {
@@ -366,6 +413,10 @@ export class ReactLoopAgent implements Agent {
         target = 'next-step'
       }
     } catch (error: unknown) {
+      // A thrown pre-step never admitted its step; consume its claim like the
+      // historical error behavior. Explicit preservation happens through a
+      // reject decision, which returns before reaching this catch.
+      this.settleClaim(false, signal)
       // A cause is present exactly while the signal is aborted.
       const cause = abortedCancelCause(signal)
       if (cause !== undefined) {

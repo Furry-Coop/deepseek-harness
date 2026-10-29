@@ -379,6 +379,96 @@ describe('agent/pre-step', () => {
     expect(JSON.stringify(adapter.requests[0]?.messages)).toContain('staged steering')
   })
 
+  it('preserveClaimed parks the exact blocked batch ahead of steering staged during pre-step', async () => {
+    const adapter = new MockAdapter([textResponse('resumed')])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('preserve-claimed-order'), { provider: 'mock', model: 'mock' })
+    const entered = Promise.withResolvers<undefined>()
+    const decision = Promise.withResolvers<PreStepDecision>()
+    const disposeBlock = ctx.on('agent/pre-step', async () => {
+      entered.resolve(undefined)
+      return decision.promise
+    })
+
+    const blockedIdle = waitForIdle(ctx, agent)
+    send(agent, 'blocked prompt')
+    await entered.promise
+    agent.steer(createUserMessage({
+      content: [{ type: 'text', text: 'staged steering' }],
+      source: { kind: 'user' },
+    }))
+    decision.resolve({ kind: 'reject', preserveClaimed: true })
+    await blockedIdle
+
+    expect(agent.inbox.nextStep.map(message => message.content[0]))
+      .toEqual([
+        { type: 'text', text: 'blocked prompt' },
+        { type: 'text', text: 'staged steering' },
+      ])
+    expect(agent.inbox.nextTurn).toEqual([])
+    expect(adapter.requests).toEqual([])
+    expect(events(agent).filter(event => event.type === 'turn/start')).toHaveLength(1)
+
+    disposeBlock()
+    const resumed = waitForIdle(ctx, agent)
+    send(agent, 'wake')
+    await resumed
+    const texts = (adapter.requests[0]?.messages ?? []).flatMap(message =>
+      message.content.flatMap(block => block.type === 'text' ? [block.text] : []))
+    expect(texts.indexOf('blocked prompt')).toBeGreaterThanOrEqual(0)
+    expect(texts.indexOf('blocked prompt')).toBeLessThan(texts.indexOf('staged steering'))
+    expect(texts.indexOf('staged steering')).toBeLessThan(texts.indexOf('wake'))
+  })
+
+  it('a reject with preserveClaimed does not resurrect a batch after a clearing cancel', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('preserve-claimed-clear-cancel'), {
+      provider: 'mock', model: 'mock',
+    })
+    const entered = Promise.withResolvers<undefined>()
+    const decision = Promise.withResolvers<PreStepDecision>()
+    ctx.on('agent/pre-step', async () => {
+      entered.resolve(undefined)
+      return decision.promise
+    })
+
+    const blockedIdle = waitForIdle(ctx, agent)
+    send(agent, 'cancelled prompt')
+    await entered.promise
+    agent.cancel({ kind: 'user' })
+    decision.resolve({ kind: 'reject', preserveClaimed: true })
+    await blockedIdle
+
+    expect(agent.inbox.nextStep).toEqual([])
+    expect(agent.inbox.nextTurn).toEqual([])
+    expect(adapter.requests).toEqual([])
+    expect(events(agent).some(event => event.type === 'user/message')).toBe(false)
+  })
+
+  it('keepInbox cancellation consumes a pre-step claim instead of resurrecting it', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('keep-inbox-claim'), { provider: 'mock', model: 'mock' })
+    const entered = Promise.withResolvers<undefined>()
+    const decision = Promise.withResolvers<PreStepDecision>()
+    ctx.on('agent/pre-step', async () => {
+      entered.resolve(undefined)
+      return decision.promise
+    })
+
+    const blockedIdle = waitForIdle(ctx, agent)
+    send(agent, 'kept prompt')
+    await entered.promise
+    agent.cancel({ kind: 'user' }, { keepInbox: true })
+    decision.resolve({ kind: 'enter', messages: [] })
+    await blockedIdle
+
+    expect(agent.inbox.nextStep).toEqual([])
+    expect(agent.inbox.nextTurn).toEqual([])
+    expect(adapter.requests).toEqual([])
+  })
+
   it('preserves later queued work when a step is rejected', async () => {
     const adapter = new MockAdapter([
       textResponse('continued'),

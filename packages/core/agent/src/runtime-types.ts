@@ -110,7 +110,18 @@ export type AgentStatus = 'idle' | 'running'
 
 /** Whether and with which messages the loop enters a proposed step. */
 export type PreStepDecision =
-  | { kind: 'reject' }
+  | {
+    kind: 'reject'
+    /**
+     * Return the messages claimed for this step to the front of the pending-step
+     * boundary in their original order instead of consuming them. A later turn
+     * claim reads them before the turn prompt and before input staged during
+     * pre-step. The turn still closes blocked and the driver does not
+     * immediately re-run; the parked batch waits for the next waking input. A
+     * cancellation that aborts the turn takes precedence and drops it instead.
+     */
+    preserveClaimed?: true
+  }
   | {
     kind: 'enter'
     messages: UserMessage[]
@@ -288,8 +299,11 @@ declare module '@deepseek-ai/cordis' {
     'agent/inbox/inserted'(this: Scoped<Agent>, payload: { agent: Agent; message: UserMessage }): void
     /**
      * One message left the inbox inside its open turn. If the proposed step
-     * is rejected, the claimed message ends here: it is neither discarded nor
-     * re-emitted as a user/message, and the turn closes without a step.
+     * is rejected without `preserveClaimed`, the claimed message ends here: it
+     * is neither discarded nor re-emitted as a user/message, and the turn
+     * closes without a step. A rejecting listener that sets `preserveClaimed`
+     * returns the exact claimed batch to the front of the pending-step boundary
+     * in original order; a cancelled turn still drops it.
      * @param payload.agent - the agent whose inbox changed.
      * @param payload.message - the claimed message.
      * @param payload.turn - the owning turn.
@@ -308,7 +322,12 @@ declare module '@deepseek-ai/cordis' {
     // ---- the machine's extension points ----
     /**
      * Reject a proposed step or replace the messages that enter it. Calling
-     * `next()` preserves the current messages.
+     * `next()` preserves the current messages. A rejecting decision may set
+     * `preserveClaimed` to park the exact claimed batch at the front of its
+     * pending-step boundary for a later wake; the turn still closes blocked
+     * without re-running the driver. A cancelled turn drops the batch, while
+     * never-claimed pending input follows the cancellation's own keep-inbox
+     * policy.
      * @param payload.agent - the agent proposing the step.
      * @param payload.messages - messages removed from the inbox for this step.
      * @param payload.turn - the turn that will own the step.

@@ -313,12 +313,23 @@ Source: [`packages/core/agent/src/types.ts`](../../packages/core/agent/src/types
 
 `agent/pre-step` receives one payload carrying the exclusive claimed batch (`messages`), the proposed step's coordinates (`turn`, `step`), and the current turn's cancellation `signal`. The initial proposal runs inside an open turn before any step; a tool continuation may submit an empty claimed batch between steps:
 
-It returns a `PreStepDecision`. Reject opens no step. Enter supplies the complete message batch appended after `step/start`; claimed messages omitted by the final decision remain removed, while input inserted after the claim stays pending:
+It returns a `PreStepDecision`. Reject opens no step. Enter supplies the complete message batch appended after `step/start`; claimed messages omitted by the final decision remain removed, while input inserted after the claim stays pending. A reject may set `preserveClaimed` to return the exact claimed batch to the front of the pending-step boundary in original order; the turn still closes blocked, waits for the next waking input, and a cancelled turn drops the batch. Never-claimed pending input follows the cancellation's own keep-inbox policy:
 
 ```ts type-equiv
 /** Whether and with which messages the loop enters a proposed step. */
 type PreStepDecision =
-  | { kind: 'reject' }
+  | {
+    kind: 'reject'
+    /**
+     * Return the messages claimed for this step to the front of the pending-step
+     * boundary in their original order instead of consuming them. A later turn
+     * claim reads them before the turn prompt and before input staged during
+     * pre-step. The turn still closes blocked and the driver does not
+     * immediately re-run; the parked batch waits for the next waking input. A
+     * cancellation that aborts the turn takes precedence and drops it instead.
+     */
+    preserveClaimed?: true
+  }
   | {
     kind: 'enter'
     messages: UserMessage[]
@@ -865,13 +876,16 @@ Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/s
 
 #### `agent/inbox/claimed` — emit
 
-One message left the inbox inside its open turn. If the proposed step is rejected, the claimed message ends here: it is neither discarded nor re-emitted as a user/message, and the turn closes without a step.
+One message left the inbox inside its open turn. If the proposed step is rejected without `preserveClaimed`, the claimed message ends here: it is neither discarded nor re-emitted as a user/message, and the turn closes without a step. A rejecting listener that sets `preserveClaimed` returns the exact claimed batch to the front of the pending-step boundary in original order; a cancellation that clears the inbox still drops it.
 
 ```ts cordis-catalog
 /**
  * One message left the inbox inside its open turn. If the proposed step
- * is rejected, the claimed message ends here: it is neither discarded nor
- * re-emitted as a user/message, and the turn closes without a step.
+ * is rejected without `preserveClaimed`, the claimed message ends here: it
+ * is neither discarded nor re-emitted as a user/message, and the turn
+ * closes without a step. A rejecting listener that sets `preserveClaimed`
+ * returns the exact claimed batch to the front of the pending-step boundary
+ * in original order; a cancellation that clears the inbox still drops it.
  * @param payload.agent - the agent whose inbox changed.
  * @param payload.message - the claimed message.
  * @param payload.turn - the owning turn.
