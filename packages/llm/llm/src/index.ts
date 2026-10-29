@@ -31,7 +31,7 @@ import { freezeMessage } from './message.ts'
 import { resolveRetryPolicy } from './retry-policy.ts'
 import type { ResolvedRetryPolicy } from './retry-policy.ts'
 import type { ProviderRequestId } from './brand.ts'
-import { callConfigEquals } from './call-config.ts'
+import { callConfigEquals, isAgentLoopRequest as isLoopRequest } from './call-config.ts'
 import type { ConfigureCall, LlmCallConfig, LlmCallConfigAdapterDefaults } from './call-config.ts'
 import { HarnessError, INVALID_CREDENTIAL_CODE } from './error.ts'
 import { normalizeLlmFailure } from './adapter-failure.ts'
@@ -361,6 +361,20 @@ export class LlmRuntime extends TypertRemoteService {
 
   constructor(ctx: Context) {
     super(ctx, 'llm')
+  }
+
+  /**
+   * Report whether the exact request envelope was assembled by this process's
+   * AgentLoop, using the same process-local identity marker the loop applies.
+   *
+   * Plugins observing `llm/stream` use this instead of inferring loop identity
+   * from request shape: a hand-built call may carry the same session id and the
+   * same message sequence as a loop request.
+   * @param request - request envelope observed at the LLM waterfall.
+   * @returns whether the loop marked this exact object.
+   */
+  isAgentLoopRequest(request: GenerateOptions): boolean {
+    return isLoopRequest(request)
   }
 
   /** Notify topology observers without letting one broken listener veto the commit. */

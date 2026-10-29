@@ -9,6 +9,7 @@ import LlmRuntime, {
   isQuotaExceededError,
   LlmAdapter,
   LlmError,
+  markAgentLoopRequest,
   ProviderRequestId,
   ReasoningEffortId,
   resolveRetryPolicy,
@@ -116,6 +117,16 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
 }
 
 describe('LlmRuntime', () => {
+  it('exposes the loop request identity predicate through the service instance', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const direct = { provider: 'test-provider', model: 'test-model', messages: [] }
+    expect(ctx.llm.isAgentLoopRequest(direct)).toBe(false)
+    const loop = markAgentLoopRequest({ provider: 'test-provider', model: 'test-model', messages: [] })
+    expect(ctx.llm.isAgentLoopRequest(loop)).toBe(true)
+    await ctx.fiber.dispose()
+  })
+
   it('recognizes structured and model-capacity context-window overflow details', () => {
     expect(isContextWindowExceededError('context_length_exceeded maximum context length')).toBe(true)
     expect(isContextWindowExceededError('context-window-overflowed')).toBe(true)
