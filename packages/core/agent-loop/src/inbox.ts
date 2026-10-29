@@ -74,6 +74,14 @@ export interface PendingInboxSnapshot {
   readonly turn: readonly UserMessage[]
 }
 
+/** One committed inbox mutation, holding the occurrences its logged splice carried. */
+interface CommittedSplice {
+  /** Occurrences the splice removed, in lane order before removal. */
+  readonly removed: UserMessage[]
+  /** Projection occurrences this splice inserted, exactly as the fold stores them. */
+  readonly inserted: readonly UserMessage[]
+}
+
 /**
  * Driver-owned durable Inbox implementation used by ReactLoopAgent and focused
  * provider tests.
@@ -253,8 +261,8 @@ export class ReactLoopInbox implements InboxContract {
    * @returns next-step input followed by the queued turn, when requested.
    */
   claim(target: InboxTarget, turn: number): UserMessage[] {
-    const claimed = this.mutate('next-step', 0, this.nextStep.length, [], false)
-    if (target === 'next-turn') claimed.push(...this.mutate('next-turn', 0, 1, [], false))
+    const claimed = this.mutate('next-step', 0, this.nextStep.length, [], false).removed
+    if (target === 'next-turn') claimed.push(...this.mutate('next-turn', 0, 1, [], false).removed)
     for (const message of claimed) this.dispatch.emit('agent/inbox/claimed', { message, turn })
     return claimed
   }
@@ -273,16 +281,20 @@ export class ReactLoopInbox implements InboxContract {
    *
    * `Session.append` detaches its payload, so the projection message is a fresh
    * object per insertion: a callback that removes and re-inserts the same
-   * caller object still creates a different occurrence.
+   * caller object still creates a different occurrence. The result is this
+   * splice's own logged occurrence, never a later one that reused its identity.
    * @param target - pending list to extend.
    * @param message - message to append.
-   * @returns the pending projection message with this identity after the
-   *   insertion, or undefined when a notification removed it before the append
-   *   returned.
+   * @returns this insertion's projection occurrence while it is still pending,
+   *   or undefined when a callback removed it before the append returned.
    */
   insert(target: InboxTarget, message: UserMessage): UserMessage | undefined {
-    this.append(target, message)
-    return this.current()[target].find(pending => pending.id === message.id)
+    const { inserted } = this.mutate(target, this.current()[target].length, 0, [message], true)
+    // A callback can remove this occurrence and insert another message with the
+    // same id before the append returns, so the current lane must not answer
+    // which occurrence this insertion produced.
+    const occurrence = inserted.at(0)
+    return occurrence !== undefined && this.holdsOccurrence(occurrence) ? occurrence : undefined
   }
 
   /**
@@ -343,7 +355,7 @@ export class ReactLoopInbox implements InboxContract {
     deleteCount: number,
     inserted: UserMessage[],
   ): UserMessage[] {
-    return this.mutate(target, start, deleteCount, inserted, true)
+    return this.mutate(target, start, deleteCount, inserted, true).removed
   }
 
   /** Locate one pending identity across both owned lists. */
@@ -376,6 +388,7 @@ export class ReactLoopInbox implements InboxContract {
    * @param discardRemoved - whether removed messages are cancellation discards.
    * @param cancelCause - cancellation intent for a lifecycle removal, when any.
    * @param entrySeq - entry cut recorded on a cancellation splice.
+   * @returns the removed occurrences plus this splice's inserted projection occurrences.
    */
   private mutate(
     target: InboxTarget,
@@ -385,7 +398,7 @@ export class ReactLoopInbox implements InboxContract {
     discardRemoved: boolean,
     cancelCause?: 'user' | 'disposed',
     entrySeq?: SessionLogOffset,
-  ): UserMessage[] {
+  ): CommittedSplice {
     const state = this.current()
     const inbox = state[target]
     const truncatedStart = Math.trunc(start)
@@ -398,7 +411,7 @@ export class ReactLoopInbox implements InboxContract {
       Math.max(Number.isNaN(truncatedDeleteCount) ? 0 : truncatedDeleteCount, 0),
       inbox.length - actualStart,
     )
-    if (actualDeleteCount === 0 && inserted.length === 0) return []
+    if (actualDeleteCount === 0 && inserted.length === 0) return { removed: [], inserted: [] }
     const candidate = inbox.toSpliced(actualStart, actualDeleteCount, ...inserted)
     const ids = new Set<string>()
     for (const message of target === 'next-turn'
@@ -427,9 +440,10 @@ export class ReactLoopInbox implements InboxContract {
     if (discardRemoved) {
       for (const message of removed) this.dispatch.emit('agent/inbox/discarded', { message })
     }
-    for (const message of event.data.inserted) {
+    const committed = event.data.inserted
+    for (const message of committed) {
       this.dispatch.emit('agent/inbox/inserted', { message })
     }
-    return removed
+    return { removed, inserted: committed }
   }
 }

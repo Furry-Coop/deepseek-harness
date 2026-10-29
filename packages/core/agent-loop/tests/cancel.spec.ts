@@ -1,4 +1,4 @@
-import { ToolCallId, createUserMessage, expandAssistantStream } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createUserMessage, expandAssistantStream, freezeMessage } from '@deepseek-ai/dsh-llm'
 /**
  * Tests for the queue-aware `Agent.cancel()` primitive. The default clears
  * queued and steering work, while `keepInbox` preserves pending input for a
@@ -11,7 +11,7 @@ import { ToolCallId, createUserMessage, expandAssistantStream } from '@deepseek-
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
-import SessionStore, { Session, SessionId, SessionLogOffset, TurnEndReason } from '@deepseek-ai/dsh-session'
+import SessionStore, { Session, SessionId, SessionLogOffset, TurnEndReason, type UserMessage } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture, TOOL_ABORTED_BEFORE_DISPATCH } from '@deepseek-ai/dsh-tools'
 import AgentRegistry, { type Agent, type AgentCancelCause } from '@deepseek-ai/dsh-agent'
@@ -1859,6 +1859,134 @@ describe('Agent.cancel()', () => {
           && event.data.cause === 'user' && event.data.removedCount !== undefined)
       expect(cancellations.map(event => event.type === 'agent/inbox/spliced' ? event.data.target : ''))
         .toEqual(['next-step'])
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('withdraws a held wake instead of redeeming a same-identity passive reinsert', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('reinserted-same-identity-wake'), { provider: 'mock', model: 'mock' })
+      const oldStep = createUserMessage({ content: [{ type: 'text', text: 'old step' }], source: { kind: 'user' } })
+      const waking = createUserMessage({ content: [{ type: 'text', text: 'waking' }], source: { kind: 'user' } })
+      agent.inject(oldStep)
+      let withdrawn: UserMessage | undefined
+      let nested = false
+      const disposeInserted = ctx.on('agent/inbox/inserted', ({ message }) => {
+        if (nested || message.id !== waking.id) return
+        nested = true
+        withdrawn = message
+        // The nested cancellation removes the waking occurrence; the passive
+        // send then inserts the same identity as a fresh projection object in
+        // the same lane. Only that later occurrence stays pending.
+        agent.cancel({ kind: 'user' })
+        agent.send(waking, 'next-turn', false)
+      })
+      const disposeDiscarded = ctx.on('agent/inbox/discarded', ({ message }) => {
+        if (message.id === oldStep.id) agent.followup(waking)
+      })
+      agent.cancel({ kind: 'user' })
+      disposeInserted()
+      disposeDiscarded()
+      await agent.whenIdle()
+
+      expect(nested).toBe(true)
+      expect(adapter.requests).toHaveLength(0)
+      expect(agent.session.snapshotEvents().some(event => event.type === 'turn/start')).toBe(false)
+      expect(agent.inbox.nextStep).toEqual([])
+      expect(agent.inbox.nextTurn.map(message => message.id)).toEqual([waking.id])
+      expect(agent.inbox.nextTurn[0]).not.toBe(withdrawn)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('keeps a same-identity passive reinsert with different content pending without waking', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('reinserted-new-payload-wake'), { provider: 'mock', model: 'mock' })
+      const oldStep = createUserMessage({ content: [{ type: 'text', text: 'old step' }], source: { kind: 'user' } })
+      const waking = createUserMessage({ content: [{ type: 'text', text: 'waking' }], source: { kind: 'user' } })
+      const replacement = freezeMessage({
+        ...waking,
+        content: [{ type: 'text', text: 'passive replacement' }],
+      })
+      agent.inject(oldStep)
+      let withdrawn: UserMessage | undefined
+      let nested = false
+      const disposeInserted = ctx.on('agent/inbox/inserted', ({ message }) => {
+        if (nested || message.id !== waking.id) return
+        nested = true
+        withdrawn = message
+        agent.cancel({ kind: 'user' })
+        agent.inbox.append('next-turn', replacement)
+      })
+      const disposeDiscarded = ctx.on('agent/inbox/discarded', ({ message }) => {
+        if (message.id === oldStep.id) agent.followup(waking)
+      })
+      agent.cancel({ kind: 'user' })
+      disposeInserted()
+      disposeDiscarded()
+      await agent.whenIdle()
+
+      expect(nested).toBe(true)
+      expect(adapter.requests).toHaveLength(0)
+      expect(agent.session.snapshotEvents().some(event => event.type === 'turn/start')).toBe(false)
+      expect(agent.inbox.nextStep).toEqual([])
+      expect(agent.inbox.nextTurn).toHaveLength(1)
+      expect(agent.inbox.nextTurn[0]).not.toBe(withdrawn)
+      expect(agent.inbox.nextTurn[0]?.content).toEqual([{ type: 'text', text: 'passive replacement' }])
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('withdraws a waking occurrence a publication drain replaced before append returned', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('after-publication-reinsert-wake'), { provider: 'mock', model: 'mock' })
+      const oldStep = createUserMessage({ content: [{ type: 'text', text: 'old step' }], source: { kind: 'user' } })
+      const waking = createUserMessage({ content: [{ type: 'text', text: 'waking' }], source: { kind: 'user' } })
+      const replacement = freezeMessage({
+        ...waking,
+        content: [{ type: 'text', text: 'drain replacement' }],
+      })
+      agent.inject(oldStep)
+      let scheduled = false
+      let withdrawn: UserMessage | undefined
+      const disposeScheduled = ctx.on('session/event', (session, event) => {
+        if (session !== agent.session || scheduled || event.type !== 'agent/inbox/spliced') return
+        if (event.data.inserted.every(message => message.id !== waking.id)) return
+        scheduled = true
+        // Queued from the splice's own publication: this drain runs inside the
+        // append that is about to report the inserted occurrence, so the
+        // withdraw-and-reinsert completes before the caller sees the result.
+        session.afterPublication(() => {
+          withdrawn = agent.inbox.nextTurn.find(message => message.id === waking.id)
+          agent.cancel({ kind: 'user' })
+          agent.inbox.append('next-turn', replacement)
+        })
+      })
+      const disposeDiscarded = ctx.on('agent/inbox/discarded', ({ message }) => {
+        if (message.id === oldStep.id) agent.followup(waking)
+      })
+      agent.cancel({ kind: 'user' })
+      disposeScheduled()
+      disposeDiscarded()
+      await agent.whenIdle()
+
+      expect(scheduled).toBe(true)
+      expect(withdrawn).toBeDefined()
+      expect(adapter.requests).toHaveLength(0)
+      expect(agent.session.snapshotEvents().some(event => event.type === 'turn/start')).toBe(false)
+      expect(agent.inbox.nextStep).toEqual([])
+      expect(agent.inbox.nextTurn).toHaveLength(1)
+      expect(agent.inbox.nextTurn[0]).not.toBe(withdrawn)
+      expect(agent.inbox.nextTurn[0]?.content).toEqual([{ type: 'text', text: 'drain replacement' }])
     } finally {
       await ctx.fiber.dispose()
     }
