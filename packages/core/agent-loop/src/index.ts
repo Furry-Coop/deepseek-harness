@@ -218,7 +218,7 @@ interface PreparedAgent {
   /** Aborts when the factory unloads, the caller cancels, or teardown begins — ends any setup await. */
   signal: AbortSignal
   /** Enter both registries and await creation listeners. */
-  publish(source: SessionStartSource): Promise<AgentHandle>
+  publish(source: SessionStartSource, maintenanceSignal?: AbortSignal): Promise<AgentHandle>
   /** Reverse teardown: stop the machine, unregister, unwind the scope. Memoized. */
   dispose(): Promise<void>
 }
@@ -647,7 +647,7 @@ export class AgentLoop extends Service implements AgentFactory {
       return {
         agent,
         signal: abort.signal,
-        publish: async (source) => {
+        publish: async (source, maintenanceSignal) => {
           publication = Promise.withResolvers<void>()
           try {
             assertLive()
@@ -657,7 +657,12 @@ export class AgentLoop extends Service implements AgentFactory {
             detachAgent = loopCtx.agents.enter(agent, parentAgent)
             agent.ctx.sessions.announce(session)
             assertLive()
-            await loopCtx.agents.announce(agent, source, abort.signal)
+            // Lifecycle and initialization-maintenance cancellation both end a
+            // creation listener's work; creation never outlives its maintenance.
+            const signal = maintenanceSignal === undefined
+              ? abort.signal
+              : AbortSignal.any([abort.signal, maintenanceSignal])
+            await loopCtx.agents.announce(agent, source, signal)
             assertLive()
             return { agent, dispose }
           } finally {
@@ -695,9 +700,9 @@ export class AgentLoop extends Service implements AgentFactory {
       await stored?.handle.close().catch(() => {})
       throw error
     }
-    return (await this.initializeAgent(prepared, async () => {
+    return (await this.initializeAgent(prepared, async (maintenanceSignal) => {
       await this.appendUnstoredSuffix(stored, preparation.session)
-      return await prepared.publish('startup')
+      return await prepared.publish('startup', maintenanceSignal)
     })).agent
   }
 
@@ -807,19 +812,22 @@ export class AgentLoop extends Service implements AgentFactory {
       await stored?.handle.close().catch(() => {})
       throw error
     }
-    return await this.initializeAgent(prepared, async () => {
+    return await this.initializeAgent(prepared, async (maintenanceSignal) => {
       const setupCommit = await raceAbort(setup?.(prepared.agent.ctx, prepared.agent), prepared.signal, id)
       setupCommit?.commit()
       await this.appendUnstoredSuffix(stored, session)
-      return await prepared.publish(source)
+      return await prepared.publish(source, maintenanceSignal)
     })
   }
 
-  private async initializeAgent(prepared: PreparedAgent, initialize: () => Promise<AgentHandle>): Promise<AgentHandle> {
+  private async initializeAgent(
+    prepared: PreparedAgent,
+    initialize: (maintenanceSignal: AbortSignal) => Promise<AgentHandle>,
+  ): Promise<AgentHandle> {
     try {
-      return await prepared.agent.runMaintenance(async () => {
+      return await prepared.agent.runMaintenance(async (maintenanceSignal) => {
         try {
-          return await initialize()
+          return await initialize(maintenanceSignal)
         } catch (error: unknown) {
           // Teardown owns inbox cleanup and may already have removed its projection.
           prepared.agent.cancel({ kind: 'disposed' }, { keepInbox: true })

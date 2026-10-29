@@ -96,12 +96,49 @@ export class ReactLoopInbox implements InboxContract {
 
   /**
    * Durably cancel all pending input, clearing next-step before next-turn.
+   *
+   * A user cancellation always leaves one durable fact even when both lists are
+   * empty: later recovery must be able to tell that the user cancelled work
+   * from a crash that merely lost the queue. The intent-only splice is a no-op
+   * for the fold (nothing inserted, nothing removed).
    * @param cause - the stable caller intent recorded on each cancellation so a
    * reader can tell ordinary teardown from a user cancellation without live state.
    */
   clear(cause: 'user' | 'disposed' = 'user'): void {
-    this.mutate('next-step', 0, this.nextStep.length, [], true, cause)
-    this.mutate('next-turn', 0, this.nextTurn.length, [], true, cause)
+    const step = this.nextStep.length
+    const turn = this.nextTurn.length
+    if (step === 0 && turn === 0) {
+      if (cause === 'user') this.recordCancelIntent()
+      return
+    }
+    this.mutate('next-step', 0, step, [], true, cause)
+    this.mutate('next-turn', 0, turn, [], true, cause)
+  }
+
+  /** Record a user cancellation that removed no pending input; fold leaves state unchanged. */
+  private recordCancelIntent(): void {
+    const splice: SessionEventMap['agent/inbox/spliced'] = {
+      target: 'next-step',
+      start: 0,
+      inserted: [],
+      outcome: 'canceled',
+      cause: 'user',
+    }
+    try {
+      this.session.append('agent/inbox/spliced', splice)
+    } catch (error: unknown) {
+      // A cancellation raised from inside another append's observer cannot
+      // append reentrantly. The caller's abort must still run, so defer only
+      // this durable fact; other failures stay visible.
+      if (!(error instanceof Error) || !error.message.includes('cannot reenter')) throw error
+      queueMicrotask(() => {
+        try {
+          this.session.append('agent/inbox/spliced', splice)
+        } catch {
+          // The session is closing; no second cancel intent is worth failing teardown.
+        }
+      })
+    }
   }
 
   /**

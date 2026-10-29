@@ -135,11 +135,17 @@ it.each(['loop', 'root'] as const)('unloads %s while a background child is stopp
   expect(child.status).toBe('idle')
   const events = child.session.snapshotEvents()
   expect(events.at(-1)).toMatchObject({ type: 'turn/end', data: { reason: { kind: 'aborted' } } })
-  expect(events.filter(event => event.type === 'agent/inbox/spliced' && event.data.outcome === 'canceled'))
+  // Removal facts are the two lane clears; a later cancel on the empty queue may
+  // append an intent-only splice without a removedCount.
+  expect(events.filter(event => event.type === 'agent/inbox/spliced'
+    && event.data.outcome === 'canceled' && event.data.removedCount !== undefined))
     .toMatchObject([
       { data: { target: 'next-step', removedCount: 1 } },
       { data: { target: 'next-turn', removedCount: 1 } },
     ])
+  const intents = events.filter(event => event.type === 'agent/inbox/spliced'
+    && event.data.outcome === 'canceled' && event.data.removedCount === undefined)
+  expect(intents.every(event => event.data.cause === 'user')).toBe(true)
   if (owner === 'loop') {
     const verify = new Context()
     onTestFinished(async () => { await verify.fiber.dispose() })

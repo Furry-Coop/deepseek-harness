@@ -881,6 +881,34 @@ describe('agent scope lifecycle', () => {
     await ctx.fiber.dispose()
   })
 
+  it('agent/created signal observes a cancellation issued during initialization maintenance', async () => {
+    const ctx = await harness()
+    const id = SessionId('agent-created-cancel-s')
+    let liveBeforeCancel: boolean | undefined
+    let abortedAfterCancel: boolean | undefined
+    ctx.on('agent/created', ({ agent, signal }) => {
+      if (agent.id !== id) return
+      liveBeforeCancel = signal?.aborted === false
+      agent.cancel({ kind: 'user' })
+      // 初始化 maintenance 的取消必须与 factory 生命周期一并反映在 seam 上。
+      abortedAfterCancel = signal?.aborted === true
+    })
+    const handle = await ctx.agents.create({
+      sessionId: id,
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })
+    expect(liveBeforeCancel).toBe(true)
+    expect(abortedAfterCancel).toBe(true)
+    expect(handle.agent.session.snapshotEvents()).toEqual([
+      // 空队列的用户取消也留下持久意图，而不是没有任何事实。
+      expect.objectContaining({
+        type: 'agent/inbox/spliced',
+        data: expect.objectContaining({ outcome: 'canceled', cause: 'user' }),
+      }),
+    ])
+    await ctx.fiber.dispose()
+  })
+
   it('a rejecting setup publishes nothing and unwinds the unpublished scope', async () => {
     const ctx = await harness()
     const published: string[] = []

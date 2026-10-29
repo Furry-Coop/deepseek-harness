@@ -282,6 +282,15 @@ describe('ReactLoopInbox', () => {
     ])
 
     agent.inbox.clear()
-    expect(session.snapshotEvents()).toHaveLength(beforeDisposal + 1)
+    expect(session.snapshotEvents().slice(beforeDisposal + 1).map(event => event.type === 'agent/inbox/spliced'
+      ? event.data
+      : event.type)).toEqual([
+      // 空队列的用户取消仍留下持久意图：恢复不能把“队列里没有”当成没取消。
+      { target: 'next-step', start: 0, inserted: [], outcome: 'canceled', cause: 'user' },
+    ])
+
+    const beforeEmptyDisposal = session.snapshotEvents().length
+    agent.inbox.clear('disposed')
+    expect(session.snapshotEvents()).toHaveLength(beforeEmptyDisposal)
   })
 })
