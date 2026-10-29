@@ -1636,4 +1636,231 @@ describe('Agent.cancel()', () => {
       await ctx.fiber.dispose()
     }
   })
+
+  it('holds a clear callback wake until an idle cancellation removes both captured lists', async () => {
+    const adapter = new MockAdapter([textResponse('later reply')])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('idle-cohort-wake'), { provider: 'mock', model: 'mock' })
+      const oldStep = createUserMessage({ content: [{ type: 'text', text: 'old step' }], source: { kind: 'user' } })
+      const oldTurn = createUserMessage({ content: [{ type: 'text', text: 'old turn' }], source: { kind: 'user' } })
+      const later = createUserMessage({ content: [{ type: 'text', text: 'later' }], source: { kind: 'user' } })
+      agent.inject(oldStep)
+      agent.send(oldTurn, 'next-turn', false)
+      let woken = false
+      const dispose = ctx.on('agent/inbox/discarded', ({ message }) => {
+        if (woken || message.id !== oldStep.id) return
+        woken = true
+        // The wake arrives while the captured turn is still pending. A driver
+        // started here would claim that turn before this cancellation removes it.
+        agent.followup(later)
+      })
+      agent.cancel({ kind: 'user' })
+      dispose()
+      await agent.whenIdle()
+
+      expect(woken).toBe(true)
+      expect(userTexts(agent)).toEqual(['later'])
+      expect(adapter.requests).toHaveLength(1)
+      expect(agent.inbox.nextTurn).toEqual([])
+      expect(agent.inbox.nextStep).toEqual([])
+      expect(agent.session.snapshotEvents().filter(event => event.type === 'turn/end')
+        .map(event => event.type === 'turn/end' ? event.data.reason : undefined))
+        .toEqual([{ kind: 'completed' }])
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('replays a held steering wake only after the captured turn is removed', async () => {
+    const adapter = new MockAdapter([textResponse('steer reply')])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('idle-cohort-steer'), { provider: 'mock', model: 'mock' })
+      const oldStep = createUserMessage({ content: [{ type: 'text', text: 'old step' }], source: { kind: 'user' } })
+      const oldTurn = createUserMessage({ content: [{ type: 'text', text: 'old turn' }], source: { kind: 'user' } })
+      const later = createUserMessage({ content: [{ type: 'text', text: 'later steer' }], source: { kind: 'user' } })
+      agent.inject(oldStep)
+      agent.send(oldTurn, 'next-turn', false)
+      const dispose = ctx.on('agent/inbox/discarded', ({ message }) => {
+        if (message.id === oldStep.id) agent.steer(later)
+      })
+      agent.cancel({ kind: 'user' })
+      dispose()
+      await agent.whenIdle()
+
+      // The steering wake lands in next-step; the captured turn must still be
+      // gone before the driver opens the turn that claims that steering.
+      expect(userTexts(agent)).toEqual(['later steer'])
+      expect(adapter.requests).toHaveLength(1)
+      expect(agent.inbox.nextStep).toEqual([])
+      expect(agent.inbox.nextTurn).toEqual([])
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('withdraws a held wake a nested cancellation removed, without waking passive input', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('nested-cancelled-wake'), { provider: 'mock', model: 'mock' })
+      const oldStep = createUserMessage({ content: [{ type: 'text', text: 'old step' }], source: { kind: 'user' } })
+      const oldTurn = createUserMessage({ content: [{ type: 'text', text: 'old turn' }], source: { kind: 'user' } })
+      const waking = createUserMessage({ content: [{ type: 'text', text: 'waking' }], source: { kind: 'user' } })
+      const passive = createUserMessage({ content: [{ type: 'text', text: 'passive' }], source: { kind: 'user' } })
+      agent.inject(oldStep)
+      agent.send(oldTurn, 'next-turn', false)
+      let nested = false
+      const dispose = ctx.on('agent/inbox/discarded', ({ message }) => {
+        if (!nested && message.id === oldStep.id) {
+          nested = true
+          agent.followup(waking)
+          // The nested cancellation targets the waking occurrence. The passive
+          // input arrives after its snapshot and authorizes no turn of its own.
+          agent.cancel({ kind: 'user' })
+          return
+        }
+        if (message.id === waking.id) agent.inject(passive)
+      })
+      agent.cancel({ kind: 'user' })
+      dispose()
+
+      expect(nested).toBe(true)
+      expect(adapter.requests).toHaveLength(0)
+      expect(agent.inbox.nextTurn).toEqual([])
+      expect(agent.inbox.nextStep.map(message => message.id)).toEqual([passive.id])
+      expect(agent.session.snapshotEvents().some(event => event.type === 'turn/start')).toBe(false)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('holds no wake for an occurrence a callback removed during its insertion', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('withdrawn-insertion-wake'), { provider: 'mock', model: 'mock' })
+      const oldStep = createUserMessage({ content: [{ type: 'text', text: 'old step' }], source: { kind: 'user' } })
+      const waking = createUserMessage({ content: [{ type: 'text', text: 'waking' }], source: { kind: 'user' } })
+      agent.inject(oldStep)
+      const disposeInserted = ctx.on('agent/inbox/inserted', ({ message }) => {
+        if (message.id === waking.id) agent.inbox.remove(message.id)
+      })
+      const disposeDiscarded = ctx.on('agent/inbox/discarded', ({ message }) => {
+        if (message.id === oldStep.id) agent.followup(waking)
+      })
+      agent.cancel({ kind: 'user' })
+      disposeDiscarded()
+      disposeInserted()
+
+      // The waking occurrence never reached pending, so its wake authorizes
+      // nothing and no turn boundary is opened.
+      expect(adapter.requests).toHaveLength(0)
+      expect(agent.inbox.nextTurn).toEqual([])
+      expect(agent.inbox.nextStep).toEqual([])
+      expect(agent.session.snapshotEvents().some(event => event.type === 'turn/start')).toBe(false)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('does not start a held wake when the captured removal fails', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('failed-cohort-wake'), { provider: 'mock', model: 'mock' })
+      const oldStep = createUserMessage({ content: [{ type: 'text', text: 'old step' }], source: { kind: 'user' } })
+      const later = createUserMessage({ content: [{ type: 'text', text: 'later' }], source: { kind: 'user' } })
+      agent.inject(oldStep)
+      const dispose = ctx.on('agent/inbox/discarded', ({ message }) => {
+        if (message.id === oldStep.id) agent.followup(later)
+      })
+      const inbox = agent.inbox as ReactLoopInbox
+      const real = inbox.cancelSnapshot.bind(inbox)
+      const failure = vi.spyOn(inbox, 'cancelSnapshot').mockImplementation((snapshot, cause, entrySeq) => {
+        real(snapshot, cause, entrySeq)
+        throw new Error('forced removal failure')
+      })
+      try {
+        expect(() => { agent.cancel({ kind: 'user' }) }).toThrow('forced removal failure')
+      } finally {
+        failure.mockRestore()
+        dispose()
+      }
+
+      // The failure leaves the cancellation incomplete, so its held wake must
+      // not run the unfinished work; the later input waits for an explicit wake.
+      expect(adapter.requests).toHaveLength(0)
+      expect(agent.inbox.nextTurn.map(message => message.id)).toEqual([later.id])
+      expect(agent.inbox.nextStep).toEqual([])
+      expect(agent.session.snapshotEvents().some(event => event.type === 'turn/start')).toBe(false)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('does not start a held wake for a disposing cancellation', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    try {
+      const handle = await ctx.agents.create({
+        sessionId: SessionId('disposed-held-wake'),
+        agentOptions: { provider: 'mock', model: 'mock' },
+      })
+      const agent = handle.agent
+      const oldStep = createUserMessage({ content: [{ type: 'text', text: 'old step' }], source: { kind: 'user' } })
+      const later = createUserMessage({ content: [{ type: 'text', text: 'later' }], source: { kind: 'user' } })
+      agent.inject(oldStep)
+      const dispose = ctx.on('agent/inbox/discarded', ({ message }) => {
+        if (message.id === oldStep.id) agent.followup(later)
+      })
+      await handle.dispose()
+      dispose()
+
+      // Disposal starts no model turn: the later input stays queued for an
+      // explicit wake instead of running over the session being torn down.
+      expect(adapter.requests).toHaveLength(0)
+      expect(agent.inbox.nextTurn.map(message => message.id)).toEqual([later.id])
+      expect(agent.session.snapshotEvents().some(event => event.type === 'turn/start')).toBe(false)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('keeps a turn occurrence a clear callback removed and re-appended', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('reinserted-clear-occurrence'), { provider: 'mock', model: 'mock' })
+      const oldStep = createUserMessage({ content: [{ type: 'text', text: 'old step' }], source: { kind: 'user' } })
+      const oldTurn = createUserMessage({ content: [{ type: 'text', text: 'old turn' }], source: { kind: 'user' } })
+      agent.inject(oldStep)
+      agent.send(oldTurn, 'next-turn', false)
+      let requeued = false
+      const dispose = ctx.on('agent/inbox/discarded', ({ message }) => {
+        if (requeued || message.id !== oldStep.id) return
+        requeued = true
+        const pending = agent.inbox.nextTurn[0]
+        if (pending === undefined) throw new Error('expected a pending turn occurrence')
+        // Each committed insertion is a detached projection message, so the
+        // re-appended occurrence is later input rather than the captured one.
+        agent.inbox.remove(pending.id)
+        agent.inbox.append('next-turn', pending)
+      })
+      agent.cancel({ kind: 'user' })
+      dispose()
+
+      expect(requeued).toBe(true)
+      expect(agent.inbox.nextStep).toEqual([])
+      expect(agent.inbox.nextTurn.map(message => message.id)).toEqual([oldTurn.id])
+      const cancellations = agent.session.snapshotEvents()
+        .filter(event => event.type === 'agent/inbox/spliced'
+          && event.data.cause === 'user' && event.data.removedCount !== undefined)
+      expect(cancellations.map(event => event.type === 'agent/inbox/spliced' ? event.data.target : ''))
+        .toEqual(['next-step'])
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
 })

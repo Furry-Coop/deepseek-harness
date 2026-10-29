@@ -269,6 +269,33 @@ export class ReactLoopInbox implements InboxContract {
   }
 
   /**
+   * Append one message and report the pending occurrence it produced.
+   *
+   * `Session.append` detaches its payload, so the projection message is a fresh
+   * object per insertion: a callback that removes and re-inserts the same
+   * caller object still creates a different occurrence.
+   * @param target - pending list to extend.
+   * @param message - message to append.
+   * @returns the pending projection message with this identity after the
+   *   insertion, or undefined when a notification removed it before the append
+   *   returned.
+   */
+  insert(target: InboxTarget, message: UserMessage): UserMessage | undefined {
+    this.append(target, message)
+    return this.current()[target].find(pending => pending.id === message.id)
+  }
+
+  /**
+   * Whether one inserted occurrence is still pending in either lane.
+   * @param occurrence - projection message returned by {@link insert}.
+   * @returns whether that exact occurrence remains pending.
+   */
+  holdsOccurrence(occurrence: UserMessage): boolean {
+    const state = this.current()
+    return state['next-step'].includes(occurrence) || state['next-turn'].includes(occurrence)
+  }
+
+  /**
    * Prepend one message to a pending list.
    * @param target - pending list to extend.
    * @param message - message to prepend.
