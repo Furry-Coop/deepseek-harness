@@ -8,7 +8,7 @@ import { ToolCallId, createUserMessage, expandAssistantStream } from '@deepseek-
  * @module dsh-agent-loop/tests/cancel
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId, SessionLogOffset, TurnEndReason } from '@deepseek-ai/dsh-session'
@@ -818,6 +818,56 @@ describe('Agent.cancel()', () => {
     expect(reasons).toEqual([{ kind: 'aborted', reason: { kind: 'user' } }])
     const types = agent.session.snapshotEvents().map(e => e.type)
     expect(types.filter(t => t === 'step/start').length).toBe(types.filter(t => t === 'step/end').length)
+  })
+
+  it('an intent observed from session/event cannot recurse without bound', async () => {
+    const adapter = new MockAdapter([textResponse('should not stream')])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('intent-recursion'), { provider: 'mock', model: 'mock' })
+    let streamed = false
+    ctx.on('agent/assistant-stream', ({ frame }) => { if (frame.type === 'chunk') streamed = true })
+    // 空队列的 step/start 取消会因重入被排到 post-append microtask。
+    ctx.on('session/event', (session, event) => {
+      if (session === agent.session && event.type === 'step/start') agent.cancel({ kind: 'user' })
+    })
+    // 观察 intent 也取消；坏实现会不断排新 microtask。计数上限避免锁死 runner。
+    let intents = 0
+    const disposeIntent = ctx.on('session/event', (session, event) => {
+      if (session !== agent.session || event.type !== 'agent/inbox/spliced') return
+      if (event.data.outcome !== 'canceled' || event.data.removedCount !== undefined) return
+      if (intents >= 5) return
+      intents += 1
+      agent.cancel({ kind: 'user' })
+    })
+    send(agent, 'go')
+    await waitForIdle(ctx, agent)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    disposeIntent()
+    expect(intents).toBe(1)
+    expect(streamed).toBe(false)
+  })
+
+  it('a failing inbox clear cannot suppress the immediate abort', async () => {
+    const adapter = new MockAdapter([textResponse('should not stream')])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('bookkeeping-failure'), { provider: 'mock', model: 'mock' })
+    let streamed = false
+    ctx.on('agent/assistant-stream', ({ frame }) => { if (frame.type === 'chunk') streamed = true })
+    const reasons: TurnEndReason[] = []
+    ctx.on('session/event', (_s, event) => { if (event.type === 'turn/end') reasons.push(event.data.reason) })
+    const clear = vi.spyOn(agent.inbox, 'clear').mockImplementation(() => {
+      throw new Error('forced inbox bookkeeping failure')
+    })
+    const dispose = ctx.on('session/event', (session, event) => {
+      if (session === agent.session && event.type === 'step/start') agent.cancel({ kind: 'user' })
+    })
+    send(agent, 'go')
+    await waitForIdle(ctx, agent)
+    dispose()
+    clear.mockRestore()
+    // 记账抛错仍必须清 wake 并 abort：不进入请求、不产生流式内容。
+    expect(streamed).toBe(false)
+    expect(reasons).toEqual([{ kind: 'aborted', reason: { kind: 'user' } }])
   })
 
   it('disposal from a synchronous step/start session-event listener stops before adapter dispatch', async () => {

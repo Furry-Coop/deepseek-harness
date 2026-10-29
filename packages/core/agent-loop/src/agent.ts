@@ -136,7 +136,12 @@ export class ReactLoopAgent implements Agent {
     this.dispatch = agentEvents(loopCtx, this)
     this.scope = createScope(loopCtx, this)
     this.ctx = this.scope.ctx
-    this.inbox = new ReactLoopInbox(this.ctx.sessionProjections, session, this.dispatch)
+    this.inbox = new ReactLoopInbox(
+      this.ctx.sessionProjections,
+      session,
+      this.dispatch,
+      message => this.loopCtx.logger?.warn(`agent "${id}": ${message}`),
+    )
     /* v8 ignore next -- the loop registers its own turnBoundary unit, so the key is always present */
     const lastTurn = this.loopCtx.sessionProjections.stateOf(session, 'turnBoundary')?.lastTurn ?? 0
     this.phase = { kind: 'idle', lastTurn }
@@ -186,13 +191,19 @@ export class ReactLoopAgent implements Agent {
   }
 
   cancel(cause: AgentCancelCause, options: CancelOptions = {}): void {
-    if (!options.keepInbox) {
-      // The durable splice carries the stable intent so a later cold read can
-      // tell ordinary teardown from a user cancellation.
-      this.inbox.clear(cause.kind === 'disposed' ? 'disposed' : 'user')
-      if (this.phase.kind !== 'idle') this.phase.wakeRequested = false
+    const clearInbox = !options.keepInbox
+    try {
+      if (clearInbox) {
+        // The durable splice carries the stable intent so a later cold read can
+        // tell ordinary teardown from a user cancellation.
+        this.inbox.clear(cause.kind === 'disposed' ? 'disposed' : 'user')
+      }
+    } finally {
+      // Immediate cancellation is not bookkeeping: a failing clear (for example
+      // a forced append rejection) must not skip the wake/abort below.
+      if (clearInbox && this.phase.kind !== 'idle') this.phase.wakeRequested = false
+      if (this.phase.kind !== 'idle') this.phase.abort.abort(cause)
     }
-    if (this.phase.kind !== 'idle') this.phase.abort.abort(cause)
   }
 
   runMaintenance<T>(job: (signal: AbortSignal) => Promise<T>): Promise<T> {

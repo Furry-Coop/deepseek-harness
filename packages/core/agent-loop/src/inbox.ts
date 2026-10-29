@@ -74,12 +74,17 @@ export const inboxProjectionDefinition = {
 export class ReactLoopInbox implements InboxContract {
   /** One deferred post-append cancel intent; the log rejects reentrant appends. */
   #queuedIntent = false
+  /** Optional diagnostic sink for an intent the log could not accept. */
+  readonly #warn: ((message: string) => void) | undefined
 
   constructor(
     private readonly projections: SessionProjectionRegistry,
     private readonly session: Session,
     private readonly dispatch: AgentEventDispatch,
-  ) {}
+    warn?: (message: string) => void,
+  ) {
+    this.#warn = warn
+  }
 
   /** Prompts awaiting individual turns. */
   get nextTurn(): readonly UserMessage[] {
@@ -143,11 +148,17 @@ export class ReactLoopInbox implements InboxContract {
       if (this.#queuedIntent) return
       this.#queuedIntent = true
       queueMicrotask(() => {
-        this.#queuedIntent = false
+        // Keep the flag set across the append AND its synchronous observers: an
+        // observer that cancels again must not enqueue an unbounded chain.
         try {
           this.session.append('agent/inbox/spliced', splice)
-        } catch {
-          // The session is closing; no second cancel intent is worth failing teardown.
+        } catch (error: unknown) {
+          // Not necessarily closing: the session may still be reentrant or
+          // detached without durability. Keep the failure visible instead of
+          // claiming the intent is persisted.
+          this.#warn?.(`inbox cancel intent was not appended after publication: ${String(error)}`)
+        } finally {
+          this.#queuedIntent = false
         }
       })
     }
