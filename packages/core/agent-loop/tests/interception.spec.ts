@@ -452,6 +452,11 @@ describe('agent/pre-step', () => {
     const adapter = new MockAdapter([])
     const ctx = await harness(adapter)
     const agent = await ctx.agentLoop.create(SessionId('preserve-claimed-atomic'), { provider: 'mock', model: 'mock' })
+    const injected = [
+      createUserMessage({ content: [{ type: 'text', text: 'cancelled one' }], source: { kind: 'test' } }),
+      createUserMessage({ content: [{ type: 'text', text: 'cancelled two' }], source: { kind: 'test' } }),
+    ]
+    for (const message of injected) agent.inject(message)
     let restoring = false
     const disposeInserted = ctx.on('agent/inbox/inserted', () => {
       if (restoring) agent.cancel({ kind: 'user' })
@@ -469,6 +474,13 @@ describe('agent/pre-step', () => {
     expect(agent.inbox.nextStep).toEqual([])
     expect(agent.inbox.nextTurn).toEqual([])
     expect(adapter.requests).toEqual([])
+    // The whole restored batch was committed by one splice, so the synchronous
+    // cancel cleared it instead of leaving a later one-by-one insertion behind.
+    const restored = events(agent).filter(event => event.type === 'agent/inbox/spliced'
+      && event.data.inserted.some(message => message.id === injected[0]!.id)
+      && event.data.inserted.length > 1).at(-1)
+    expect(restored?.type === 'agent/inbox/spliced' && restored.data.inserted.map(message => message.id))
+      .toEqual([...injected.map(message => message.id), expect.any(String)])
   })
 
   it('a reject with preserveClaimed does not resurrect a batch after a clearing cancel', async () => {

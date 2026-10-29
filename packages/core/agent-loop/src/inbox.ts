@@ -94,10 +94,14 @@ export class ReactLoopInbox implements InboxContract {
     return state['next-turn'].length > 0 || state['next-step'].length > 0
   }
 
-  /** Durably cancel all pending input, clearing next-step before next-turn. */
-  clear(): void {
-    this.splice('next-step', 0, this.nextStep.length, [])
-    this.splice('next-turn', 0, this.nextTurn.length, [])
+  /**
+   * Durably cancel all pending input, clearing next-step before next-turn.
+   * @param cause - the stable caller intent recorded on each cancellation so a
+   * reader can tell ordinary teardown from a user cancellation without live state.
+   */
+  clear(cause: 'user' | 'disposed' = 'user'): void {
+    this.mutate('next-step', 0, this.nextStep.length, [], true, cause)
+    this.mutate('next-turn', 0, this.nextTurn.length, [], true, cause)
   }
 
   /**
@@ -201,6 +205,7 @@ export class ReactLoopInbox implements InboxContract {
     deleteCount: number,
     inserted: UserMessage[],
     discardRemoved: boolean,
+    cancelCause?: 'user' | 'disposed',
   ): UserMessage[] {
     const state = this.current()
     const inbox = state[target]
@@ -230,6 +235,9 @@ export class ReactLoopInbox implements InboxContract {
       ...(actualDeleteCount === 0 ? {} : { removedCount: actualDeleteCount }),
       inserted,
       ...(outcome === undefined ? {} : { outcome }),
+      // Only a cancellation carries the caller's stable intent; explicit removals
+      // and replacements stay byte-identical to the released event.
+      ...(outcome === undefined || cancelCause === undefined ? {} : { cause: cancelCause }),
     }
     const removed = inbox.slice(actualStart, actualStart + actualDeleteCount)
     const event = this.session.append('agent/inbox/spliced', splice)

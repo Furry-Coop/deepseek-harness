@@ -23,7 +23,7 @@ The [format references](persistence-changes/historical-formats/README.md) cover 
 | `JsonlHeaderLine` | header | `18ee62b8900a4c3d046700f05d7a4d49d6cab2a660a020c87481d1603dd8bd4f` | [`HeaderLine`](#persistence-type-sha256-18ee62b8900a4c3d046700f05d7a4d49d6cab2a660a020c87481d1603dd8bd4f) |
 | `SessionEventEnvelope` | envelope | `5776e5553ff2dfe3f5bc202dbb1e7c9f93e35a531aebb7764c23b2b6153b2ccc` | [`union (3 variants)`](#persistence-type-sha256-5776e5553ff2dfe3f5bc202dbb1e7c9f93e35a531aebb7764c23b2b6153b2ccc) |
 | `event:agent-preset/selected` | event | `a10c17474eaf2ddab7095a099e0fe3d046fc18e56c3e344fc8894c05ff9ef97b` | [`{ type: "agent-preset/selected" }`](#persistence-type-sha256-a10c17474eaf2ddab7095a099e0fe3d046fc18e56c3e344fc8894c05ff9ef97b) |
-| `event:agent/inbox/spliced` | event | `0755b7d1128319ba2e389619cbbf2c961ad648882b4e91da7f3e9582cc8a2034` | [`{ type: "agent/inbox/spliced" }`](#persistence-type-sha256-0755b7d1128319ba2e389619cbbf2c961ad648882b4e91da7f3e9582cc8a2034) |
+| `event:agent/inbox/spliced` | event | `b7997aec19a8df60f02a8bfdc652c6cfafeaec2d149250e514cb95d644f84bc7` | [`{ type: "agent/inbox/spliced" }`](#persistence-type-sha256-b7997aec19a8df60f02a8bfdc652c6cfafeaec2d149250e514cb95d644f84bc7) |
 | `event:approval/asked` | event | `3bfeb47b58606f4661904bc723da612782214c463d01e6d61cd6d6193d7374e1` | [`{ type: "approval/asked" }`](#persistence-type-sha256-3bfeb47b58606f4661904bc723da612782214c463d01e6d61cd6d6193d7374e1) |
 | `event:approval/decided` | event | `bb1ab3d08f49a9f3b265f844cd78d5c49813062a7b34b54904b426f85d0ff6e3` | [`{ type: "approval/decided" }`](#persistence-type-sha256-bb1ab3d08f49a9f3b265f844cd78d5c49813062a7b34b54904b426f85d0ff6e3) |
 | `event:approval/policy` | event | `26718e15e7e395bce9642dba5bbe09b3b1a4ce2213d20d566cd9207d7fc5fb78` | [`{ type: "approval/policy" }`](#persistence-type-sha256-26718e15e7e395bce9642dba5bbe09b3b1a4ce2213d20d566cd9207d7fc5fb78) |
@@ -182,6 +182,14 @@ Sources: [`packages/core/session/src/types.ts:432`](../packages/core/session/src
   removedCount?: number
   inserted: UserMessage[]
   outcome?: 'canceled'
+  /**
+   * The stable caller intent behind a cancellation that removed pending input.
+   * {@link Agent.cancel} records `disposed` for ordinary agent teardown and
+   * `user` for every other cause; an inbox mutation without a cancellation
+   * (an explicit removal or replacement) omits it. Consumers use it to tell a
+   * normal disposal's discard apart from work the user cancelled.
+   */
+  cause?: 'user' | 'disposed'
 }
 ```
 
@@ -5583,7 +5591,7 @@ Array of `number`.
 
 SHA-256: `4cd48f3e5108bd6ebedf7301c3638839b8b2b9db8dbd493974177fbdeb91a01b`
 
-Sources: [`packages/api/session-controller/src/types.ts:409`](../packages/api/session-controller/src/types.ts) · [`packages/attachment/attachment/src/brand.ts:6`](../packages/attachment/attachment/src/brand.ts) · [`packages/compaction/compaction/src/brand.ts:4`](../packages/compaction/compaction/src/brand.ts) · [`packages/core/session/src/types.ts:21`](../packages/core/session/src/types.ts) · [`packages/experimental/agent-team/src/types.ts:21`](../packages/experimental/agent-team/src/types.ts) · [`packages/experimental/agent-team/src/types.ts:33`](../packages/experimental/agent-team/src/types.ts) · [`packages/experimental/agent-team/src/types.ts:9`](../packages/experimental/agent-team/src/types.ts) · [`packages/experimental/webhook/src/brand.ts:12`](../packages/experimental/webhook/src/brand.ts) · [`packages/experimental/webhook/src/brand.ts:6`](../packages/experimental/webhook/src/brand.ts) · [`packages/experimental/webhook/src/brand.ts:9`](../packages/experimental/webhook/src/brand.ts) · [`packages/feedback/message-feedback/src/types.ts:14`](../packages/feedback/message-feedback/src/types.ts) · [`packages/goal/goal/src/types.ts:17`](../packages/goal/goal/src/types.ts) · [`packages/interaction/commands/src/brand.ts:31`](../packages/interaction/commands/src/brand.ts) · [`packages/interaction/user-approval/src/types.ts:17`](../packages/interaction/user-approval/src/types.ts) · [`packages/jobs/jobs/src/brand.ts:19`](../packages/jobs/jobs/src/brand.ts) · [`packages/llm/llm-retry/src/brand.ts:4`](../packages/llm/llm-retry/src/brand.ts) · [`packages/llm/llm/src/brand.ts:16`](../packages/llm/llm/src/brand.ts) · [`packages/llm/llm/src/brand.ts:31`](../packages/llm/llm/src/brand.ts) · [`packages/llm/llm/src/brand.ts:43`](../packages/llm/llm/src/brand.ts) · [`packages/llm/llm/src/brand.ts:67`](../packages/llm/llm/src/brand.ts) · [`packages/schedule/schedule/src/types.ts:14`](../packages/schedule/schedule/src/types.ts) · [`packages/session/session-title/src/index.ts:42`](../packages/session/session-title/src/index.ts) · [`packages/session/session-title/src/types.ts:17`](../packages/session/session-title/src/types.ts) · [`packages/workflow/workflow/src/types.ts:13`](../packages/workflow/workflow/src/types.ts)
+Sources: [`packages/api/session-controller/src/types.ts:448`](../packages/api/session-controller/src/types.ts) · [`packages/attachment/attachment/src/brand.ts:6`](../packages/attachment/attachment/src/brand.ts) · [`packages/compaction/compaction/src/brand.ts:4`](../packages/compaction/compaction/src/brand.ts) · [`packages/core/session/src/types.ts:21`](../packages/core/session/src/types.ts) · [`packages/experimental/agent-team/src/types.ts:21`](../packages/experimental/agent-team/src/types.ts) · [`packages/experimental/agent-team/src/types.ts:33`](../packages/experimental/agent-team/src/types.ts) · [`packages/experimental/agent-team/src/types.ts:9`](../packages/experimental/agent-team/src/types.ts) · [`packages/experimental/webhook/src/brand.ts:12`](../packages/experimental/webhook/src/brand.ts) · [`packages/experimental/webhook/src/brand.ts:6`](../packages/experimental/webhook/src/brand.ts) · [`packages/experimental/webhook/src/brand.ts:9`](../packages/experimental/webhook/src/brand.ts) · [`packages/feedback/message-feedback/src/types.ts:14`](../packages/feedback/message-feedback/src/types.ts) · [`packages/goal/goal/src/types.ts:17`](../packages/goal/goal/src/types.ts) · [`packages/interaction/commands/src/brand.ts:31`](../packages/interaction/commands/src/brand.ts) · [`packages/interaction/user-approval/src/types.ts:17`](../packages/interaction/user-approval/src/types.ts) · [`packages/jobs/jobs/src/brand.ts:19`](../packages/jobs/jobs/src/brand.ts) · [`packages/llm/llm-retry/src/brand.ts:4`](../packages/llm/llm-retry/src/brand.ts) · [`packages/llm/llm/src/brand.ts:16`](../packages/llm/llm/src/brand.ts) · [`packages/llm/llm/src/brand.ts:31`](../packages/llm/llm/src/brand.ts) · [`packages/llm/llm/src/brand.ts:43`](../packages/llm/llm/src/brand.ts) · [`packages/llm/llm/src/brand.ts:67`](../packages/llm/llm/src/brand.ts) · [`packages/schedule/schedule/src/types.ts:14`](../packages/schedule/schedule/src/types.ts) · [`packages/session/session-title/src/index.ts:42`](../packages/session/session-title/src/index.ts) · [`packages/session/session-title/src/types.ts:17`](../packages/session/session-title/src/types.ts) · [`packages/workflow/workflow/src/types.ts:13`](../packages/workflow/workflow/src/types.ts)
 
 `string`
 
@@ -5643,6 +5651,17 @@ One of:
 
 - `"error"`
 - `"success"`
+
+<a id="persistence-type-sha256-21998f6589ca9311383fd5fa7ba7a520eed29c1246db65e95443f4cc556d9300"></a>
+
+### `union (2 variants)`
+
+SHA-256: `21998f6589ca9311383fd5fa7ba7a520eed29c1246db65e95443f4cc556d9300`
+
+One of:
+
+- `"disposed"`
+- `"user"`
 
 <a id="persistence-type-sha256-50cf02d875f8a1f1411f4a6fbcffab9120ccef5f74a47331fbf29480e5f68f48"></a>
 
@@ -5888,6 +5907,23 @@ Sources: [`packages/context/session-reference/src/types.ts:18`](../packages/cont
 SHA-256: `df843efd87c78cf8de98f8e0d0216956cd568d0d0e56a22c853663e274aa1a18`
 
 Array of [`{ capturedFormatVersion?, capturedThroughSeq, compacted, inputIndex, … }`](#persistence-type-sha256-4f91f187baeabef5c7950c4780d31bbe39f3345dff591a6cf26ac7e135ac1cf4).
+
+<a id="persistence-type-sha256-9a223a53715201ab2807e96b739cf17baaee65d9f6ee44dc6c8e85ee9012373f"></a>
+
+### `{ cause?, inserted, outcome?, removedCount?, … }`
+
+SHA-256: `9a223a53715201ab2807e96b739cf17baaee65d9f6ee44dc6c8e85ee9012373f`
+
+Sources: [`packages/core/agent/src/types.ts:96`](../packages/core/agent/src/types.ts)
+
+| Property | Presence | Type |
+|---|---|---|
+| `cause` | optional | [`union (2 variants)`](#persistence-type-sha256-21998f6589ca9311383fd5fa7ba7a520eed29c1246db65e95443f4cc556d9300) |
+| `inserted` | required | [`UserMessage[]`](#persistence-type-sha256-454a0fa879e38076bdcdbd87ef561cd67d7e43e58a287cf7dbaa7b6cf7847020) |
+| `outcome` | optional | `"canceled"` |
+| `removedCount` | optional | `number` |
+| `start` | required | `number` |
+| `target` | required | [`InboxTarget`](#persistence-type-sha256-96f4a9c81fc0f940ef71528a8cc66731ae4cf1f40d79680c5fe3c39f96d7723c) |
 
 <a id="persistence-type-sha256-0e10d7c096b47e61defe372a5fc8bd37d835199410eac44367f95c45082498bd"></a>
 
@@ -6370,22 +6406,6 @@ Sources: [`packages/core/session/src/types.ts:428`](../packages/core/session/src
 | Property | Presence | Type |
 |---|---|---|
 | `inherited` | optional | `true` |
-
-<a id="persistence-type-sha256-fa106c5b33b657e8ef16e8cbf39f3b7d44e5cbcdf4f9303d9db6410f28951e42"></a>
-
-### `{ inserted, outcome?, removedCount?, start, … }`
-
-SHA-256: `fa106c5b33b657e8ef16e8cbf39f3b7d44e5cbcdf4f9303d9db6410f28951e42`
-
-Sources: [`packages/core/agent/src/types.ts:96`](../packages/core/agent/src/types.ts)
-
-| Property | Presence | Type |
-|---|---|---|
-| `inserted` | required | [`UserMessage[]`](#persistence-type-sha256-454a0fa879e38076bdcdbd87ef561cd67d7e43e58a287cf7dbaa7b6cf7847020) |
-| `outcome` | optional | `"canceled"` |
-| `removedCount` | optional | `number` |
-| `start` | required | `number` |
-| `target` | required | [`InboxTarget`](#persistence-type-sha256-96f4a9c81fc0f940ef71528a8cc66731ae4cf1f40d79680c5fe3c39f96d7723c) |
 
 <a id="persistence-type-sha256-1ccb56061942f5ccb0d30c9e4f2883b9d115ff906560029de637b61d3cde896d"></a>
 
@@ -7554,7 +7574,7 @@ Sources: [`packages/core/tools/src/index.ts:35`](../packages/core/tools/src/inde
 
 SHA-256: `6dacb1584f2bfbe209dc6b6f578d51da6d55595f64d0e63c727c98f359278def`
 
-Sources: [`packages/api/session-controller/src/types.ts:418`](../packages/api/session-controller/src/types.ts)
+Sources: [`packages/api/session-controller/src/types.ts:460`](../packages/api/session-controller/src/types.ts)
 
 | Property | Presence | Type |
 |---|---|---|
@@ -7943,17 +7963,17 @@ SHA-256: `a10c17474eaf2ddab7095a099e0fe3d046fc18e56c3e344fc8894c05ff9ef97b`
 | `time` | required | `number` |
 | `type` | required | `"agent-preset/selected"` |
 
-<a id="persistence-type-sha256-0755b7d1128319ba2e389619cbbf2c961ad648882b4e91da7f3e9582cc8a2034"></a>
+<a id="persistence-type-sha256-b7997aec19a8df60f02a8bfdc652c6cfafeaec2d149250e514cb95d644f84bc7"></a>
 
 <a id="persistence-type-eventagentinboxspliced"></a>
 
 ### `{ type: "agent/inbox/spliced" }`
 
-SHA-256: `0755b7d1128319ba2e389619cbbf2c961ad648882b4e91da7f3e9582cc8a2034`
+SHA-256: `b7997aec19a8df60f02a8bfdc652c6cfafeaec2d149250e514cb95d644f84bc7`
 
 | Property | Presence | Type |
 |---|---|---|
-| `data` | required | [`{ inserted, outcome?, removedCount?, start, … }`](#persistence-type-sha256-fa106c5b33b657e8ef16e8cbf39f3b7d44e5cbcdf4f9303d9db6410f28951e42) |
+| `data` | required | [`{ cause?, inserted, outcome?, removedCount?, … }`](#persistence-type-sha256-9a223a53715201ab2807e96b739cf17baaee65d9f6ee44dc6c8e85ee9012373f) |
 | `ignorable` | optional | `true` |
 | `seq` | required | `number` |
 | `time` | required | `number` |

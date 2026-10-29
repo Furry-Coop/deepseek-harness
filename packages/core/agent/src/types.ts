@@ -99,6 +99,14 @@ declare module '@deepseek-ai/dsh-session/types' {
       removedCount?: number
       inserted: UserMessage[]
       outcome?: 'canceled'
+      /**
+       * The stable caller intent behind a cancellation that removed pending input.
+       * {@link Agent.cancel} records `disposed` for ordinary agent teardown and
+       * `user` for every other cause; an inbox mutation without a cancellation
+       * (an explicit removal or replacement) omits it. Consumers use it to tell a
+       * normal disposal's discard apart from work the user cancelled.
+       */
+      cause?: 'user' | 'disposed'
     }
   }
 }

@@ -1149,4 +1149,75 @@ describe('Agent.cancel()', () => {
       .toEqual({ kind: 'aborted', reason: { kind: 'user' } })
     await ctx.fiber.dispose()
   })
+
+  it('records the stable cancellation cause on durable inbox splices', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    try {
+      const handle = await ctx.agents.create({
+        sessionId: SessionId('inbox-splice-cause'),
+        agentOptions: { provider: 'mock', model: 'mock' },
+      })
+      const agent = handle.agent
+      const splices: { outcome?: string; cause?: string; removedCount?: number }[] = []
+      ctx.on('session/event', (session, event) => {
+        if (session === agent.session && event.type === 'agent/inbox/spliced') splices.push(event.data)
+      })
+      const canceled = createUserMessage({ content: [{ type: 'text', text: 'user cancel' }], source: { kind: 'user' } })
+      agent.inject(canceled)
+      agent.cancel({ kind: 'user' })
+      expect(splices.at(-1)).toMatchObject({ outcome: 'canceled', cause: 'user', removedCount: 1 })
+
+      const removed = createUserMessage({ content: [{ type: 'text', text: 'removed' }], source: { kind: 'user' } })
+      agent.inject(removed)
+      agent.inbox.remove(removed.id)
+      expect(splices.at(-1)).toMatchObject({ outcome: 'canceled', removedCount: 1 })
+      expect(splices.at(-1)?.cause).toBeUndefined()
+
+      const disposedMessage = createUserMessage({ content: [{ type: 'text', text: 'dispose' }], source: { kind: 'user' } })
+      agent.inject(disposedMessage)
+      await handle.dispose()
+      expect(splices.at(-1)).toMatchObject({ outcome: 'canceled', cause: 'disposed', removedCount: 1 })
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('inject commits a batch in one splice and a synchronous cancel clears it', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('inject-batch'), { provider: 'mock', model: 'mock' })
+      const splices: { inserted: readonly { id: string }[]; outcome?: string; cause?: string; removedCount?: number }[] = []
+      ctx.on('session/event', (session, event) => {
+        if (session === agent.session && event.type === 'agent/inbox/spliced') splices.push(event.data)
+      })
+      let cancelOnInsert = false
+      const disposeInserted = ctx.on('agent/inbox/inserted', () => {
+        if (cancelOnInsert) agent.cancel({ kind: 'user' })
+      })
+      const first = createUserMessage({ content: [{ type: 'text', text: 'batch one' }], source: { kind: 'user' } })
+      const second = createUserMessage({ content: [{ type: 'text', text: 'batch two' }], source: { kind: 'user' } })
+      if (agent.injectBatch === undefined) throw new Error('AgentLoop must provide injectBatch')
+      agent.injectBatch([first, second])
+      expect(agent.inbox.nextStep.map(message => message.id)).toEqual([first.id, second.id])
+      expect(splices.at(-1)?.inserted.map(message => message.id)).toEqual([first.id, second.id])
+      agent.cancel({ kind: 'user' })
+
+      cancelOnInsert = true
+      const third = createUserMessage({ content: [{ type: 'text', text: 'cancel one' }], source: { kind: 'user' } })
+      const fourth = createUserMessage({ content: [{ type: 'text', text: 'cancel two' }], source: { kind: 'user' } })
+      agent.injectBatch([third, fourth])
+      disposeInserted()
+      expect(agent.inbox.nextStep).toEqual([])
+      expect(agent.inbox.nextTurn).toEqual([])
+      // The batch splice precedes the synchronous cancel's clear: no later
+      // one-by-one insertion exists to resurrect the batch.
+      const batch = splices.find(entry => entry.inserted.some(message => message.id === third.id))
+      expect(batch?.inserted.map(message => message.id)).toEqual([third.id, fourth.id])
+      expect(splices.at(-1)).toMatchObject({ outcome: 'canceled', cause: 'user', removedCount: 2 })
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
 })

@@ -268,11 +268,20 @@ describe('ReactLoopInbox', () => {
     expect(session.snapshotEvents().slice(beforeClear).map(event => event.type === 'agent/inbox/spliced'
       ? event.data
       : event.type)).toEqual([
-      { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' },
-      { target: 'next-turn', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' },
+      { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled', cause: 'user' },
+      { target: 'next-turn', start: 0, removedCount: 1, inserted: [], outcome: 'canceled', cause: 'user' },
+    ])
+
+    agent.inbox.append('next-step', createUserMessage({ content: [{ type: 'text', text: 'dispose' }], source: { kind: 'user' } }))
+    const beforeDisposal = session.snapshotEvents().length
+    agent.inbox.clear('disposed')
+    expect(session.snapshotEvents().slice(beforeDisposal).map(event => event.type === 'agent/inbox/spliced'
+      ? event.data
+      : event.type)).toEqual([
+      { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled', cause: 'disposed' },
     ])
 
     agent.inbox.clear()
-    expect(session.snapshotEvents()).toHaveLength(beforeClear + 2)
+    expect(session.snapshotEvents()).toHaveLength(beforeDisposal + 1)
   })
 })

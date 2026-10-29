@@ -51,8 +51,12 @@ export interface Inbox {
   /** Input awaiting the next step boundary. */
   readonly nextStep: readonly UserMessage[]
 
-  /** Durably cancel all pending input, clearing next-step before next-turn. */
-  clear(): void
+  /**
+   * Durably cancel all pending input, clearing next-step before next-turn.
+   * @param cause - the stable caller intent recorded with the cancellation; a
+   * plain clear is a user cancellation unless the disposing lifecycle says otherwise.
+   */
+  clear(cause?: 'user' | 'disposed'): void
 
   /**
    * Append one message to a pending list.
@@ -250,6 +254,16 @@ declare module './types.ts' {
    * @param message - identified injected context and the source that supplied it.
    */
     inject(message: UserMessage): void
+
+    /**
+   * Queue a batch of model-facing context at the next-step boundary in one
+   * inbox splice without waking the driver. One splice commits the whole batch,
+   * so a synchronous insertion observer that cancels clears it instead of
+   * leaving later one-by-one insertions behind. Same admission rules as
+   * {@link Agent.inject}; a producer that omits it accepts only single messages.
+   * @param messages - identified injected context in insertion order.
+   */
+    injectBatch?(messages: readonly UserMessage[]): void
   }
 }
 

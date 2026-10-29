@@ -179,9 +179,17 @@ export class ReactLoopAgent implements Agent {
     this.send(input, 'next-step', false)
   }
 
+  injectBatch(input: readonly UserMessage[]): void {
+    // One splice commits the complete batch; a synchronous inserted observer
+    // that cancels removes all of it instead of leaving later insertions behind.
+    this.inbox.splice('next-step', Infinity, 0, [...input])
+  }
+
   cancel(cause: AgentCancelCause, options: CancelOptions = {}): void {
     if (!options.keepInbox) {
-      this.inbox.clear()
+      // The durable splice carries the stable intent so a later cold read can
+      // tell ordinary teardown from a user cancellation.
+      this.inbox.clear(cause.kind === 'disposed' ? 'disposed' : 'user')
       if (this.phase.kind !== 'idle') this.phase.wakeRequested = false
     }
     if (this.phase.kind !== 'idle') this.phase.abort.abort(cause)
