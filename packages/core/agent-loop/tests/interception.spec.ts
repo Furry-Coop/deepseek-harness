@@ -420,6 +420,57 @@ describe('agent/pre-step', () => {
     expect(texts.indexOf('staged steering')).toBeLessThan(texts.indexOf('wake'))
   })
 
+  it('preserveClaimed restores an independently copied multi-message batch after the listener mutates the payload', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('preserve-claimed-copy'), { provider: 'mock', model: 'mock' })
+    const injected = [
+      createUserMessage({ content: [{ type: 'text', text: 'staged one' }], source: { kind: 'test' } }),
+      createUserMessage({ content: [{ type: 'text', text: 'staged two' }], source: { kind: 'test' } }),
+    ]
+    for (const message of injected) agent.inject(message)
+    ctx.on('agent/pre-step', async ({ messages }): Promise<PreStepDecision> => {
+      // A hostile listener rewrites the public array in place.
+      messages.splice(0, messages.length, createUserMessage({
+        content: [{ type: 'text', text: 'rewritten by listener' }], source: { kind: 'test' },
+      }))
+      return { kind: 'reject', preserveClaimed: true }
+    })
+
+    send(agent, 'waking prompt')
+    await agent.whenIdle()
+
+    expect(agent.inbox.nextStep.map(message => message.content[0])).toEqual([
+      { type: 'text', text: 'staged one' },
+      { type: 'text', text: 'staged two' },
+      { type: 'text', text: 'waking prompt' },
+    ])
+    expect(adapter.requests).toEqual([])
+  })
+
+  it('a synchronous inserted observer that cancels during restore does not leave resurrected input', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('preserve-claimed-atomic'), { provider: 'mock', model: 'mock' })
+    let restoring = false
+    const disposeInserted = ctx.on('agent/inbox/inserted', () => {
+      if (restoring) agent.cancel({ kind: 'user' })
+    })
+    ctx.on('agent/pre-step', async (): Promise<PreStepDecision> => {
+      restoring = true
+      return { kind: 'reject', preserveClaimed: true }
+    })
+
+    const idle = waitForIdle(ctx, agent)
+    send(agent, 'cancelled during restore')
+    await idle
+    disposeInserted()
+
+    expect(agent.inbox.nextStep).toEqual([])
+    expect(agent.inbox.nextTurn).toEqual([])
+    expect(adapter.requests).toEqual([])
+  })
+
   it('a reject with preserveClaimed does not resurrect a batch after a clearing cancel', async () => {
     const adapter = new MockAdapter([])
     const ctx = await harness(adapter)

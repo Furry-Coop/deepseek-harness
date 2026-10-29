@@ -276,7 +276,10 @@ export class ReactLoopAgent implements Agent {
     if (this.phase.kind !== 'running') throw new Error(`agent "${this.id}": pre-step outside running phase`)
     const signal = this.phase.abort.signal
     const claimed = this.inbox.claim(target, position.turn)
-    this.pendingClaim = { messages: claimed }
+    // The waterfall payload shares the claimed array with listeners; keep the
+    // exact batch independently so a listener that splices/reverses the public
+    // array cannot rewrite what preservation restores.
+    this.pendingClaim = { messages: Object.freeze([...claimed]) }
     const assembly = await this.loopCtx.systemPrompt.assemble(assembleContextFor(this, signal))
     signal.throwIfAborted()
     const decision = await this.dispatch.waterfall(
@@ -320,12 +323,12 @@ export class ReactLoopAgent implements Agent {
     // Preserve the claimed order ahead of input staged during pre-step. The
     // pending-step boundary is the single FIFO that a later turn claim reads
     // before its own next-turn prompt, so restoring the turn-owning message
-    // there keeps it ahead of a steer that arrived after the claim.
+    // there keeps it ahead of a steer that arrived after the claim. One splice
+    // commits the whole batch: a synchronous inserted observer that cancels the
+    // queue cannot be followed by later one-by-one inserts resurrecting it.
     const pending = new Set([...this.inbox.nextStep, ...this.inbox.nextTurn].map(message => message.id))
-    for (let index = claim.messages.length - 1; index >= 0; index -= 1) {
-      const message = claim.messages[index]
-      if (message !== undefined && !pending.has(message.id)) this.inbox.prepend('next-step', message)
-    }
+    const restored = claim.messages.filter(message => !pending.has(message.id))
+    if (restored.length > 0) this.inbox.splice('next-step', 0, 0, [...restored])
   }
 
   /** Whether the assembled tool schemas differ from the logged request header's. */
