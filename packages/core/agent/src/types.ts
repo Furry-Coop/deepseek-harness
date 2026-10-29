@@ -110,6 +110,16 @@ declare module '@deepseek-ai/dsh-session/types' {
        * empty.
        */
       cause?: 'user' | 'disposed'
+      /**
+       * Session log length captured at cancellation entry, before the
+       * cancellation ran any abort listener or clear notification. A pending
+       * occurrence inserted at or after this seq is later input that the
+       * cancellation did not target, even when the cancellation's own splice is
+       * logged after it. Consumers take this cut instead of the splice's seq;
+       * an older cancellation therefore cannot claim a later turn's claim or
+       * first build. Absent on a mutation that is not a lifecycle cancellation.
+       */
+      entrySeq?: import('@deepseek-ai/dsh-session/types').SessionLogOffset
     }
   }
 }

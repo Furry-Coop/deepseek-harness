@@ -145,7 +145,7 @@ it.each(['loop', 'root'] as const)('unloads %s while a background child is stopp
     ])
   const intents = events.filter(event => event.type === 'agent/inbox/spliced'
     && event.data.outcome === 'canceled' && event.data.removedCount === undefined)
-  expect(intents.every(event => event.data.cause === 'user')).toBe(true)
+  expect(intents.every(event => event.type === 'agent/inbox/spliced' && event.data.cause === 'user')).toBe(true)
   if (owner === 'loop') {
     const verify = new Context()
     onTestFinished(async () => { await verify.fiber.dispose() })

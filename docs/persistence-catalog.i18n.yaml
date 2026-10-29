@@ -9,8 +9,8 @@
   en: 1387c4505dde2faf
   zh: 48570fa1c13d6910
 /session-persistence-event-catalog/persistence-type-fingerprints:
-  en: 4a2432c974e4f96c
-  zh: d2504ecd222f518f
+  en: 1a4dafb11c941f5f
+  zh: ac0f783ce163edb5
 /session-persistence-event-catalog/event-envelope:
   en: 689f781d95689e20
   zh: 602f6a7f0835d698
@@ -1338,11 +1338,11 @@
   en: a35333b49c104e92
   zh: a35333b49c104e92
 /session-persistence-event-catalog/resolved-persistence-types/null:
-  en: bccefcfce00a211f
-  zh: bccefcfce00a211f
+  en: 4853f1d16a15d599
+  zh: 4853f1d16a15d599
 /session-persistence-event-catalog/resolved-persistence-types/number:
-  en: 0223d7ffb67ac272
-  zh: c2a8221caab6d350
+  en: 1015181a5e63274c
+  zh: 259cc599b0eba7b7
 /session-persistence-event-catalog/resolved-persistence-types/number~2:
   en: 2786fef560851bb4
   zh: 5d787475356b2606
@@ -1425,11 +1425,11 @@
   en: 4c4656bdb9474d3d
   zh: 3585f5d187dcc494
 /session-persistence-event-catalog/resolved-persistence-types/capturedformatversion-capturedthroughseq-compacted-inputindex~2:
-  en: acafe0d7ffbd8fb3
-  zh: 8d2505f103190b92
-/session-persistence-event-catalog/resolved-persistence-types/cause-inserted-outcome-removedcount:
-  en: 5cda38effed8eee3
-  zh: 4a1da90048966828
+  en: 33d98494846d587e
+  zh: de117f7d13b00e42
+/session-persistence-event-catalog/resolved-persistence-types/cause-entryseq-inserted-outcome:
+  en: 5357e029cd75f2d5
+  zh: b6b1a3f6666ab78a
 /session-persistence-event-catalog/resolved-persistence-types/childcreatedat-childid-label-mode:
   en: 2ef977cb4a83bb0a
   zh: 893fded259888650
@@ -1923,11 +1923,11 @@
   en: c58b89cec274f956
   zh: 056a29ed1ada9690
 /session-persistence-event-catalog/resolved-persistence-types/type-agent-preset-selected:
-  en: 1dc527a3b0c1368c
-  zh: 0909af1d82e43782
+  en: c9eeb255d1a23add
+  zh: aef70a01d3f2fdae
 /session-persistence-event-catalog/resolved-persistence-types/type-agent-inbox-spliced:
-  en: 9d95e9897cbc0b2e
-  zh: e1c9e6e71e196703
+  en: 32aaefa847ff7bac
+  zh: b21a77dbfe461999
 /session-persistence-event-catalog/resolved-persistence-types/type-approval-asked:
   en: 9c77f18b0dad22f0
   zh: 8894cf2878fe90db

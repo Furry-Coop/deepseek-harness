@@ -1729,6 +1729,123 @@ describe('SessionStore', () => {
     expect(ctx.sessions.get(session.id)).toBeUndefined()
   })
 
+  it('runs a control write queued from the drain at the tail', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const session = ctx.sessions.prepare(SessionId('post-publication-queue-tail'))
+    ctx.sessions.enter(session)
+    ctx.sessions.announce(session)
+    const order: string[] = []
+    ctx.on('session/event', (subject, event) => {
+      if (subject !== session || event.type !== 'turn/start') return
+      subject.afterPublication(() => {
+        order.push('A')
+        // A running drain owns queue order: the nested request joins the tail.
+        subject.afterPublication(() => { order.push('C') })
+      })
+      subject.afterPublication(() => { order.push('B') })
+    })
+
+    session.append('turn/start', { turn: 1 })
+
+    expect(order).toEqual(['A', 'B', 'C'])
+  })
+
+  it('keeps a deferred detach live through nested appends of a queued control write', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const session = ctx.sessions.prepare(SessionId('detach-during-drain-append'))
+    const detach = ctx.sessions.enter(session)
+    ctx.sessions.announce(session)
+    const published: string[] = []
+    ctx.on('session/event', (subject, event) => {
+      if (subject === session) published.push(event.type)
+    })
+    let queued = false
+    ctx.on('session/event', (subject) => {
+      if (subject !== session || queued) return
+      queued = true
+      // The deferred request must survive the first nested commit of the queued
+      // write, which appends twice.
+      detach()
+      subject.afterPublication(() => {
+        subject.append('request/context', { provider: 'first', model: 'model' })
+        subject.append('request/context', { provider: 'second', model: 'model' })
+      })
+    })
+
+    session.append('turn/start', { turn: 1 })
+
+    expect(published).toEqual(['turn/start', 'request/context', 'request/context'])
+    expect(session.snapshotEvents().map(event => event.type))
+      .toEqual(['turn/start', 'request/context', 'request/context'])
+    expect(ctx.sessions.get(session.id)).toBeUndefined()
+  })
+
+  it('holds a detach requested by a queued write until that write returns', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const session = ctx.sessions.prepare(SessionId('detach-during-drain-request'))
+    const detach = ctx.sessions.enter(session)
+    ctx.sessions.announce(session)
+    const order: string[] = []
+    let queued = false
+    ctx.on('session/event', (subject) => {
+      if (subject !== session || queued) return
+      queued = true
+      subject.afterPublication(() => {
+        subject.append('request/context', { provider: 'first', model: 'model' })
+        detach()
+      })
+      // A later queued write must still run, with the session still attached.
+      subject.afterPublication(() => {
+        order.push(ctx.sessions.get(session.id) === session ? 'live' : 'detached')
+        subject.append('request/context', { provider: 'second', model: 'model' })
+      })
+    })
+
+    session.append('turn/start', { turn: 1 })
+
+    expect(order).toEqual(['live'])
+    expect(session.snapshotEvents().map(event => event.type))
+      .toEqual(['turn/start', 'request/context', 'request/context'])
+    expect(ctx.sessions.get(session.id)).toBeUndefined()
+  })
+
+  it('does not turn the post-publication queue into an append ordering fence', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const session = ctx.sessions.prepare(SessionId('post-publication-append-order'))
+    ctx.sessions.enter(session)
+    ctx.sessions.announce(session)
+    let queued = false
+    ctx.on('session/event', (subject, event) => {
+      if (subject !== session) return
+      if (event.type === 'request/context') {
+        if (event.data.provider !== 'E' || queued) return
+        queued = true
+        subject.afterPublication(() => {
+          subject.append('request/context', { provider: 'I', model: 'model' })
+        })
+        return
+      }
+      if (event.type !== 'turn/start') return
+      subject.afterPublication(() => {
+        subject.append('request/context', { provider: 'E', model: 'model' })
+        // The queuing callback appends later input before the drain reaches the
+        // fact it queued; the recorded splice coordinates, not this seq order,
+        // carry the cancellation cut.
+        subject.append('request/context', { provider: 'N', model: 'model' })
+      })
+    })
+
+    session.append('turn/start', { turn: 1 })
+
+    expect(session.snapshotEvents()
+      .map(event => event.type === 'request/context' ? event.data.provider : event.type))
+      .toEqual(['turn/start', 'E', 'N', 'I'])
+  })
+
   it('observes async session/created rejection without rolling back or starving peers', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)

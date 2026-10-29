@@ -786,20 +786,33 @@ export class Session {
   }
 
   /**
-   * Run one narrow control write synchronously after the append currently being
-   * published finishes, before store detach.
+   * Run one narrow control write synchronously after the publication currently
+   * in progress finishes, before store detach.
    *
    * A `session/event` observer cannot append reentrantly: the log rejects it to
-   * keep publication atomic. This method queues the caller's own control fact
-   * so it is committed immediately after the current publication, while any
-   * later input stays later in the log. It is not an async framework: callbacks
-   * run in one synchronous drain, in queue order, before detach.
-   * @param task - synchronous control write; the callback must contain its own
-   *   expected append failures (a throwing task is contained and logged).
+   * keep publication atomic. A consumer that must record one control fact for
+   * the event being published queues that append here. Tasks run in one
+   * synchronous drain after the outermost publication commits, in queue order;
+   * a deferred detach waits for that drain. A task queued while the drain runs
+   * joins its tail instead of running nested.
+   *
+   * This queue is not a scheduler and not an ordering fence. Appends made after
+   * the outermost publication returns follow every queued task, but an append
+   * made by another callback while that publication stack is still running can
+   * be logged before a task queued during it, including an append the queuing
+   * task makes after it queues the fact. A caller that needs its fact ahead of
+   * its own following input must let the publication return first. The callback
+   * performs one synchronous control write and contains its own expected append
+   * failures: a queued task's throw is contained and logged, while a task run
+   * immediately because no publication is in progress propagates its throw to
+   * the caller.
+   * @param task - the single control write to run after the publication.
    */
   afterPublication(task: () => void): void {
     const entry = attachments.get(this)
-    if (entry === undefined || !entry.appending) {
+    // A running drain owns queue order: joining its tail keeps FIFO order and
+    // prevents a queued callback from recursing into the same publication stack.
+    if (entry === undefined || (!entry.appending && !entry.draining)) {
       task()
       return
     }
@@ -939,10 +952,14 @@ export class Session {
     } finally {
       if (entry !== undefined) {
         entry.appending = false
-        // Run this publication's narrow control facts before detach and before
-        // any later append, so a cancel intent cannot land after newer input.
+        // Run queued control writes in queue order before detach. A later
+        // append from this publication stack can still be logged first; the
+        // queue is not an ordering fence.
         drainAfterPublication(entry)
-        if (entry.detachRequested && !entry.announcing && entry.afterPublication.length === 0) entry.detach()
+        // A nested commit inside that drain must not detach while the outer
+        // drain still owns queued control writes or later nested appends.
+        if (entry.detachRequested && !entry.announcing && !entry.draining
+          && entry.afterPublication.length === 0) entry.detach()
       }
     }
   }
@@ -1285,9 +1302,10 @@ export class SessionStore extends Service {
       if (!entered) return
       entered = false
       // A lifecycle listener may own the advanced detach capability. Keep the
-      // entry and its publication hooks live until synchronous creation or append
-      // publication unwinds, then publish the paired disposal edge.
-      if (entry.announcing || entry.appending) {
+      // entry and its publication hooks live until synchronous creation, append
+      // publication, and any post-publication drain unwinds, then publish the
+      // paired disposal edge.
+      if (entry.announcing || entry.appending || entry.draining) {
         entry.detachRequested = true
         return
       }
@@ -1343,7 +1361,9 @@ export class SessionStore extends Service {
       }
     } finally {
       entry.announcing = false
-      if (entry.detachRequested && !entry.appending) entry.detach()
+      // The same deferral as commit: a creation listener may request detach
+      // while a post-publication drain (and its nested appends) still runs.
+      if (entry.detachRequested && !entry.appending && !entry.draining) entry.detach()
     }
   }
 

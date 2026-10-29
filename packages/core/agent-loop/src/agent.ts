@@ -33,7 +33,7 @@ import { joinContextSections, renderContextSections, renderPrompt } from '@deeps
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type { Context } from '@deepseek-ai/cordis'
-import { ReactLoopInbox } from './inbox.ts'
+import { ReactLoopInbox, type PendingInboxSnapshot } from './inbox.ts'
 import { RuntimeContextProjection } from './runtime-context.ts'
 import { AssistantStreamAttempt } from './assistant-stream.ts'
 import { SystemPromptProjection } from './runtime-context.ts'
@@ -192,18 +192,35 @@ export class ReactLoopAgent implements Agent {
 
   cancel(cause: AgentCancelCause, options: CancelOptions = {}): void {
     const clearInbox = !options.keepInbox
-    try {
-      if (clearInbox) {
-        // The durable splice carries the stable intent so a later cold read can
-        // tell ordinary teardown from a user cancellation.
-        this.inbox.clear(cause.kind === 'disposed' ? 'disposed' : 'user')
+    // Capture the entry cut, activity, and its pending input before any abort
+    // listener or clear notification can add later work.
+    const entrySeq = this.session.seq
+    const activity = this.phase
+    let captured: PendingInboxSnapshot | undefined
+    let captureError: unknown
+    if (clearInbox) {
+      try {
+        captured = this.inbox.snapshotPending()
+      } catch (error: unknown) {
+        // Pending input cannot be captured safely. Keep the cancellation
+        // guarantee below and report the failure after the abort.
+        captureError = error
       }
-    } finally {
-      // Immediate cancellation is not bookkeeping: a failing clear (for example
-      // a forced append rejection) must not skip the wake/abort below.
-      if (clearInbox && this.phase.kind !== 'idle') this.phase.wakeRequested = false
-      if (this.phase.kind !== 'idle') this.phase.abort.abort(cause)
     }
+    // Drop only the wake this cancellation owns, before any callback can latch
+    // a newer one behind it.
+    if (clearInbox && activity.kind !== 'idle') activity.wakeRequested = false
+    // Stop the captured activity before the durable clear callbacks run, so
+    // input delivered from them is classified as waking the next turn instead
+    // of joining the cancelled one. Only this captured controller is aborted;
+    // an activity a callback starts is never read or stopped here.
+    if (activity.kind !== 'idle') activity.abort.abort(cause)
+    // Remove only the captured occurrences: abort listeners and discard
+    // notifications may already have added input that must stay pending.
+    if (captured !== undefined) {
+      this.inbox.cancelSnapshot(captured, cause.kind === 'disposed' ? 'disposed' : 'user', entrySeq)
+    }
+    if (captureError !== undefined) throw captureError
   }
 
   runMaintenance<T>(job: (signal: AbortSignal) => Promise<T>): Promise<T> {

@@ -406,7 +406,7 @@
       "kind": "event",
       "event": "agent/inbox/spliced",
       "surface": false,
-      "digest": "b7997aec19a8df60f02a8bfdc652c6cfafeaec2d149250e514cb95d644f84bc7",
+      "digest": "c06936bd82f49bc422c5f84ef3d5cabd9cb91c964d2cc0e8d95444f857503beb",
       "schema": {
         "root": 0,
         "nodes": [
@@ -425,12 +425,12 @@
               },
               {
                 "name": "seq",
-                "type": 23,
+                "type": 5,
                 "optional": false
               },
               {
                 "name": "time",
-                "type": 23,
+                "type": 5,
                 "optional": false
               },
               {
@@ -450,8 +450,13 @@
                 "optional": true
               },
               {
-                "name": "inserted",
+                "name": "entrySeq",
                 "type": 5,
+                "optional": true
+              },
+              {
+                "name": "inserted",
+                "type": 6,
                 "optional": false
               },
               {
@@ -461,12 +466,12 @@
               },
               {
                 "name": "removedCount",
-                "type": 23,
+                "type": 5,
                 "optional": true
               },
               {
                 "name": "start",
-                "type": 23,
+                "type": 5,
                 "optional": false
               },
               {
@@ -493,20 +498,24 @@
             "value": "user"
           },
           {
+            "kind": "primitive",
+            "type": "number"
+          },
+          {
             "kind": "array",
-            "element": 6
+            "element": 7
           },
           {
             "kind": "object",
             "properties": [
               {
                 "name": "content",
-                "type": 7,
+                "type": 8,
                 "optional": false
               },
               {
                 "name": "id",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
@@ -536,17 +545,17 @@
           },
           {
             "kind": "array",
-            "element": 8
+            "element": 9
           },
           {
             "kind": "union",
             "types": [
-              9,
-              12,
-              14,
-              17,
-              19,
-              21,
+              10,
+              13,
+              15,
+              18,
+              20,
+              22,
               32
             ]
           },
@@ -555,12 +564,12 @@
             "properties": [
               {
                 "name": "text",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "type",
-                "type": 11,
+                "type": 12,
                 "optional": false
               }
             ],
@@ -579,12 +588,12 @@
             "properties": [
               {
                 "name": "text",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "type",
-                "type": 13,
+                "type": 14,
                 "optional": false
               }
             ],
@@ -599,17 +608,17 @@
             "properties": [
               {
                 "name": "tool",
-                "type": 15,
+                "type": 16,
                 "optional": true
               },
               {
                 "name": "toolName",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "type",
-                "type": 16,
+                "type": 17,
                 "optional": false
               }
             ],
@@ -628,12 +637,12 @@
             "properties": [
               {
                 "name": "toolName",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "type",
-                "type": 18,
+                "type": 19,
                 "optional": false
               }
             ],
@@ -648,22 +657,22 @@
             "properties": [
               {
                 "name": "arguments",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "id",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "name",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "type",
-                "type": 20,
+                "type": 21,
                 "optional": false
               }
             ],
@@ -678,7 +687,7 @@
             "properties": [
               {
                 "name": "attachment",
-                "type": 22,
+                "type": 23,
                 "optional": false
               },
               {
@@ -699,17 +708,17 @@
             "properties": [
               {
                 "name": "attachmentId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "bytes",
-                "type": 23,
+                "type": 5,
                 "optional": false
               },
               {
                 "name": "height",
-                "type": 23,
+                "type": 5,
                 "optional": false
               },
               {
@@ -719,7 +728,7 @@
               },
               {
                 "name": "name",
-                "type": 10,
+                "type": 11,
                 "optional": true
               },
               {
@@ -729,15 +738,11 @@
               },
               {
                 "name": "width",
-                "type": 23,
+                "type": 5,
                 "optional": false
               }
             ],
             "indices": []
-          },
-          {
-            "kind": "primitive",
-            "type": "number"
           },
           {
             "kind": "union",
@@ -769,12 +774,12 @@
             "properties": [
               {
                 "name": "height",
-                "type": 23,
+                "type": 5,
                 "optional": false
               },
               {
                 "name": "width",
-                "type": 23,
+                "type": 5,
                 "optional": false
               }
             ],
@@ -809,17 +814,17 @@
             "properties": [
               {
                 "name": "attachmentId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "bytes",
-                "type": 23,
+                "type": 5,
                 "optional": false
               },
               {
                 "name": "name",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -983,12 +988,12 @@
             "properties": [
               {
                 "name": "name",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "text",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1184,12 +1189,12 @@
               },
               {
                 "name": "senderSessionId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1218,7 +1223,7 @@
               },
               {
                 "name": "senderSessionId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1247,7 +1252,7 @@
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1272,7 +1277,7 @@
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1297,7 +1302,7 @@
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1322,7 +1327,7 @@
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1347,7 +1352,7 @@
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1372,7 +1377,7 @@
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1393,7 +1398,7 @@
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1414,7 +1419,7 @@
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1435,7 +1440,7 @@
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1456,7 +1461,7 @@
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1477,7 +1482,7 @@
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1498,7 +1503,7 @@
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -1519,7 +1524,7 @@
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -2374,7 +2379,7 @@
             "properties": [
               {
                 "name": "goalId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
@@ -2384,12 +2389,12 @@
               },
               {
                 "name": "revision",
-                "type": 23,
+                "type": 5,
                 "optional": false
               },
               {
                 "name": "round",
-                "type": 23,
+                "type": 5,
                 "optional": false
               }
             ],
@@ -2409,22 +2414,22 @@
               },
               {
                 "name": "messageId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "senderId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "senderName",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "teamId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -2444,12 +2449,12 @@
               },
               {
                 "name": "model",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "provider",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
@@ -2707,7 +2712,7 @@
               },
               {
                 "name": "baselineIdentity",
-                "type": 10,
+                "type": 11,
                 "optional": true
               },
               {
@@ -2742,17 +2747,17 @@
               },
               {
                 "name": "digest",
-                "type": 10,
+                "type": 11,
                 "optional": true
               },
               {
                 "name": "path",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "scope",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -2787,7 +2792,7 @@
             "properties": [
               {
                 "name": "callId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
@@ -2816,7 +2821,7 @@
             "properties": [
               {
                 "name": "callId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
@@ -2836,7 +2841,7 @@
             "properties": [
               {
                 "name": "clientTimeZone",
-                "type": 10,
+                "type": 11,
                 "optional": true
               },
               {
@@ -2851,7 +2856,7 @@
               },
               {
                 "name": "rpcId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -2877,7 +2882,7 @@
             "properties": [
               {
                 "name": "compactionId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
@@ -2887,7 +2892,7 @@
               },
               {
                 "name": "sourceCommandId",
-                "type": 10,
+                "type": 11,
                 "optional": true
               }
             ],
@@ -2902,7 +2907,7 @@
             "properties": [
               {
                 "name": "deliveryId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
@@ -2917,22 +2922,22 @@
               },
               {
                 "name": "provider",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "ruleId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "source",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "summary",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -2977,12 +2982,12 @@
             "properties": [
               {
                 "name": "description",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "name",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -3007,7 +3012,7 @@
               },
               {
                 "name": "name",
-                "type": 10,
+                "type": 11,
                 "optional": false
               }
             ],
@@ -3056,7 +3061,7 @@
             "properties": [
               {
                 "name": "capturedFormatVersion",
-                "type": 23,
+                "type": 5,
                 "optional": true
               },
               {
@@ -3071,37 +3076,37 @@
               },
               {
                 "name": "inputIndex",
-                "type": 23,
+                "type": 5,
                 "optional": false
               },
               {
                 "name": "label",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "omittedBytes",
-                "type": 23,
+                "type": 5,
                 "optional": false
               },
               {
                 "name": "omittedMessages",
-                "type": 23,
+                "type": 5,
                 "optional": false
               },
               {
                 "name": "originalMessages",
-                "type": 23,
+                "type": 5,
                 "optional": false
               },
               {
                 "name": "retainedMessages",
-                "type": 23,
+                "type": 5,
                 "optional": false
               },
               {
                 "name": "sessionId",
-                "type": 10,
+                "type": 11,
                 "optional": false
               },
               {
@@ -3115,7 +3120,7 @@
           {
             "kind": "union",
             "types": [
-              23,
+              5,
               196
             ]
           },
@@ -22488,10 +22493,12 @@
     {
       "digest": "0657d3ca5ac4e7bf79b00bcf860b1c7159d01a9da137497221ec2f1776e365f7",
       "names": [
+        "packages/core/session/src/types.ts#SessionLogOffset",
         "packages/core/session/src/types.ts#SessionSeq"
       ],
       "sources": [
-        "packages/core/session/src/types.ts:33"
+        "packages/core/session/src/types.ts:33",
+        "packages/core/session/src/types.ts:48"
       ]
     },
     {
@@ -24738,13 +24745,6 @@
       "sources": []
     },
     {
-      "digest": "9a223a53715201ab2807e96b739cf17baaee65d9f6ee44dc6c8e85ee9012373f",
-      "names": [],
-      "sources": [
-        "packages/core/agent/src/types.ts:96"
-      ]
-    },
-    {
       "digest": "9a2a9029f8d7ede05336980d8342737557f487b913bfd28853d0ab5214600ab5",
       "names": [],
       "sources": [
@@ -25257,6 +25257,13 @@
       "sources": []
     },
     {
+      "digest": "b708f2f38a0af6f4a904cd3cb46cb5d74596f341e7bf721bb99227594c3268f8",
+      "names": [],
+      "sources": [
+        "packages/core/agent/src/types.ts:96"
+      ]
+    },
+    {
       "digest": "b70f3e81fe11b7a5f2504fb47a4502fb8d9c8f0731fdfe8ddcaf9b41f5a6e196",
       "names": [],
       "sources": []
@@ -25268,11 +25275,6 @@
     },
     {
       "digest": "b79641a9d25e756636dc0c706fdf3c4583ccb7d4920e009e6e86c0759cf4de4c",
-      "names": [],
-      "sources": []
-    },
-    {
-      "digest": "b7997aec19a8df60f02a8bfdc652c6cfafeaec2d149250e514cb95d644f84bc7",
       "names": [],
       "sources": []
     },
@@ -25380,6 +25382,11 @@
     },
     {
       "digest": "bf16d2e98a7f13894ded2cffe5ce857bf473954a0e3c0ed9bc7739e2e1c7b78a",
+      "names": [],
+      "sources": []
+    },
+    {
+      "digest": "c06936bd82f49bc422c5f84ef3d5cabd9cb91c964d2cc0e8d95444f857503beb",
       "names": [],
       "sources": []
     },

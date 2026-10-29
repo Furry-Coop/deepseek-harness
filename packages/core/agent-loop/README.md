@@ -72,7 +72,7 @@ Every inbox mutation commits one normalized `agent/inbox/spliced` event. The pro
 
 ### What a step does
 
-Each step sends the session's derived history — with the latest non-empty `system/message` node as the effective prompt, or no system messages when the rendered prompt is empty — and its visible tool schemas; the model's tool calls run through the guarded tool pipeline and every accepted fact is appended to the session log before the next step derives from it. Parallel-safe calls may overlap up to `maxParallelToolCalls`; exclusive calls run alone as ordering barriers. Cancellation is cooperative: `agent.cancel()` aborts the current activity and, unless `keepInbox` is set, clears pending work; a cancelled stream finalizes the text already delivered to the user.
+Each step sends the session's derived history — with the latest non-empty `system/message` node as the effective prompt, or no system messages when the rendered prompt is empty — and its visible tool schemas; the model's tool calls run through the guarded tool pipeline and every accepted fact is appended to the session log before the next step derives from it. Parallel-safe calls may overlap up to `maxParallelToolCalls`; exclusive calls run alone as ordering barriers. Cancellation is cooperative: `agent.cancel()` aborts the activity active at entry and, unless `keepInbox` is set, removes the pending input captured at entry; input delivered by an abort listener or a clear notification stays pending and wakes the next activity, and a cancelled stream finalizes the text already delivered to the user.
 
 -----
 

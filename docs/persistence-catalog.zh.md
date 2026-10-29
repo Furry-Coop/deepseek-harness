@@ -25,7 +25,7 @@
 | `JsonlHeaderLine` | header | `18ee62b8900a4c3d046700f05d7a4d49d6cab2a660a020c87481d1603dd8bd4f` | [`HeaderLine`](#persistence-type-sha256-18ee62b8900a4c3d046700f05d7a4d49d6cab2a660a020c87481d1603dd8bd4f) |
 | `SessionEventEnvelope` | envelope | `5776e5553ff2dfe3f5bc202dbb1e7c9f93e35a531aebb7764c23b2b6153b2ccc` | [`union (3 variants)`](#persistence-type-sha256-5776e5553ff2dfe3f5bc202dbb1e7c9f93e35a531aebb7764c23b2b6153b2ccc) |
 | `event:agent-preset/selected` | event | `a10c17474eaf2ddab7095a099e0fe3d046fc18e56c3e344fc8894c05ff9ef97b` | [`{ type: "agent-preset/selected" }`](#persistence-type-sha256-a10c17474eaf2ddab7095a099e0fe3d046fc18e56c3e344fc8894c05ff9ef97b) |
-| `event:agent/inbox/spliced` | event | `b7997aec19a8df60f02a8bfdc652c6cfafeaec2d149250e514cb95d644f84bc7` | [`{ type: "agent/inbox/spliced" }`](#persistence-type-sha256-b7997aec19a8df60f02a8bfdc652c6cfafeaec2d149250e514cb95d644f84bc7) |
+| `event:agent/inbox/spliced` | event | `c06936bd82f49bc422c5f84ef3d5cabd9cb91c964d2cc0e8d95444f857503beb` | [`{ type: "agent/inbox/spliced" }`](#persistence-type-sha256-c06936bd82f49bc422c5f84ef3d5cabd9cb91c964d2cc0e8d95444f857503beb) |
 | `event:approval/asked` | event | `3bfeb47b58606f4661904bc723da612782214c463d01e6d61cd6d6193d7374e1` | [`{ type: "approval/asked" }`](#persistence-type-sha256-3bfeb47b58606f4661904bc723da612782214c463d01e6d61cd6d6193d7374e1) |
 | `event:approval/decided` | event | `bb1ab3d08f49a9f3b265f844cd78d5c49813062a7b34b54904b426f85d0ff6e3` | [`{ type: "approval/decided" }`](#persistence-type-sha256-bb1ab3d08f49a9f3b265f844cd78d5c49813062a7b34b54904b426f85d0ff6e3) |
 | `event:approval/policy` | event | `26718e15e7e395bce9642dba5bbe09b3b1a4ce2213d20d566cd9207d7fc5fb78` | [`{ type: "approval/policy" }`](#persistence-type-sha256-26718e15e7e395bce9642dba5bbe09b3b1a4ce2213d20d566cd9207d7fc5fb78) |
@@ -185,13 +185,26 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
   inserted: UserMessage[]
   outcome?: 'canceled'
   /**
-   * The stable caller intent behind a cancellation that removed pending input.
-   * {@link Agent.cancel} records `disposed` for ordinary agent teardown and
-   * `user` for every other cause; an inbox mutation without a cancellation
-   * (an explicit removal or replacement) omits it. Consumers use it to tell a
-   * normal disposal's discard apart from work the user cancelled.
+   * The stable caller intent behind a cancellation, recorded even when the
+   * cancellation removed no pending input (an intent-only splice with no
+   * `removedCount`). {@link Agent.cancel} records `disposed` for ordinary
+   * agent teardown and `user` for every other cause; an inbox mutation
+   * without a cancellation (an explicit removal or replacement) omits it.
+   * Consumers use it to tell a normal disposal's discard apart from work the
+   * user cancelled, including a cancel issued after the queue was already
+   * empty.
    */
   cause?: 'user' | 'disposed'
+  /**
+   * Session log length captured at cancellation entry, before the
+   * cancellation ran any abort listener or clear notification. A pending
+   * occurrence inserted at or after this seq is later input that the
+   * cancellation did not target, even when the cancellation's own splice is
+   * logged after it. Consumers take this cut instead of the splice's seq;
+   * an older cancellation therefore cannot claim a later turn's claim or
+   * first build. Absent on a mutation that is not a lifecycle cancellation.
+   */
+  entrySeq?: import('@deepseek-ai/dsh-session/types').SessionLogOffset
 }
 ```
 
@@ -5473,7 +5486,11 @@ SHA-256: `938f7c7357bc403ea3b281a9dd016939df7a0880fc8db12612585be574d0d615`
 
 <a id="persistence-type-sha256-0657d3ca5ac4e7bf79b00bcf860b1c7159d01a9da137497221ec2f1776e365f7"></a>
 
+<a id="persistence-type-packagescoresessionsrctypestssessionlogoffset"></a>
+
 <a id="persistence-type-packagescoresessionsrctypestssessionseq"></a>
+
+<a id="persistence-type-sessionlogoffset"></a>
 
 <a id="persistence-type-sessionseq"></a>
 
@@ -5481,7 +5498,7 @@ SHA-256: `938f7c7357bc403ea3b281a9dd016939df7a0880fc8db12612585be574d0d615`
 
 SHA-256: `0657d3ca5ac4e7bf79b00bcf860b1c7159d01a9da137497221ec2f1776e365f7`
 
-来源：[`packages/core/session/src/types.ts:33`](../packages/core/session/src/types.ts)
+来源：[`packages/core/session/src/types.ts:33`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:48`](../packages/core/session/src/types.ts)
 
 `number`
 
@@ -5910,17 +5927,18 @@ SHA-256: `df843efd87c78cf8de98f8e0d0216956cd568d0d0e56a22c853663e274aa1a18`
 
 [`{ capturedFormatVersion?, capturedThroughSeq, compacted, inputIndex, … }`](#persistence-type-sha256-4f91f187baeabef5c7950c4780d31bbe39f3345dff591a6cf26ac7e135ac1cf4) 的数组。
 
-<a id="persistence-type-sha256-9a223a53715201ab2807e96b739cf17baaee65d9f6ee44dc6c8e85ee9012373f"></a>
+<a id="persistence-type-sha256-b708f2f38a0af6f4a904cd3cb46cb5d74596f341e7bf721bb99227594c3268f8"></a>
 
-### `{ cause?, inserted, outcome?, removedCount?, … }`
+### `{ cause?, entrySeq?, inserted, outcome?, … }`
 
-SHA-256: `9a223a53715201ab2807e96b739cf17baaee65d9f6ee44dc6c8e85ee9012373f`
+SHA-256: `b708f2f38a0af6f4a904cd3cb46cb5d74596f341e7bf721bb99227594c3268f8`
 
 来源：[`packages/core/agent/src/types.ts:96`](../packages/core/agent/src/types.ts)
 
 | 属性 | 存在性 | 类型 |
 |---|---|---|
 | `cause` | 可选 | [`union (2 variants)`](#persistence-type-sha256-21998f6589ca9311383fd5fa7ba7a520eed29c1246db65e95443f4cc556d9300) |
+| `entrySeq` | 可选 | `number` |
 | `inserted` | 必需 | [`UserMessage[]`](#persistence-type-sha256-454a0fa879e38076bdcdbd87ef561cd67d7e43e58a287cf7dbaa7b6cf7847020) |
 | `outcome` | 可选 | `"canceled"` |
 | `removedCount` | 可选 | `number` |
@@ -7965,17 +7983,17 @@ SHA-256: `a10c17474eaf2ddab7095a099e0fe3d046fc18e56c3e344fc8894c05ff9ef97b`
 | `time` | 必需 | `number` |
 | `type` | 必需 | `"agent-preset/selected"` |
 
-<a id="persistence-type-sha256-b7997aec19a8df60f02a8bfdc652c6cfafeaec2d149250e514cb95d644f84bc7"></a>
+<a id="persistence-type-sha256-c06936bd82f49bc422c5f84ef3d5cabd9cb91c964d2cc0e8d95444f857503beb"></a>
 
 <a id="persistence-type-eventagentinboxspliced"></a>
 
 ### `{ type: "agent/inbox/spliced" }`
 
-SHA-256: `b7997aec19a8df60f02a8bfdc652c6cfafeaec2d149250e514cb95d644f84bc7`
+SHA-256: `c06936bd82f49bc422c5f84ef3d5cabd9cb91c964d2cc0e8d95444f857503beb`
 
 | 属性 | 存在性 | 类型 |
 |---|---|---|
-| `data` | 必需 | [`{ cause?, inserted, outcome?, removedCount?, … }`](#persistence-type-sha256-9a223a53715201ab2807e96b739cf17baaee65d9f6ee44dc6c8e85ee9012373f) |
+| `data` | 必需 | [`{ cause?, entrySeq?, inserted, outcome?, … }`](#persistence-type-sha256-b708f2f38a0af6f4a904cd3cb46cb5d74596f341e7bf721bb99227594c3268f8) |
 | `ignorable` | 可选 | `true` |
 | `seq` | 必需 | `number` |
 | `time` | 必需 | `number` |

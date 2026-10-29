@@ -268,8 +268,8 @@ describe('ReactLoopInbox', () => {
     expect(session.snapshotEvents().slice(beforeClear).map(event => event.type === 'agent/inbox/spliced'
       ? event.data
       : event.type)).toEqual([
-      { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled', cause: 'user' },
-      { target: 'next-turn', start: 0, removedCount: 1, inserted: [], outcome: 'canceled', cause: 'user' },
+      { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled', cause: 'user', entrySeq: beforeClear },
+      { target: 'next-turn', start: 0, removedCount: 1, inserted: [], outcome: 'canceled', cause: 'user', entrySeq: beforeClear },
     ])
 
     agent.inbox.append('next-step', createUserMessage({ content: [{ type: 'text', text: 'dispose' }], source: { kind: 'user' } }))
@@ -278,7 +278,7 @@ describe('ReactLoopInbox', () => {
     expect(session.snapshotEvents().slice(beforeDisposal).map(event => event.type === 'agent/inbox/spliced'
       ? event.data
       : event.type)).toEqual([
-      { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled', cause: 'disposed' },
+      { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled', cause: 'disposed', entrySeq: beforeDisposal },
     ])
 
     agent.inbox.clear()
@@ -286,7 +286,7 @@ describe('ReactLoopInbox', () => {
       ? event.data
       : event.type)).toEqual([
       // 空队列的用户取消仍留下持久意图：恢复不能把“队列里没有”当成没取消。
-      { target: 'next-step', start: 0, inserted: [], outcome: 'canceled', cause: 'user' },
+      { target: 'next-step', start: 0, inserted: [], outcome: 'canceled', cause: 'user', entrySeq: beforeDisposal + 1 },
     ])
 
     const beforeEmptyDisposal = session.snapshotEvents().length
