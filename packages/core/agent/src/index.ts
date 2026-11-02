@@ -18,6 +18,7 @@ import type { AgentOptions, SessionStartSource } from './runtime-types.ts'
 
 export * from './runtime-types.ts'
 export * from './types.ts'
+export * from './idle-history.ts'
 export type * from './projection.ts'
 export * from './consumed-work.ts'
 export * from './model-selection.ts'

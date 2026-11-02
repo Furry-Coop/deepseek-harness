@@ -353,8 +353,10 @@ describe('token pressure after loop-admitted system prompts', () => {
       expect(prompts[0]?.surfaceOp).toBe('append')
       expect(prompts.slice(1).every(event => typeof event.surfaceOp === 'object')).toBe(true)
       for (const event of prompts) {
+        // Every prompt here is turn-committed, so it names the step it joined.
+        const commit = 'turn' in event.data && 'step' in event.data ? event.data : { turn: -1, step: -1 }
         expect(events.find(start => start.type === 'step/start'
-          && start.data.turn === event.data.turn && start.data.step === event.data.step)?.seq)
+          && start.data.turn === commit.turn && start.data.step === commit.step)?.seq)
           .toBeLessThan(event.seq)
       }
       expect(requests).toHaveLength(retry ? 5 : 4)

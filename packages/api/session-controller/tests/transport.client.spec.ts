@@ -245,8 +245,8 @@ describe('Session Client stream adapters', () => {
   it('preserves current envelopes and payloads without normalization across every journal path', async () => {
     const events: SessionWireEvent[] = [
       surfaceEvent(),
-      surfaceEvent('system/message'),
-      { ...surfaceEvent('system/message'), surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 }, sourceEventSeqs: [2], data: { message: { source: { plugin: 'system', extra: true }, content: [] }, extra: { retained: true } } },
+      { ...surfaceEvent('system/message'), data: { turn: 1, step: 1 } },
+      { ...surfaceEvent('system/message'), surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 }, sourceEventSeqs: [2], data: { turn: 1, step: 1, message: { source: { plugin: 'system', extra: true }, content: [] }, extra: { retained: true } } },
       { ...surfaceEvent(), sourceEventSeqs: [0, 2] },
       { ...surfaceEvent(), surfaceOp: { op: 'replace', startSeq: 2, endSeq: 0 }, sourceEventSeqs: [2, 0] },
       { ...surfaceEvent('assistant/message'), data: { turn: 1, step: 1, message: {}, stream: [] } },

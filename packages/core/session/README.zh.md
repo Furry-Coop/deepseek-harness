@@ -116,7 +116,7 @@ session.deriveMessages()         // the derived model history
 
 ### 追加校验
 
-每次追加都会使用共享的迭代式 `snapshotJsonValue()` 流程，对每个嵌套值只读取、校验并复制一次，因此有状态的 getter 无法给校验提供一个值、给存储提供另一个值。非无损 JSON 载荷（BigInt、循环、稀疏数组、`-0`、特殊原型）会在追加位置被拒绝，先于任何后端刷新。追加路径会构造每个 `SessionSeq`；surface 事件还会校验标记形态、被引用的源事件序号，以及替换的完整遮蔽节点覆盖。
+每次追加都会使用共享的迭代式 `snapshotJsonValue()` 流程，对每个嵌套值只读取、校验并复制一次，因此有状态的 getter 无法给校验提供一个值、给存储提供另一个值。非无损 JSON 载荷（BigInt、循环、稀疏数组、`-0`、特殊原型）会在追加位置被拒绝，先于任何后端刷新。追加路径会构造每个 `SessionSeq`；surface 事件还会校验标记形态、被引用的源事件序号，以及替换的完整遮蔽节点覆盖。`system/message` 载荷必须显式声明且只声明一种提交表示：按 turn 提交的提示词使用正的 `turn` 与 `step`；idle 历史维护头则使用 `maintenance: true` 且不带坐标，它只能把空 surface 建立为第 0 号节点。
 
 ### 共享恢复逻辑
 
@@ -125,6 +125,8 @@ session.deriveMessages()         // the derived model history
 ### 派生历史
 
 `deriveMessages()` 缓存深度冻结的派生消息，每次调用返回新数组。surface 事件类型（`system/message`、`developer/message`、`user/message`、`assistant/message`、`tool/result`）提供记录的消息身份和内容，空内容的 system 和 developer 节点不派生消息。插件拥有的投影修改派生内容，不修改记录的消息。替换和投影决策使缓存失效。嵌入式 Assistant stream 与 `assistant/attempt` 事件只保留回放和诊断数据。普通提示与注入上下文在派生时不会按类型或来源自动添加包装。生产方负责记录内容中的所有框定格式。
+
+有两个 surface 查询回答投影无法回答的问题。`systemHeadSeq()` 给出 surface 第 0 号节点上的受保护系统头——即进入空 surface 的 `system/message`，即使内容为空——当 surface 为空或以其他消息类型开头时返回 `null`。`surfaceMessage(id)` 返回某个消息身份在 surface 上承载的已提交消息及其 surface 序号，内容与记录完全一致且不应用消息投影，因此消费方比较的是持久证据而不是派生视图。
 
 ### 请求头
 

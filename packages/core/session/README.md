@@ -116,7 +116,7 @@ The package is built on event sourcing: a `Session` is an append-only log of typ
 
 ### Append validation
 
-Every append uses the shared iterative `snapshotJsonValue()` pass, which reads, validates, and copies each nested value once, so a stateful getter cannot supply one value to validation and another to storage. Non-lossless-JSON payloads (BigInt, cycles, sparse arrays, `-0`, exotic prototypes) are rejected at the append site, before any backend flush. The append path constructs each `SessionSeq`; surface events additionally validate marker shape, cited source-event sequences, and complete shadowed-node coverage for replacements.
+Every append uses the shared iterative `snapshotJsonValue()` pass, which reads, validates, and copies each nested value once, so a stateful getter cannot supply one value to validation and another to storage. Non-lossless-JSON payloads (BigInt, cycles, sparse arrays, `-0`, exotic prototypes) are rejected at the append site, before any backend flush. The append path constructs each `SessionSeq`; surface events additionally validate marker shape, cited source-event sequences, and complete shadowed-node coverage for replacements. A `system/message` payload declares exactly one commit alternative: positive `turn` and `step` for a turn-committed prompt, or `maintenance: true` with neither coordinate for an idle-history maintenance head, which may only establish an empty surface as node 0.
 
 ### Shared recovery
 
@@ -125,6 +125,8 @@ Every append uses the shared iterative `snapshotJsonValue()` pass, which reads, 
 ### Derived history
 
 `deriveMessages()` caches deep-frozen projections and returns a fresh array per call. The surface event types (`system/message`, `developer/message`, `user/message`, `assistant/message`, `tool/result`) supply their recorded message identities and content; empty-content system and developer nodes project to no message. Plugin-owned projections change derived content without mutating recorded messages. Replacements and projection decisions invalidate the cache. Embedded Assistant streams and `assistant/attempt` events remain replay and diagnostic data only. Ordinary prompts and injected context project without automatic type- or source-specific wrappers. Producers own any framing in their recorded content.
+
+Two surface queries answer what a projection cannot. `systemHeadSeq()` names the protected system head at surface node 0 — a `system/message` that entered an empty surface, even with empty content — or `null` when the surface is empty or starts with another message type. `surfaceMessage(id)` returns the committed message carried under one identity together with its surface sequence, exactly as recorded and without message projections, so a consumer can compare durable evidence instead of a derived view.
 
 ### The request header
 

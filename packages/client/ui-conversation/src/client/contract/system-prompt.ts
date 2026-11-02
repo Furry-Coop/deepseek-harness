@@ -59,8 +59,9 @@ export function inspectSystemPrompt(previous: SystemPromptState | undefined, eve
     ? {
       seq: event.seq,
       time: event.time,
-      turn: event.data.turn,
-      step: event.data.step,
+      // A maintenance head records the prompt outside any turn, so it carries no
+      // coordinates and belongs to no step of the request timeline.
+      ...'maintenance' in event.data ? {} : { turn: event.data.turn, step: event.data.step },
       text: event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join(''),
       update: op === 'append' && previous?.nodes.some(item => item.node.text !== '') === true,
     }
@@ -76,8 +77,8 @@ export function inspectSystemPrompt(previous: SystemPromptState | undefined, eve
       : {
         seq: event.seq,
         time: event.time,
-        turn: surviving?.turn ?? 0,
-        step: surviving?.step ?? 0,
+        ...surviving?.turn === undefined ? {} : { turn: surviving.turn },
+        ...surviving?.step === undefined ? {} : { step: surviving.step },
         text: surviving?.text ?? '',
         update: false,
       }

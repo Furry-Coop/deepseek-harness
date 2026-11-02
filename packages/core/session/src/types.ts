@@ -327,8 +327,18 @@ export interface SessionEventMap {
    * Empty later nodes are dormant and project to no message; an empty head with
    * no active later node records "no system prompt". Restored nonempty text follows
    * the same route and series rule; empty nodes never restore older text.
+   *
+   * The `maintenance` alternative records the same rendered prompt outside any
+   * turn: an idle-history maintenance assembles and renders the prompt only when
+   * the surface is empty, then establishes it as surface node 0. That head is
+   * reconciled by a later turn's ordinary head replacement, so it never
+   * duplicates the prompt. The two alternatives are exclusive: a turn-committed
+   * event carries its `turn`/`step` and no marker, and a maintenance head carries
+   * `maintenance: true` and no `turn`/`step`.
    */
-  'system/message': { turn: number; step: number; message: SystemMessage }
+  'system/message':
+    | { turn: number; step: number; message: SystemMessage }
+    | { maintenance: true; message: SystemMessage }
   /**
    * Assembled assistant message for one step (derived history uses this).
    * Carries the step's `usage` when the adapter reported token accounting, so

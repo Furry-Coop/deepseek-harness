@@ -48,11 +48,11 @@
   en: 7c2a1375c98e9b9f
   zh: 39a57a82df56a2d4
 /deepseek-ai-dsh-session-format-v3-to-v4/native-v4-admission/header-messages-and-surface-metadata:
-  en: 610f35b8c44538a2
-  zh: 17e5c07f09783106
+  en: 5356bbe2bce34abb
+  zh: 08a296819fcaf173
 /deepseek-ai-dsh-session-format-v3-to-v4/native-v4-admission/lifecycle-and-reference-relationships:
-  en: bae15764867cf91c
-  zh: 09a56ed1a8c9622a
+  en: 00d0c10619c28d72
+  zh: 784618ba058b5feb
 /deepseek-ai-dsh-session-format-v3-to-v4/native-v4-admission/developer-changes-and-deferred-schemas:
   en: 471f0e087806057a
   zh: 76b2ee1f58118d71
@@ -84,8 +84,8 @@
   en: 143ddba012e03d0c
   zh: 93dfdb806bf9a697
 /deepseek-ai-dsh-session-format-v3-to-v4/known-limitations-and-deferred-work:
-  en: c5a232c1f0b8a5a5
-  zh: 5634f98f97060c7c
+  en: dbe92e1e7e2af2cb
+  zh: a3ffd5987de37f52
 /deepseek-ai-dsh-session-format-v3-to-v4/known-limitations-and-deferred-work/dev-note:
   en: e67f633dc6fe7773
   zh: 8ec3e73528ddb1a6

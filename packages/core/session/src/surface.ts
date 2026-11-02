@@ -157,17 +157,45 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Reject noncanonical request-header fields, developer roles/content, and contradictory tool failure metadata.
+ * Validate which commit alternative a `system/message` payload declares. A
+ * turn-committed prompt names its positive turn and step; an idle-history
+ * maintenance head names neither and carries `maintenance: true` instead.
+ * @param data - the event payload.
+ * @param subject - event location to include in validation errors.
+ */
+function assertSystemMessageCommit(data: Record<string, unknown>, subject: string): void {
+  const maintenance = data['maintenance']
+  if (maintenance !== undefined && maintenance !== true) {
+    throw new Error(`${subject} system message maintenance marker must be true when present`)
+  }
+  const namesPosition = Object.hasOwn(data, 'turn') || Object.hasOwn(data, 'step')
+  if (maintenance === true) {
+    if (namesPosition) throw new Error(`${subject} maintenance system message must omit turn and step`)
+    return
+  }
+  for (const field of ['turn', 'step']) {
+    const value = data[field]
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0 || Object.is(value, -0)) {
+      throw new Error(`${subject} system message ${field} must be a positive safe integer`)
+    }
+  }
+}
+
+/**
+ * Reject noncanonical request-header fields, developer roles/content,
+ * contradictory tool failure metadata, and a `system/message` payload that
+ * mixes its commit alternatives.
  * This does not validate complete event payloads or embedded provider streams.
  * @param event - event whose locally related payload fields are inspected.
  * @param subject - event location to include in validation errors.
- * @throws when request-header fields, developer roles/content, or tool failure metadata are invalid.
+ * @throws when request-header fields, developer roles/content, tool failure metadata, or the system-message commit alternative are invalid.
  */
 export function validateSessionEventData(
   event: Pick<SessionEvent, 'type' | 'data'>,
   subject: string,
 ): void {
   const data: unknown = event.data
+  if (event.type === 'system/message' && isRecord(data)) assertSystemMessageCommit(data, subject)
   if (SURFACE_EVENT_TYPES.has(event.type) && isRecord(data)) {
     const message = event.type === 'user/message' ? data : data['message']
     if (isRecord(message)) {
@@ -506,6 +534,11 @@ function assertSystemHeadRewrite(
   }
 }
 
+/** Whether one candidate event is a maintenance system head rather than a turn-committed prompt. */
+function isMaintenanceHead(event: SessionEvent): boolean {
+  return event.type === 'system/message' && 'maintenance' in event.data
+}
+
 /** Validate one event at its replay boundary and prepare its atomic fold transition. */
 function planSurfaceEvent(
   state: SurfaceFoldState,
@@ -517,6 +550,9 @@ function planSurfaceEvent(
 ): SurfacePlan | undefined {
   if (event.seq !== expectedSeq) {
     throw new Error(`session event seq ${event.seq} is not contiguous; expected ${expectedSeq}`)
+  }
+  if (isMaintenanceHead(event) && state.nodes.length > 0) {
+    throw new Error('maintenance system/message must establish the empty surface head, not extend an existing surface')
   }
   const surfaceOp = validateSurfaceMetadata(event)
   assertDeveloperHeader(event, events, baseSeq)

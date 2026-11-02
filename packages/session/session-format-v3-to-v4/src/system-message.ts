@@ -32,13 +32,27 @@ function image(value: unknown): void {
 
 /**
  * Validate system fields independently of historical message representations; preserve additional JSON fields.
+ *
+ * A turn-committed prompt names its positive `turn` and `step`. An idle-history
+ * maintenance head instead carries `maintenance: true` and neither coordinate,
+ * and is admitted here before physical recovery could discard its row.
  * @param row - complete logical event or parsed physical row before corruption recovery.
  */
 export function assertV4SystemMessageFields(row: unknown): void {
   if (!isSessionFormatJsonObject(row) || row['type'] !== 'system/message') return
   const data = record(row['data'], 'system/message data')
-  positive(data['turn'], 'system/message turn')
-  positive(data['step'], 'system/message step')
+  const maintenance = data['maintenance']
+  if (maintenance !== undefined && maintenance !== true) {
+    throw new SessionFormatError('format v4 system/message maintenance marker must be true when present')
+  }
+  if (maintenance === true) {
+    if (Object.hasOwn(data, 'turn') || Object.hasOwn(data, 'step')) {
+      throw new SessionFormatError('format v4 maintenance system/message must omit turn and step')
+    }
+  } else {
+    positive(data['turn'], 'system/message turn')
+    positive(data['step'], 'system/message step')
+  }
   const message = record(data['message'], 'system message')
   string(message['id'], 'system message id', true)
   if (message['role'] !== 'system') throw new SessionFormatError('format v4 system message requires system role')

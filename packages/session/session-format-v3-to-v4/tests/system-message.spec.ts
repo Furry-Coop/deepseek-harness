@@ -57,3 +57,29 @@ describe('native system-message fields', () => {
     }
   })
 })
+
+describe('native maintenance system head fields', () => {
+  const head = (data: unknown): SessionFormatEvent => ({ type: 'system/message', seq: 0, time: 1, surfaceOp: 'append', data }) as SessionFormatEvent
+  const data = { maintenance: true, message: message([{ type: 'text', text: 'rendered' }]) }
+
+  it('admits a maintenance head that carries no turn or step', () => {
+    const read = sessionFormatCatalog.createRestore(header, { recovery: 'strict', validation: 'current' })
+    read.decodeRow(JSON.parse(JSON.stringify(sessionFormatCatalog.encodeCurrentEvent(head(data)))))
+    expect(read.finish().events[0]?.data).toEqual(data)
+  })
+
+  it('rejects a maintenance marker that is not true and coordinates beside it', () => {
+    const invalid = [
+      { ...data, maintenance: false }, { ...data, maintenance: 'yes' },
+      { ...data, turn: 1 }, { ...data, step: 1 },
+    ]
+    for (const candidate of invalid) {
+      expect(() => sessionFormatCatalog.encodeCurrentEvent(head(candidate))).toThrow()
+      // A stored row is refused by the scanner before recovery can discard it.
+      const read = releasedV4SessionFormatCodec.createDecoder(header, 'recoverable')
+      const output = new SessionFormatEventCollector()
+      read.decodeRow(null, output)
+      expect(() => { read.decodeRow(head(candidate), output) }).toThrow()
+    }
+  })
+})

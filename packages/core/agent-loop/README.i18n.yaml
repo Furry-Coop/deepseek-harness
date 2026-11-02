@@ -24,7 +24,7 @@
   en: 82ec792637e8e57f
   zh: e32f8ec5ee17afcf
 /deepseek-ai-dsh-agent-loop/use-this-package/what-a-step-does:
-  en: 15ce4783b53532a2
+  en: cb7298784492d696
   zh: b04a18337281237a
 /deepseek-ai-dsh-agent-loop/understand-the-implementation:
   en: ce7e776e9d516bdb
@@ -47,6 +47,9 @@
 /deepseek-ai-dsh-agent-loop/understand-the-implementation/turn-and-step-flow:
   en: 28939261ccc7defe
   zh: 9d157a321307ebd4
+/deepseek-ai-dsh-agent-loop/understand-the-implementation/idle-history-maintenance:
+  en: 72f34cdb91c8808d
+  zh: 03afc1db7239abc4
 /deepseek-ai-dsh-agent-loop/understand-the-implementation/failure-and-cancellation:
   en: eea56903c4ff82f5
   zh: c0d5abb5767780ed

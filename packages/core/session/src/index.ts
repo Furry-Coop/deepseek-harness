@@ -12,7 +12,7 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import { assertNever, deepFreeze, snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
 import { scopeOf, scopeTarget } from '@deepseek-ai/dsh-scope'
 import type { Scoped } from '@deepseek-ai/dsh-scope'
-import type { Message } from '@deepseek-ai/dsh-llm'
+import type { Message, MessageId } from '@deepseek-ai/dsh-llm'
 import { SESSION_FORMAT_VERSION, SessionLogOffset, SessionSeq } from './types.ts'
 import type { TypertLookup } from '@deepseek-ai/dsh-typert-protocol'
 import type { CreateSessionOptions, EpochHeader, PluginRecord, PluginRecordMap, PluginRecordType, PrepareSessionOptions, RequestContext, SessionEvent, SessionEventMap, SessionEventType, SessionHeader, SessionId, SessionSeedEventState, SurfaceIntent, SurfaceEventType } from './types.ts'
@@ -386,6 +386,25 @@ function hasProviderModel(value: unknown): boolean {
   const pair = value as Record<string, unknown>
   return typeof pair['provider'] === 'string' && pair['provider'].length > 0
     && typeof pair['model'] === 'string' && pair['model'].length > 0
+}
+
+/**
+ * The message one committed surface event carries.
+ * @param event - committed surface event.
+ * @returns the recorded message, or undefined for a log-only event and for an absent entry.
+ */
+function surfaceEventMessage(event: SessionEvent | undefined): Message | undefined {
+  switch (event?.type) {
+    case 'user/message': return event.data
+    case 'system/message':
+    case 'developer/message':
+    case 'assistant/message':
+    case 'tool/result':
+      return event.data.message
+    default:
+      // Boundary and log-only events carry no message.
+      return undefined
+  }
 }
 
 type SessionCallback = (...args: unknown[]) => unknown
@@ -1022,6 +1041,37 @@ export class Session {
     for (const event of this.log.slice(this.toolHistorySeq)) this.toolHistoryProjection.apply(event)
     this.toolHistorySeq = this.log.length
     return this.toolHistoryProjection.snapshot()
+  }
+
+  /**
+   * Return the sequence of the protected system head at surface node 0.
+   *
+   * A `system/message` that entered an empty surface is that head, even when its
+   * rendering is empty: an empty head still reserves "no system prompt" at the
+   * position later replacements must preserve. Another message type at node 0
+   * means the surface has no protected head.
+   * @returns the head event's sequence, or null when the surface is empty or starts with another message type.
+   */
+  systemHeadSeq(): SessionSeq | null {
+    const head = this.surfaceManager.nodes[0]
+    if (head === undefined) return null
+    // Surface nodes are current log seqs, so the event exists.
+    return this.log[head]?.type === 'system/message' ? head : null
+  }
+
+  /**
+   * Return the committed surface message carried under one identity, exactly as
+   * recorded: message projections are not applied, so the result is the durable
+   * evidence rather than a projected view.
+   * @param id - the message identity to find on the current surface.
+   * @returns the carrying event's sequence and its recorded message, or undefined when no surface event carries that identity.
+   */
+  surfaceMessage(id: MessageId): { readonly seq: SessionSeq; readonly message: Message } | undefined {
+    for (const seq of this.surfaceManager.nodes) {
+      const message = surfaceEventMessage(this.log[seq])
+      if (message?.id === id) return { seq, message }
+    }
+    return undefined
   }
 
   /** The derived-message cache: frozen projections, extended per unseen node. */

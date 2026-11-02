@@ -79,4 +79,18 @@ describe('loaded system surface interpretation', () => {
     expect(inspectSystemPrompt(undefined, multiBlock).effective?.text).toBe('AB')
     expect(inspectSystemPrompt(undefined, system(2, '')).effective).toBeUndefined()
   })
+
+  it('presents a maintenance head outside any turn without coordinates', () => {
+    const maintenance = {
+      seq: 1, time: 1, type: 'system/message', surfaceOp: 'append',
+      data: { maintenance: true, message: { role: 'system', content: [{ type: 'text', text: 'idle prompt' }] } },
+    } as unknown as SessionEvent
+    const state = fold([maintenance])
+    expect(state?.effective).toMatchObject({ text: 'idle prompt', seq: 1, update: false })
+    expect(state?.effective?.turn).toBeUndefined()
+    expect(state?.effective?.step).toBeUndefined()
+    // A later turn-committed replacement still owns the prompt card.
+    expect(inspectSystemPrompt(state, system(3, 'turn prompt', 1)).effective)
+      .toMatchObject({ text: 'turn prompt', turn: 1, step: 3 })
+  })
 })

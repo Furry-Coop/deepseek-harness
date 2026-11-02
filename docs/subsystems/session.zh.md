@@ -72,8 +72,18 @@ interface SessionEventMap {
    * Empty later nodes are dormant and project to no message; an empty head with
    * no active later node records "no system prompt". Restored nonempty text follows
    * the same route and series rule; empty nodes never restore older text.
+   *
+   * The `maintenance` alternative records the same rendered prompt outside any
+   * turn: an idle-history maintenance assembles and renders the prompt only when
+   * the surface is empty, then establishes it as surface node 0. That head is
+   * reconciled by a later turn's ordinary head replacement, so it never
+   * duplicates the prompt. The two alternatives are exclusive: a turn-committed
+   * event carries its `turn`/`step` and no marker, and a maintenance head carries
+   * `maintenance: true` and no `turn`/`step`.
    */
-  'system/message': { turn: number; step: number; message: SystemMessage }
+  'system/message':
+    | { turn: number; step: number; message: SystemMessage }
+    | { maintenance: true; message: SystemMessage }
   /**
    * Assembled assistant message for one step (derived history uses this).
    * Carries the step's `usage` when the adapter reported token accounting, so
@@ -297,7 +307,7 @@ type SessionEvent<T extends SessionEventType = SessionEventType> = {
 
 ## Surface 类型
 
-产生消息的类型（`SurfaceEventType`：`system/message`、`developer/message`、`user/message`、`assistant/message`、`tool/result`）携带 surface 元数据，用来声明它们如何加入有序的派生 surface。`system/message` 承载渲染后的系统提示词：循环把第一条追加为 surface 第 0 号节点，并在提示词变化时恰好替换最新的系统节点，或在历史内路由上追加一条新的；surface 折叠拒绝任何其他覆盖第 0 号节点 `system/message` 的替换，而后续系统节点是普通历史，压缩替换可以遮蔽它。见 [session surface Agent Note](../../.agents/notes/implemented/architecture/2026-06-18-session-surface.zh.md)。
+产生消息的类型（`SurfaceEventType`：`system/message`、`developer/message`、`user/message`、`assistant/message`、`tool/result`）携带 surface 元数据，用来声明它们如何加入有序的派生 surface。`system/message` 承载渲染后的系统提示词：循环把第一条追加为 surface 第 0 号节点，并在提示词变化时恰好替换最新的系统节点，或在历史内路由上追加一条新的；surface 折叠拒绝任何其他覆盖第 0 号节点 `system/message` 的替换，而后续系统节点是普通历史，压缩替换可以遮蔽它。`maintenance: true` 载荷在任意 turn 之外建立同一个头，供 idle 历史维护使用：它是唯一允许在没有 turn 与 step 时向空 surface 追加系统节点的写入方，下一轮按普通的头替换把它协调为当前提示词。见 [session surface Agent Note](../../.agents/notes/implemented/architecture/2026-06-18-session-surface.zh.md)。
 
 ### `SurfaceEventType`：事件类型中产生消息的子集
 
@@ -574,6 +584,30 @@ declare class Session {
   /** The next event's sequence number — always the log length (the `seq = log.length` contiguity contract). */
   get seq(): SessionLogOffset;
   /**
+   * Run one narrow control write synchronously after the publication currently
+   * in progress finishes, before store detach.
+   *
+   * A `session/event` observer cannot append reentrantly: the log rejects it to
+   * keep publication atomic. A consumer that must record one control fact for
+   * the event being published queues that append here. Tasks run in one
+   * synchronous drain after the outermost publication commits, in queue order;
+   * a deferred detach waits for that drain. A task queued while the drain runs
+   * joins its tail instead of running nested.
+   *
+   * This queue is not a scheduler and not an ordering fence. Appends made after
+   * the outermost publication returns follow every queued task, but an append
+   * made by another callback while that publication stack is still running can
+   * be logged before a task queued during it, including an append the queuing
+   * task makes after it queues the fact. A caller that needs its fact ahead of
+   * its own following input must let the publication return first. The callback
+   * performs one synchronous control write and contains its own expected append
+   * failures: a queued task's throw is contained and logged, while a task run
+   * immediately because no publication is in progress propagates its throw to
+   * the caller.
+   * @param task - the single control write to run after the publication.
+   */
+  afterPublication(task: () => void): void;
+  /**
    * Append one typed event to the log and synchronously notify observers via
    * the store-owned, module-private publication hooks. The hot path never blocks
    * on I/O — persistence plugins buffer asynchronously. Once the event enters
@@ -636,6 +670,24 @@ declare class Session {
    * @returns an immutable snapshot for LLM request projection, including historical addition definitions.
    */
   toolHistory(): ToolHistory;
+  /**
+   * Return the sequence of the protected system head at surface node 0.
+   *
+   * A `system/message` that entered an empty surface is that head, even when its
+   * rendering is empty: an empty head still reserves "no system prompt" at the
+   * position later replacements must preserve. Another message type at node 0
+   * means the surface has no protected head.
+   * @returns the head event's sequence, or null when the surface is empty or starts with another message type.
+   */
+  systemHeadSeq(): SessionSeq | null;
+  /**
+   * Return the committed surface message carried under one identity, exactly as
+   * recorded: message projections are not applied, so the result is the durable
+   * evidence rather than a projected view.
+   * @param id - the message identity to find on the current surface.
+   * @returns the carrying event's sequence and its recorded message, or undefined when no surface event carries that identity.
+   */
+  surfaceMessage(id: MessageId): { readonly seq: SessionSeq; readonly message: Message } | undefined;
   /**
    * Derive the LLM message history by walking the ordered sequences of
    * message-producing events maintained by `surfaceOp` markers. The

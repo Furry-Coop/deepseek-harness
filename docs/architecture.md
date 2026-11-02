@@ -111,6 +111,8 @@ One inbox feeds the driver; injected context waits for a waking message. AgentLo
 
 The loop sends immutable requests with live cancellation and reuses freeze evidence for frozen identities; [agent-loop](../packages/core/agent-loop/README.md) owns construction and cancellation causes.
 
+A truly idle agent records plugin-owned formal history without a turn through `Agent.maintainIdleHistory()`, which establishes the protected system head only when the surface has none ([agent-loop](../packages/core/agent-loop/README.md)).
+
 Failed steps [record missing tool results](../packages/core/agent-loop/README.md#understand-the-implementation).
 
 Details: the [sequence diagram](agent-lifecycle.md), the [tool pipeline](tool-execution-pipeline.md), and [cancellation and error recovery](subsystems/core.md#the-agent-handle).

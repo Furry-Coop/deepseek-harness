@@ -72,8 +72,18 @@ interface SessionEventMap {
    * Empty later nodes are dormant and project to no message; an empty head with
    * no active later node records "no system prompt". Restored nonempty text follows
    * the same route and series rule; empty nodes never restore older text.
+   *
+   * The `maintenance` alternative records the same rendered prompt outside any
+   * turn: an idle-history maintenance assembles and renders the prompt only when
+   * the surface is empty, then establishes it as surface node 0. That head is
+   * reconciled by a later turn's ordinary head replacement, so it never
+   * duplicates the prompt. The two alternatives are exclusive: a turn-committed
+   * event carries its `turn`/`step` and no marker, and a maintenance head carries
+   * `maintenance: true` and no `turn`/`step`.
    */
-  'system/message': { turn: number; step: number; message: SystemMessage }
+  'system/message':
+    | { turn: number; step: number; message: SystemMessage }
+    | { maintenance: true; message: SystemMessage }
   /**
    * Assembled assistant message for one step (derived history uses this).
    * Carries the step's `usage` when the adapter reported token accounting, so
@@ -295,7 +305,7 @@ Every surface event requires `surfaceOp`; known log-only events forbid both surf
 
 ## Surface types
 
-The message-producing types (`SurfaceEventType` — `system/message`, `developer/message`, `user/message`, `assistant/message`, `tool/result`) carry surface metadata declaring how they join the ordered derived surface. `system/message` holds the rendered system prompt: the loop appends the first one as surface node 0 and, when the prompt changes, replaces exactly the latest system node or appends a new one on an in-history route; the surface fold rejects any other replacement covering a `system/message` at node 0, while a later system node is ordinary history that a compaction replacement may shadow. See the [session surface Agent Note](../../.agents/notes/implemented/architecture/2026-06-18-session-surface.md).
+The message-producing types (`SurfaceEventType` — `system/message`, `developer/message`, `user/message`, `assistant/message`, `tool/result`) carry surface metadata declaring how they join the ordered derived surface. `system/message` holds the rendered system prompt: the loop appends the first one as surface node 0 and, when the prompt changes, replaces exactly the latest system node or appends a new one on an in-history route; the surface fold rejects any other replacement covering a `system/message` at node 0, while a later system node is ordinary history that a compaction replacement may shadow. A `maintenance: true` payload establishes that same head outside any turn for an idle-history maintenance, which is the only writer allowed to append a system node to an empty surface without a turn or step, and the next turn reconciles it by the ordinary head replacement. See the [session surface Agent Note](../../.agents/notes/implemented/architecture/2026-06-18-session-surface.md).
 
 ### `SurfaceEventType` — the message-producing subset of event types
 
@@ -572,6 +582,30 @@ declare class Session {
   /** The next event's sequence number — always the log length (the `seq = log.length` contiguity contract). */
   get seq(): SessionLogOffset;
   /**
+   * Run one narrow control write synchronously after the publication currently
+   * in progress finishes, before store detach.
+   *
+   * A `session/event` observer cannot append reentrantly: the log rejects it to
+   * keep publication atomic. A consumer that must record one control fact for
+   * the event being published queues that append here. Tasks run in one
+   * synchronous drain after the outermost publication commits, in queue order;
+   * a deferred detach waits for that drain. A task queued while the drain runs
+   * joins its tail instead of running nested.
+   *
+   * This queue is not a scheduler and not an ordering fence. Appends made after
+   * the outermost publication returns follow every queued task, but an append
+   * made by another callback while that publication stack is still running can
+   * be logged before a task queued during it, including an append the queuing
+   * task makes after it queues the fact. A caller that needs its fact ahead of
+   * its own following input must let the publication return first. The callback
+   * performs one synchronous control write and contains its own expected append
+   * failures: a queued task's throw is contained and logged, while a task run
+   * immediately because no publication is in progress propagates its throw to
+   * the caller.
+   * @param task - the single control write to run after the publication.
+   */
+  afterPublication(task: () => void): void;
+  /**
    * Append one typed event to the log and synchronously notify observers via
    * the store-owned, module-private publication hooks. The hot path never blocks
    * on I/O — persistence plugins buffer asynchronously. Once the event enters
@@ -634,6 +668,24 @@ declare class Session {
    * @returns an immutable snapshot for LLM request projection, including historical addition definitions.
    */
   toolHistory(): ToolHistory;
+  /**
+   * Return the sequence of the protected system head at surface node 0.
+   *
+   * A `system/message` that entered an empty surface is that head, even when its
+   * rendering is empty: an empty head still reserves "no system prompt" at the
+   * position later replacements must preserve. Another message type at node 0
+   * means the surface has no protected head.
+   * @returns the head event's sequence, or null when the surface is empty or starts with another message type.
+   */
+  systemHeadSeq(): SessionSeq | null;
+  /**
+   * Return the committed surface message carried under one identity, exactly as
+   * recorded: message projections are not applied, so the result is the durable
+   * evidence rather than a projected view.
+   * @param id - the message identity to find on the current surface.
+   * @returns the carrying event's sequence and its recorded message, or undefined when no surface event carries that identity.
+   */
+  surfaceMessage(id: MessageId): { readonly seq: SessionSeq; readonly message: Message } | undefined;
   /**
    * Derive the LLM message history by walking the ordered sequences of
    * message-producing events maintained by `surfaceOp` markers. The

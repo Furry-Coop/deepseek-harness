@@ -216,3 +216,59 @@ describe('V4 protected system surface and malformed relationship inputs', () => 
     expect(() => reopen(inherited, 5, true)).toThrow(/does not match the open turn/)
   })
 })
+
+describe('V4 idle-history maintenance head', () => {
+  const head = (extra: Record<string, unknown> = {}): Row => ({
+    ...row('system/message', {
+      maintenance: true,
+      message: { id: 'head', role: 'system', source: { kind: 'system-prompt' }, content: [{ type: 'text', text: 'prompt' }] },
+      ...extra,
+    }),
+    surfaceOp: 'append',
+  })
+  const closeTurn = (turn: number): Row[] => [
+    row('turn/start', { turn }),
+    row('turn/end', { turn, reason: { kind: 'completed' } }),
+  ]
+
+  it('establishes surface node 0 between turns and stays a legal head for the next turn', () => {
+    expect(reopen([...closeTurn(1), head(), input()]).messages.map(message => message.role)).toEqual(['system', 'user'])
+    // The next ordinary turn reconciles the prompt through the protected head.
+    const replacement: Row = {
+      ...row('system/message', { turn: 2, step: 1, message: { id: 'next', role: 'system', source: { kind: 'system-prompt' }, content: [{ type: 'text', text: 'next prompt' }] } }),
+      surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 },
+      sourceEventSeqs: [2],
+    }
+    const next = [...closeTurn(1), head(), input(), row('turn/start', { turn: 2 }), row('step/start', { turn: 2, step: 1 }), replacement, input()]
+    const reopened = reopen(next)
+    expect(reopened.messages.map(message => message.role)).toEqual(['system', 'user', 'user'])
+    expect(reopened.messages[0]?.content).toEqual([{ type: 'text', text: 'next prompt' }])
+    expect(reopened.artifact.events.filter(event => event.type === 'system/message')).toHaveLength(2)
+  })
+
+  it.each([
+    ['inside an open step', [...begin(), head()]],
+    ['after another surface node', [input(), head()]],
+    ['with a replacement surface operation', [{ ...head(), surfaceOp: { op: 'replace', startSeq: 0, endSeq: 0 } }]],
+    ['inside an open compaction', [row('compaction/start', { compactionId: 'c', turn: null }), head()]],
+    ['with a turn coordinate', [...closeTurn(1), head({ turn: 1 })]],
+    ['with a step coordinate', [...closeTurn(1), head({ step: 1 })]],
+    ['with a false marker', [...closeTurn(1), head({ maintenance: false })]],
+    ['with a non-boolean marker', [...closeTurn(1), head({ maintenance: 'yes' })]],
+  ])('rejects a maintenance head %s', (_label, rows) => {
+    expect(() => reopen(rows)).toThrow()
+  })
+
+  it('refuses a maintenance head inside a compaction that a later inherited marker orphans', () => {
+    // The inherited end-seed marker downstream makes this still-open compaction
+    // an orphan for the ordinary turn policy. A maintenance head is not lifecycle
+    // work that may outlive the inherited cut, so it does not inherit that
+    // exemption.
+    const rows = [
+      row('compaction/start', { compactionId: 'orphan', turn: null }),
+      head(),
+      row('session/end-seed', { inherited: true }),
+    ]
+    expect(() => reopen(rows, 2, true)).toThrow(/open compaction/)
+  })
+})

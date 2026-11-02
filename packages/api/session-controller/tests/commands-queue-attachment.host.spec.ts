@@ -364,7 +364,9 @@ describe('Session attachment authorization', () => {
         id: 'declared-message', role: type === 'developer/message' ? 'developer' : 'system',
         source: { kind: 'system-prompt' }, content,
       }
-    const data = field === 'message' ? { message } : { [field]: content }
+    const data = field === 'message'
+      ? { message, ...type === 'system/message' ? { turn: 1, step: 1 } : {} }
+      : { [field]: content }
     const events = [event(type, SessionSeq(0), data)]
     const saved = JSON.stringify(events)
     const readImage = vi.fn((image: ImageAttachmentRef) => Promise.resolve({ ref: image, data: Uint8Array.of(1) }))

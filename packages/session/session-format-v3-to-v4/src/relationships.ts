@@ -48,6 +48,11 @@ interface Compaction {
   summarized: boolean
 }
 
+/** Whether one event is an idle-history maintenance head rather than a turn-committed system message. */
+function isMaintenanceHead(event: SessionFormatEvent, data: SessionFormatJsonObject): boolean {
+  return event.type === 'system/message' && data['maintenance'] === true
+}
+
 /** One native artifact's lifecycle state; no state survives between reads. */
 class Relationships {
   turn: number | null = null
@@ -85,6 +90,30 @@ class Relationships {
   requireStep(event: SessionFormatEvent, data: SessionFormatJsonObject): void {
     if (this.turn === null || this.step === null || data['turn'] !== this.turn || data['step'] !== this.step) {
       throw new SessionFormatError(`${event.type} does not match an open turn and step`)
+    }
+  }
+
+  /**
+   * Validate one idle-history maintenance head. It establishes the empty surface
+   * as node 0 between turns, so the ordinary turn/step relationship never applies
+   * to it and no compaction bracket may be open around it. Unlike a `turn/*`
+   * event, an unclosed compaction is refused even when a later inherited end-seed
+   * marker makes it an orphan: a maintenance head is not lifecycle work that can
+   * outlive the inherited cut.
+   * @param event - candidate maintenance `system/message` event.
+   */
+  maintenanceHead(event: SessionFormatEvent): void {
+    if (this.turn !== null || this.step !== null) {
+      throw new SessionFormatError('maintenance system/message is outside an open turn and step')
+    }
+    if (this.compaction !== undefined) {
+      throw new SessionFormatError('maintenance system/message crosses an open compaction')
+    }
+    if (this.surface.length !== 0) {
+      throw new SessionFormatError('maintenance system/message must establish the empty surface head')
+    }
+    if (event['surfaceOp'] !== 'append') {
+      throw new SessionFormatError('maintenance system/message requires an append surfaceOp')
     }
   }
 
@@ -266,7 +295,8 @@ class Relationships {
   accept(event: SessionFormatEvent): void {
     if (!this.knownEventTypes.has(event.type) || !RELATIONSHIP_TYPES.has(event.type)) return
     const data = record(event.data, event.type)
-    if (STEP_EVENT_TYPES.has(event.type)) this.requireStep(event, data)
+    if (isMaintenanceHead(event, data)) this.maintenanceHead(event)
+    else if (STEP_EVENT_TYPES.has(event.type)) this.requireStep(event, data)
     if (event.type.startsWith('turn/') && this.compaction !== undefined && !this.orphanCompactions.has(this.compaction.seq)) {
       throw new SessionFormatError(`${event.type} crosses an open compaction`)
     }

@@ -103,6 +103,36 @@ interface Agent {
   runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>
 
   /**
+   * Record plugin-owned formal history from the true idle phase without starting
+   * a turn: one identified user message, preceded by a protected system head when
+   * the surface carries none. Absent only on an Agent implementation that cannot
+   * persist idle history, so a caller must treat absence as an unsupported
+   * capability rather than a silent no-op.
+   *
+   * The message is snapshotted before the first await, so mutating the caller's
+   * object afterwards cannot change what is recorded. The operation fails with an
+   * `IdleHistoryError` before writing when a turn or another maintenance task owns
+   * the agent, or when a non-empty surface does not start with a protected system
+   * head: a head is established there only on an empty surface, and an existing
+   * head — including an empty rendering — is never replaced or duplicated. With no
+   * head it assembles and renders the real scoped prompt, so a maintenance head
+   * carries the current prompt registry rather than a cached rendering.
+   *
+   * The message id is the stable request identity. A retry that finds the exact
+   * same message already recorded appends nothing and reports its position; the
+   * same id with different content, source, or attachments is a history conflict.
+   * The message append and its durability checkpoint are separate outcomes: a
+   * committed append is never rolled back, and a failed checkpoint reports the
+   * committed position so a retry with the same identity cannot duplicate it.
+   * This operation writes formal history only — it neither claims, splices, nor
+   * injects inbox input, and it starts no request, turn, or step.
+   * @param request - the exact user message to record as formal history.
+   * @returns the established head and message positions plus the checkpoint outcome.
+   * @throws an `IdleHistoryError` naming the refused phase, identity, surface, or checkpoint.
+   */
+  maintainIdleHistory?(request: IdleHistoryRequest): Promise<IdleHistoryResult>
+
+  /**
    * Route identified input to an inbox boundary and optionally wake the driver.
    * Waking input submitted after active cancellation is queued for the next
    * turn and runs when the aborted activity converges to idle; a `disposed`
@@ -897,7 +927,7 @@ Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/s
 
 #### `agent/inbox/claimed` — emit
 
-One message left the inbox inside its open turn. If the proposed step is rejected without `preserveClaimed`, the claimed message ends here: it is neither discarded nor re-emitted as a user/message, and the turn closes without a step. A rejecting listener that sets `preserveClaimed` returns the exact claimed batch to the front of the pending-step boundary in original order; a cancellation that clears the inbox still drops it.
+One message left the inbox inside its open turn. If the proposed step is rejected without `preserveClaimed`, the claimed message ends here: it is neither discarded nor re-emitted as a user/message, and the turn closes without a step. A rejecting listener that sets `preserveClaimed` returns the exact claimed batch to the front of the pending-step boundary in original order; a cancelled turn still drops it.
 
 ```ts cordis-catalog
 /**
@@ -906,7 +936,7 @@ One message left the inbox inside its open turn. If the proposed step is rejecte
  * is neither discarded nor re-emitted as a user/message, and the turn
  * closes without a step. A rejecting listener that sets `preserveClaimed`
  * returns the exact claimed batch to the front of the pending-step boundary
- * in original order; a cancellation that clears the inbox still drops it.
+ * in original order; a cancelled turn still drops it.
  * @param payload.agent - the agent whose inbox changed.
  * @param payload.message - the claimed message.
  * @param payload.turn - the owning turn.
@@ -966,12 +996,17 @@ Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/s
 
 #### `agent/pre-step` — waterfall
 
-Reject a proposed step or replace the messages that enter it. Calling `next()` preserves the current messages.
+Reject a proposed step or replace the messages that enter it. Calling `next()` preserves the current messages. A rejecting decision may set `preserveClaimed` to park the exact claimed batch at the front of its pending-step boundary for a later wake; the turn still closes blocked without re-running the driver. A cancelled turn drops the batch, while never-claimed pending input follows the cancellation's own keep-inbox policy.
 
 ```ts cordis-catalog
 /**
  * Reject a proposed step or replace the messages that enter it. Calling
- * `next()` preserves the current messages.
+ * `next()` preserves the current messages. A rejecting decision may set
+ * `preserveClaimed` to park the exact claimed batch at the front of its
+ * pending-step boundary for a later wake; the turn still closes blocked
+ * without re-running the driver. A cancelled turn drops the batch, while
+ * never-claimed pending input follows the cancellation's own keep-inbox
+ * policy.
  * @param payload.agent - the agent proposing the step.
  * @param payload.messages - messages removed from the inbox for this step.
  * @param payload.turn - the turn that will own the step.

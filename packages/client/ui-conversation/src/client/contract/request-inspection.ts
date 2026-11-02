@@ -32,10 +32,10 @@ export interface SystemPromptNode {
   seq: number
   /** Unix epoch ms of that event. */
   time: number
-  /** Turn the loop committed the node in. */
-  turn: number
-  /** Step the loop committed the node in. */
-  step: number
+  /** Turn the loop committed the node in; absent for a head recorded outside any turn. */
+  turn?: number
+  /** Step the loop committed the node in; absent with `turn`. */
+  step?: number
   /** Rendered system prompt text; empty records "no system prompt". */
   text: string
   /**

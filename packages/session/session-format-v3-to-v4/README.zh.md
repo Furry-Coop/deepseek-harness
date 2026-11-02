@@ -219,7 +219,7 @@ Stage 之前先执行 V3 物理解码与 header 校验。Stage 按上述规范�
 | 替换与引用 | 端点按当前表面顺序选择包含两端的区间；引用指向更早事件并覆盖移除节点。受保护的首个 system head 只能由恰好覆盖该 head 的单个 system 消息替换。 |
 | Request header | 拒绝已退役的 `header.system`（包括空值）及格式错误的 header／data 记录；已安装 Session 检查当前 config、reason、adapter-default 标记，并要求省略空 `tools` / `adapterDefaults`。 |
 | 工具结果 | 要求 tool 角色、非空消息／调用 id、匹配的 `source.kind: 'tool'` 与 `source.callId`、直接数组 content、不含已退役结果 wrapper，以及存在时为布尔值的 `isError`。`data.error` 要求 `isError: true`。 |
-| System 消息 | 要求正 turn／step、非空 id、system 角色、数组 content 和 system-prompt 来源。检查已知 text／reasoning、tool-call 及 image 字段；拒绝已退役 tool-result wrapper。额外 JSON 元数据及可通过合并扩展的 block kind 不会被全局删除。 |
+| System 消息 | 按 turn 提交的提示词要求正 turn／step；idle 历史维护头则要求恰好 `maintenance: true` 且不带坐标，两者互斥。要求非空 id、system 角色、数组 content 和 system-prompt 来源。检查已知 text／reasoning、tool-call 及 image 字段；拒绝已退役 tool-result wrapper。额外 JSON 元数据及可通过合并扩展的 block kind 不会被全局删除。 |
 | 生产者归属 | 被解释的消息槽要求对象 source，以及非空且不是 `plugin` 的 kind。未知归属和自有 JSON 元数据保留；这不授予生产者运行时权限。 |
 
 五种表面事件都要求 `surfaceOp`。存在的 `sourceEventSeqs` 必须是非空数组，包含互异、更早、非负的安全整数序号；`assistant/message` 必须省略它。由于替换必须引用全部移除节点，assistant 事件自身不能替换表面区间。已知纯日志事件不能携带任一字段。替换对象只能包含 `op: 'replace'`、`startSeq` 与 `endSeq`；旧端点名、混合写法及额外键均被拒绝。
@@ -237,7 +237,7 @@ System image 接纳要求非空 attachment id、PNG／JPEG／WebP／GIF MIME 类
 |---|---|
 | `turn/start`、`turn/end`、`step/start`、`step/end` | Turn／step 编号有序，开放所有者匹配，turn／step 不重叠，结束边界不遗留已声明或已开始但未解决的工具调用。未完成尾部保持开放。 |
 | `assistant/message`、`tool/call`、追加的 `tool/result` | 匹配开放 step；声明的调用 id 唯一，开始保留 name／arguments，结果结算一个已声明调用。开始之前的结果必须是精确获准的 `TOOL_NOT_STARTED` 修复。工具结果的表面替换要求开放 turn，不重放原始调用生命周期。 |
-| `system/message`、`developer/message`、`assistant/attempt` | 匹配开放 turn 与 step。Request header 和 context 要求开放 turn。 |
+| `system/message`、`developer/message`、`assistant/attempt` | 匹配开放 turn 与 step；例外是 idle 历史维护头，它不要求开放 turn 或 step，并且不允许任何开放 compaction——包括后来被继承 end-seed 标记标成 orphan 的那种——还必须通过 append 建立空表面的第 0 号节点。Request header 和 context 要求开放 turn。 |
 | `tool/ptc-dispatch-start`、`tool/ptc-dispatch` | 要求开放 turn、唯一 sub-call 开始与结算、稳定的 root／parent／name／arguments，以及属于同一 root 的嵌套 parent。 |
 | `llm/retry`、`llm/retry-started` | 匹配当前请求 provider 和 turn／step，每条策略链的尝试连续、retry 身份稳定，每次 start 匹配一个先前已调度的尝试。 |
 | `session/title`、`session/title-llm-request` | 引用互异且更早的真人 `user/message` 事件。用户指定标题没有引用；其他标题具有引用。LLM 标题请求带非空引用和一个来源为 `dsh-session-title-llm` 的 user 角色文本消息。 |
@@ -332,6 +332,7 @@ Fork 种子构造归核心 Session 所有，不属于此迁移。原生 V4 接�
 
 - **历史转换器覆盖范围** — 未支持的源表示可能拒绝迁移，不发布后继文件，也不修改源文件。一方录制不等于第三方扩展全集。V4 发布后，只要输出仍兼容 V4，后续转换器修复就可以增加支持。解释流起始块的额外字段或处理未来投递代际，应以具体格式变更为依据。
 - **已接受 V4 转换**——[检查点](../../../docs/session-format-status.zh.md#finalization-record)保护已接受历史。向后兼容的新增可以通过新的确认记录保留 V4；破坏性变更要求后继版本。已写入的 V4 文件不会重跑此入边，历史输入保持不变。
+- **新增 V4 表示会被更早的发布版拒绝**——早于 idle 历史维护头的读取器会在早期字段准入阶段拒绝含该行的代际，发生在任何写入、变更或尾部修复之前。该拒绝是明确的，但不可恢复：这类日志无法被该构建重新打开。本读取器接受两种表示，按 turn 提交的表示保持不变。
 - **V5 前置读取器**——V4 子日志证据目前经过已安装目录。后续写入器在改变该目录前，须绑定固定代际的 V4 前置读取。导出的 V4 恢复器提供代际自有检查；完整的通用消息接纳还使用已安装的 Session 校验。
 - **历史嵌套工具结果**——当前迁移拒绝包含另一个 tool-result wrapper 的结果。原始代际保持完整，且不发布 V4 successor。后续转换器可以支持有证据的源数据场景，而不改变既定 V4 格式；[迁移 cookbook](../../../docs/cookbook/adding-a-session-format-version.zh.md#stages-and-validation) 定义了这一区别。
 - **历史扩展消费者**——带前缀的消息与结果字段保留 JSON 数据，不激活核心字段。消费者必须明确理解这些字段后才能解释它们。

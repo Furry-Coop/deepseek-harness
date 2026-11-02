@@ -15933,7 +15933,7 @@
       "kind": "event",
       "event": "system/message",
       "surface": true,
-      "digest": "69081694be231d56fd9580ba14645fd5e35373202605d5c5c841a9435b5fa3b1",
+      "digest": "d7512d48304c76194949f420847322fae40a8f520bfc897ec597686dc8ea7d08",
       "schema": {
         "root": 0,
         "nodes": [
@@ -15947,79 +15947,85 @@
               },
               {
                 "name": "ignorable",
-                "type": 17,
+                "type": 3,
                 "optional": true
               },
               {
                 "name": "seq",
-                "type": 10,
+                "type": 12,
                 "optional": false
               },
               {
                 "name": "sourceEventSeqs",
-                "type": 34,
+                "type": 36,
                 "optional": true
               },
               {
                 "name": "surfaceOp",
-                "type": 35,
+                "type": 37,
                 "optional": false
               },
               {
                 "name": "time",
-                "type": 10,
+                "type": 12,
                 "optional": false
               },
               {
                 "name": "type",
-                "type": 39,
+                "type": 41,
                 "optional": false
               }
             ],
             "indices": []
           },
           {
+            "kind": "union",
+            "types": [
+              2,
+              35
+            ]
+          },
+          {
             "kind": "object",
             "properties": [
               {
+                "name": "maintenance",
+                "type": 3,
+                "optional": false
+              },
+              {
                 "name": "message",
-                "type": 2,
-                "optional": false
-              },
-              {
-                "name": "step",
-                "type": 10,
-                "optional": false
-              },
-              {
-                "name": "turn",
-                "type": 10,
+                "type": 4,
                 "optional": false
               }
             ],
             "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": true
           },
           {
             "kind": "object",
             "properties": [
               {
                 "name": "content",
-                "type": 3,
+                "type": 5,
                 "optional": false
               },
               {
                 "name": "id",
-                "type": 6,
+                "type": 8,
                 "optional": false
               },
               {
                 "name": "role",
-                "type": 31,
+                "type": 32,
                 "optional": false
               },
               {
                 "name": "source",
-                "type": 32,
+                "type": 33,
                 "optional": false
               }
             ],
@@ -16027,18 +16033,18 @@
           },
           {
             "kind": "array",
-            "element": 4
+            "element": 6
           },
           {
             "kind": "union",
             "types": [
-              5,
-              8,
-              19,
-              22,
-              24,
-              26,
-              29
+              7,
+              10,
+              20,
+              23,
+              25,
+              27,
+              30
             ]
           },
           {
@@ -16046,22 +16052,22 @@
             "properties": [
               {
                 "name": "arguments",
-                "type": 6,
+                "type": 8,
                 "optional": false
               },
               {
                 "name": "id",
-                "type": 6,
+                "type": 8,
                 "optional": false
               },
               {
                 "name": "name",
-                "type": 6,
+                "type": 8,
                 "optional": false
               },
               {
                 "name": "type",
-                "type": 7,
+                "type": 9,
                 "optional": false
               }
             ],
@@ -16080,17 +16086,17 @@
             "properties": [
               {
                 "name": "attachment",
-                "type": 9,
+                "type": 11,
                 "optional": false
               },
               {
                 "name": "offloaded",
-                "type": 17,
+                "type": 3,
                 "optional": true
               },
               {
                 "name": "type",
-                "type": 18,
+                "type": 19,
                 "optional": false
               }
             ],
@@ -16101,37 +16107,37 @@
             "properties": [
               {
                 "name": "attachmentId",
-                "type": 6,
+                "type": 8,
                 "optional": false
               },
               {
                 "name": "bytes",
-                "type": 10,
+                "type": 12,
                 "optional": false
               },
               {
                 "name": "height",
-                "type": 10,
+                "type": 12,
                 "optional": false
               },
               {
                 "name": "mediaType",
-                "type": 11,
+                "type": 13,
                 "optional": false
               },
               {
                 "name": "name",
-                "type": 6,
+                "type": 8,
                 "optional": true
               },
               {
                 "name": "originalDimensions",
-                "type": 16,
+                "type": 18,
                 "optional": true
               },
               {
                 "name": "width",
-                "type": 10,
+                "type": 12,
                 "optional": false
               }
             ],
@@ -16144,10 +16150,10 @@
           {
             "kind": "union",
             "types": [
-              12,
-              13,
               14,
-              15
+              15,
+              16,
+              17
             ]
           },
           {
@@ -16171,20 +16177,16 @@
             "properties": [
               {
                 "name": "height",
-                "type": 10,
+                "type": 12,
                 "optional": false
               },
               {
                 "name": "width",
-                "type": 10,
+                "type": 12,
                 "optional": false
               }
             ],
             "indices": []
-          },
-          {
-            "kind": "literal",
-            "value": true
           },
           {
             "kind": "literal",
@@ -16195,12 +16197,12 @@
             "properties": [
               {
                 "name": "attachment",
-                "type": 20,
+                "type": 21,
                 "optional": false
               },
               {
                 "name": "type",
-                "type": 21,
+                "type": 22,
                 "optional": false
               }
             ],
@@ -16211,17 +16213,17 @@
             "properties": [
               {
                 "name": "attachmentId",
-                "type": 6,
+                "type": 8,
                 "optional": false
               },
               {
                 "name": "bytes",
-                "type": 10,
+                "type": 12,
                 "optional": false
               },
               {
                 "name": "name",
-                "type": 6,
+                "type": 8,
                 "optional": false
               }
             ],
@@ -16236,12 +16238,12 @@
             "properties": [
               {
                 "name": "text",
-                "type": 6,
+                "type": 8,
                 "optional": false
               },
               {
                 "name": "type",
-                "type": 23,
+                "type": 24,
                 "optional": false
               }
             ],
@@ -16256,12 +16258,12 @@
             "properties": [
               {
                 "name": "text",
-                "type": 6,
+                "type": 8,
                 "optional": false
               },
               {
                 "name": "type",
-                "type": 25,
+                "type": 26,
                 "optional": false
               }
             ],
@@ -16276,17 +16278,17 @@
             "properties": [
               {
                 "name": "tool",
-                "type": 27,
+                "type": 28,
                 "optional": true
               },
               {
                 "name": "toolName",
-                "type": 6,
+                "type": 8,
                 "optional": false
               },
               {
                 "name": "type",
-                "type": 28,
+                "type": 29,
                 "optional": false
               }
             ],
@@ -16305,12 +16307,12 @@
             "properties": [
               {
                 "name": "toolName",
-                "type": 6,
+                "type": 8,
                 "optional": false
               },
               {
                 "name": "type",
-                "type": 30,
+                "type": 31,
                 "optional": false
               }
             ],
@@ -16329,7 +16331,7 @@
             "properties": [
               {
                 "name": "kind",
-                "type": 33,
+                "type": 34,
                 "optional": false
               }
             ],
@@ -16340,14 +16342,35 @@
             "value": "system-prompt"
           },
           {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "message",
+                "type": 4,
+                "optional": false
+              },
+              {
+                "name": "step",
+                "type": 12,
+                "optional": false
+              },
+              {
+                "name": "turn",
+                "type": 12,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
             "kind": "array",
-            "element": 10
+            "element": 12
           },
           {
             "kind": "union",
             "types": [
-              36,
-              38
+              38,
+              40
             ]
           },
           {
@@ -16355,17 +16378,17 @@
             "properties": [
               {
                 "name": "endSeq",
-                "type": 10,
+                "type": 12,
                 "optional": false
               },
               {
                 "name": "op",
-                "type": 37,
+                "type": 39,
                 "optional": false
               },
               {
                 "name": "startSeq",
-                "type": 10,
+                "type": 12,
                 "optional": false
               }
             ],
@@ -22769,7 +22792,7 @@
       "digest": "17d1afb770d9941936130996da00dc86782cfef731d8d6526162c301256a4ac3",
       "names": [],
       "sources": [
-        "packages/core/session/src/types.ts:428"
+        "packages/core/session/src/types.ts:438"
       ]
     },
     {
@@ -22860,7 +22883,7 @@
       "digest": "1ccb56061942f5ccb0d30c9e4f2883b9d115ff906560029de637b61d3cde896d",
       "names": [],
       "sources": [
-        "packages/core/session/src/types.ts:342"
+        "packages/core/session/src/types.ts:352"
       ]
     },
     {
@@ -23228,7 +23251,7 @@
         "packages/core/session/src/types.ts#SurfaceOp"
       ],
       "sources": [
-        "packages/core/session/src/types.ts:463"
+        "packages/core/session/src/types.ts:473"
       ]
     },
     {
@@ -23243,6 +23266,11 @@
     },
     {
       "digest": "35203ba7ad5ef6f97d556b85df20ae98f04f09c65748cecdf8eefdb8b6405ffc",
+      "names": [],
+      "sources": []
+    },
+    {
+      "digest": "35e7322f39d443cbdbb4db7da774d90fc1b974e258e8725deb4abefdfc119e40",
       "names": [],
       "sources": []
     },
@@ -23719,7 +23747,7 @@
       "digest": "5302e763151277614b97e77f00e3b326694c6c1247b916a20503c344dc970777",
       "names": [],
       "sources": [
-        "packages/core/session/src/types.ts:376"
+        "packages/core/session/src/types.ts:386"
       ]
     },
     {
@@ -23745,7 +23773,7 @@
       "digest": "54f9276a1617d7c12594722c89cfe864bcbe4517e9a6f9c98bab14f199a135e0",
       "names": [],
       "sources": [
-        "packages/core/session/src/types.ts:356"
+        "packages/core/session/src/types.ts:366"
       ]
     },
     {
@@ -24039,11 +24067,6 @@
       "sources": []
     },
     {
-      "digest": "69081694be231d56fd9580ba14645fd5e35373202605d5c5c841a9435b5fa3b1",
-      "names": [],
-      "sources": []
-    },
-    {
       "digest": "693f4952fb5565da96c06bace8924b098ac2fbc915fde0ff8019701183abc057",
       "names": [],
       "sources": [
@@ -24078,7 +24101,7 @@
       "digest": "6bc8e51124d0874bc89e1d0ceff381a9c3cd0fc240667d69f841ce4f60f65fe5",
       "names": [],
       "sources": [
-        "packages/core/session/src/types.ts:331"
+        "packages/core/session/src/types.ts:340"
       ]
     },
     {
@@ -24942,7 +24965,7 @@
       "digest": "a81059ca06999da1e712414520c2c65e491d052fcf9640fae20aa38f0a5dc735",
       "names": [],
       "sources": [
-        "packages/core/session/src/types.ts:384",
+        "packages/core/session/src/types.ts:394",
         "packages/core/tools/src/types.ts:27"
       ]
     },
@@ -25051,7 +25074,7 @@
       "digest": "ad0c38a0adb82a94c925456df41586d9b5f9202fca18593eae2213d4445b4585",
       "names": [],
       "sources": [
-        "packages/core/session/src/types.ts:391"
+        "packages/core/session/src/types.ts:401"
       ]
     },
     {
@@ -25369,10 +25392,17 @@
       "sources": []
     },
     {
+      "digest": "bc6981146b2f5d761d7a5d6627ef0a827580e91b86ff2f0fcb31b60e436430e4",
+      "names": [],
+      "sources": [
+        "packages/core/session/src/types.ts:341"
+      ]
+    },
+    {
       "digest": "bcf0caf62d964b2fcf5404bd5c909cfa9a21c3f3c96e6b7e36d9e33565223825",
       "names": [],
       "sources": [
-        "packages/core/session/src/types.ts:465"
+        "packages/core/session/src/types.ts:475"
       ]
     },
     {
@@ -25607,6 +25637,11 @@
       "sources": []
     },
     {
+      "digest": "d7512d48304c76194949f420847322fae40a8f520bfc897ec597686dc8ea7d08",
+      "names": [],
+      "sources": []
+    },
+    {
       "digest": "d85590a5675c6e2fd8164e5792a6cceac714605b8ac228adae5ee668facb1490",
       "names": [],
       "sources": []
@@ -25798,7 +25833,7 @@
       "digest": "e4c18e294232c3ba6c9f1999f168263cc55956147cfe4121720899be8e52edd1",
       "names": [],
       "sources": [
-        "packages/core/session/src/types.ts:362"
+        "packages/core/session/src/types.ts:372"
       ]
     },
     {
