@@ -8,7 +8,8 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import type { SessionOperationId } from '../src/types.ts'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentFactory, AgentSetup } from '@deepseek-ai/dsh-agent'
-import { agentPresetProjectionDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
+import AgentPresets, { agentPresetProjectionDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
+import PluginLoader from '@deepseek-ai/cordis-plugin-loader'
 import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import SessionStore, { SESSION_FORMAT_VERSION, SessionId } from '@deepseek-ai/dsh-session'
@@ -1483,6 +1484,37 @@ async function coldReadSessionEvents(root: string, sessionId: SessionId): Promis
   }
 }
 
+/** One declared preset a roster test adds beside the usable default. */
+interface FailingPresetDeclaration {
+  readonly id: string
+  readonly userSelectable?: boolean
+}
+
+/**
+ * Mount the production preset registry over one Host: a usable default named
+ * `fixture` plus one declaration per requested id, each holding a child row
+ * that cannot activate.
+ * @param host - booted Host whose context owns the registry.
+ * @param failing - declarations whose activation must fail.
+ * @returns the disposer of the usable default definition.
+ */
+async function mountPresetRoster(
+  host: RealHost,
+  failing: readonly FailingPresetDeclaration[],
+): Promise<() => Promise<void>> {
+  await host.ctx.plugin(PluginLoader)
+  await host.ctx.plugin(AgentPresets, { default: 'fixture' })
+  const unregisterDefault = await host.ctx.agentPresets.register({ id: 'fixture', plugins: [] })
+  for (const preset of failing) {
+    await host.ctx.agentPresets.register({
+      id: preset.id,
+      ...(preset.userSelectable === undefined ? {} : { userSelectable: preset.userSelectable }),
+      plugins: [{ name: 'missing-preset-plugin-for-test' }],
+    })
+  }
+  return unregisterDefault
+}
+
 describe('real Controller, loader activation, and Workspace', () => {
   it('drops a policy with its fiber and refuses a queued operation after a same-id remount', async () => {
     const { host } = await realFixture()
@@ -1770,5 +1802,125 @@ describe('creation outcome through the production AgentLoop', () => {
       expect.objectContaining({ kind: 'failed', stage: 'create', creation: 'none' }),
       expect.objectContaining({ kind: 'created', sessionId: retried.sessionId }),
     ])
+  })
+
+  it('refuses a declared preset whose activation failed before the factory and retries the same operation under the default', async () => {
+    const { host } = await realLoopFixture()
+    // The production roster: one declared preset whose child row cannot be
+    // activated beside the usable default, so `resolve` reports it as broken
+    // without throwing.
+    await mountPresetRoster(host, [{ id: 'fixture-broken' }])
+    const broken = (await host.ctx.agentPresets.resolve('fixture-broken')).broken
+    expect(broken).toEqual(expect.any(String))
+
+    const created: SessionId[] = []
+    const outcomes: SessionCreationOutcome[] = []
+    await mountPolicy(host, {
+      id: REAL_POLICY,
+      // The policy owns the saved blank, so the retry continues the same
+      // candidate instead of creating a fresh Session beside it.
+      inspectSession: () => 'claimed',
+      beginOperation: () => ({
+        finishOperation: (outcome) => { outcomes.push(outcome) },
+      }),
+    })
+    await host.ctx.plugin({
+      name: 'test:note-created',
+      apply: (inner: Context) => {
+        inner.effect(() => inner.on('agent/created', ({ agent }) => {
+          created.push(agent.id)
+        }), 'test: note created')
+      },
+    })
+    const blank = SessionId('broken-preset-blank')
+    await storeBlank(host, blank)
+    const operation = {
+      operationId: opId('op-broken-preset'),
+      kind: 'new' as const,
+      policyId: REAL_POLICY,
+    }
+
+    // The saved preset is still declared, but its activation failed: the
+    // refusal is provably pre-create, so the caller keeps the preset code, its
+    // diagnostic, and this Controller's proof that nothing was materialized.
+    await expect(host.controller.create({
+      workspaceId: host.workspaceId,
+      sessionId: blank,
+      agentPreset: 'fixture-broken',
+      operation,
+    })).rejects.toMatchObject({
+      code: 'agent-preset/invalid',
+      message: broken,
+      details: { agentPreset: 'fixture-broken', reason: broken, creation: 'none' },
+    })
+    expect(created).toEqual([])
+
+    // The restore falls back to the Host default under the same operation
+    // identity, exactly as it does when the recorded preset is undeclared.
+    const retried = await host.controller.create({ workspaceId: host.workspaceId, sessionId: blank, operation })
+    expect(retried).toEqual({ sessionId: blank, agentPreset: 'fixture' })
+    expect(created).toEqual([blank])
+    expect(outcomes).toEqual([
+      expect.objectContaining({ kind: 'failed', stage: 'create', creation: 'none' }),
+      expect.objectContaining({ kind: 'created', sessionId: blank }),
+    ])
+  })
+
+  it('keeps the user-selectable refusal ahead of a broken activation diagnostic', async () => {
+    const { host } = await realLoopFixture()
+    await mountPresetRoster(host, [{ id: 'fixture-internal-broken', userSelectable: false }])
+    const create = vi.spyOn(host.ctx.agents, 'create')
+
+    // The roster hides this definition from user choices and its activation
+    // failed. The user-selection gate runs first, so the caller must not read
+    // the newer broken-preset refusal instead of the established one.
+    const failure = await host.controller.create({
+      workspaceId: host.workspaceId,
+      agentPreset: 'fixture-internal-broken',
+    }).then(
+      () => { throw new Error('expected the internal preset to be refused') },
+      (error: unknown) => error,
+    )
+    expect(failure).toMatchObject({ code: 'agent-preset/not-selectable' })
+    expect(failure).not.toMatchObject({ code: 'agent-preset/invalid' })
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it('keeps a preset that fails after resolution as an unknown factory outcome', async () => {
+    const { host } = await realLoopFixture()
+    const unregisterDefault = await mountPresetRoster(host, [])
+    let opened = 0
+    await host.ctx.plugin({
+      name: 'test:withdraw-usable-preset',
+      apply: (inner: Context) => {
+        inner.effect(() => inner.on('session/created', () => {
+          opened += 1
+          // The resolved definition is withdrawn once the factory already
+          // materialized the Session and before its setup mounts the preset.
+          void unregisterDefault()
+        }), 'test: withdraw usable preset')
+      },
+    })
+    const create = vi.spyOn(host.ctx.agents, 'create')
+    const request = {
+      workspaceId: host.workspaceId,
+      operation: { operationId: opId('op-withdraw-preset'), kind: 'new' as const },
+    }
+
+    const failure = await host.controller.create(request).then(
+      () => { throw new Error('expected the mount to fail') },
+      (error: unknown) => error as Error,
+    )
+    // The preset was usable when the Controller resolved it, so this failure
+    // comes from inside the factory and cannot prove the attempt created
+    // nothing: the delivery stays generic and the operation stays settled.
+    expect(opened).toBe(1)
+    expect(failure).toMatchObject({ code: 'gateway/internal' })
+    expect(failure.message).toContain('agent-preset/not-found')
+    await expect(host.controller.create(request)).rejects.toMatchObject({
+      code: 'gateway/internal',
+      message: failure.message,
+    })
+    expect(create).toHaveBeenCalledOnce()
   })
 })
