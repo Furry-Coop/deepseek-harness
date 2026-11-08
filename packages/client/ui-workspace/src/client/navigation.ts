@@ -968,7 +968,9 @@ function confirmedPreCreatePresetRefusal(error: unknown): boolean {
   const failure = sessionCreateErrorOf(error)?.rpcError
   if (failure === undefined) return false
   if (failure.code !== 'agent-preset/not-found' && failure.code !== 'agent-preset/invalid') return false
-  return 'creation' in failure.details && failure.details.creation === 'none'
+  // The wire type declares the marker as optional `'none'`, so absence and any
+  // other value both read as unknown creation.
+  return failure.details.creation === 'none'
 }
 
 /**

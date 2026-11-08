@@ -242,8 +242,7 @@ class FakeWorkspaces implements IWorkspaces {
 /**
  * A preset refusal as the Session Controller's stage record delivers it: the
  * pre-create marker is present only when the attempt provably ended before a
- * factory call. This branch's wire types predate the marker, so the exact
- * detail is supplied here as the Host carries it.
+ * factory call.
  */
 function presetRefusal(
   code: 'agent-preset/not-found' | 'agent-preset/invalid',
