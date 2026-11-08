@@ -200,7 +200,7 @@ describe('prepared-route prompt admission', () => {
     expect(systemTexts(cleared)).toEqual([])
     expect(toPiContext(cleared).systemPrompt).toBeUndefined()
     expect(JSON.stringify(toPiContext(cleared))).not.toContain('prompt ')
-    const clearEvents = h.agent.session.snapshotEvents().filter(event => event.type === 'system/message').filter(event => event.data.turn === 4)
+    const clearEvents = h.agent.session.snapshotEvents().filter(event => event.type === 'system/message').filter(event => 'turn' in event.data && event.data.turn === 4)
     expect(clearEvents).toHaveLength(3)
     for (const event of clearEvents) {
       expect(event.data.message.content).toEqual([])
@@ -327,7 +327,7 @@ describe('prepared-route prompt admission', () => {
     expect(events.filter(event => event.type === 'step/start')).toHaveLength(3)
     expect(events.filter(event => event.type === 'user/message' && event.data.source.kind === 'user')).toHaveLength(3)
     expect(events.filter(event => event.type === 'request/header').map(event => event.data.reason)).toEqual(['initial', 'series'])
-    expect(events.filter(event => event.type === 'system/message').filter(event => event.data.turn === 3).at(-1)?.surfaceOp).not.toBe('append')
+    expect(events.filter(event => event.type === 'system/message').filter(event => 'turn' in event.data && event.data.turn === 3).at(-1)?.surfaceOp).not.toBe('append')
   })
 
   it.each([false, true])('normalizes capable history on a plain route, changed=%s', async (changed) => {

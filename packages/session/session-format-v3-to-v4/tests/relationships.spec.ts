@@ -24,7 +24,15 @@ const request = () => row('request/header', { reason: 'initial', header: { confi
 
 /** Exercise physical JSON, catalog relationship admission, Session adoption, and derivation together. */
 function reopen(rows: readonly Row[], inherited = 0, seeded = false) {
-  const restore = sessionFormatCatalog.createRestore({ type: 'session', version: 4, id: 'native-relations', createdAt: 1, delegationDepth: 0, isSeeded: seeded, ...(seeded ? { parentSession: 'parent' } : {}) }, { recovery: 'strict', validation: 'current' })
+  return reopenWith(rows, inherited, {
+    type: 'session', version: 4, id: 'native-relations', createdAt: 1, delegationDepth: 0, isSeeded: seeded,
+    ...(seeded ? { parentSession: 'parent' } : {}),
+  })
+}
+
+/** Run one restore with an explicit physical header; the body keeps one cast and one adoption path. */
+function reopenWith(rows: readonly Row[], inherited: number, header: Record<string, unknown>) {
+  const restore = sessionFormatCatalog.createRestore(header, { recovery: 'strict', validation: 'current' })
   for (const [seq, candidate] of rows.entries()) {
     const event = { ...candidate, seq, time: seq + 1 } as unknown as SessionFormatEvent
     restore.decodeRow(JSON.parse(JSON.stringify(sessionFormatCatalog.encodeCurrentEvent(event))))
@@ -34,6 +42,31 @@ function reopen(rows: readonly Row[], inherited = 0, seeded = false) {
   const session = Session.fromRestore(SessionId(artifact.header.id), artifact.events as SessionEvent[], artifact.header as unknown as SessionHeader, SessionLogOffset(inherited), 'detached')
   return { artifact, messages: session.deriveMessages() }
 }
+
+/**
+ * Exercise the same restore path for a seeded Session whose header carries no
+ * `parentSession`: a fork from a parentless source still inherits its prefix.
+ */
+function reopenSeededWithoutParent(rows: readonly Row[], inherited: number) {
+  const reopened = reopenWith(rows, inherited, {
+    type: 'session', version: 4, id: 'native-relations', createdAt: 1, delegationDepth: 0, isSeeded: true,
+  })
+  expect(reopened.artifact.header.parentSession).toBeUndefined()
+  return reopened
+}
+
+const closeTurnWithoutInput = (turn = 1): Row[] => [
+  row('turn/start', { turn }),
+  row('turn/end', { turn, reason: { kind: 'completed' } }),
+]
+const maintenanceHead = (changes: Record<string, unknown> = {}): Row => ({
+  ...row('system/message', {
+    maintenance: true,
+    message: { id: 'maintenance', role: 'system', source: { kind: 'system-prompt' }, content: [{ type: 'text', text: 'rendered prompt' }] },
+    ...changes,
+  }),
+  surfaceOp: 'append',
+})
 
 const compact = (): Row[] => [
   row('turn/start', { turn: 1 }), input(),
@@ -214,5 +247,69 @@ describe('V4 protected system surface and malformed relationship inputs', () => 
       row('turn/end', { turn: 1, reason: { kind: 'completed' } }), row('session/end-seed', { inherited: true }),
     ]
     expect(() => reopen(inherited, 5, true)).toThrow(/does not match the open turn/)
+  })
+})
+
+describe('V4 idle-history maintenance head', () => {
+  it('admits the head as the empty surface head and reconciles it through a later turn', () => {
+    expect(reopen([...closeTurnWithoutInput(), maintenanceHead(), input()]).messages.map(message => message.role))
+      .toEqual(['system', 'user'])
+
+    // The next ordinary turn reconciles the prompt through the protected head.
+    const replacement: Row = {
+      ...row('system/message', { turn: 2, step: 1, message: { id: 'next', role: 'system', source: { kind: 'system-prompt' }, content: [{ type: 'text', text: 'next prompt' }] } }),
+      surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 },
+      sourceEventSeqs: [2],
+    }
+    const next = [...closeTurnWithoutInput(), maintenanceHead(), input(), row('turn/start', { turn: 2 }), row('step/start', { turn: 2, step: 1 }), replacement, input()]
+    const reopened = reopen(next)
+    expect(reopened.messages.map(message => message.role)).toEqual(['system', 'user', 'user'])
+    expect(reopened.messages[0]?.content).toEqual([{ type: 'text', text: 'next prompt' }])
+    expect(reopened.artifact.events.filter(event => event.type === 'system/message')).toHaveLength(2)
+  })
+
+  it.each([
+    ['inside an open step', [...begin(), maintenanceHead()]],
+    ['after another surface node', [input(), maintenanceHead()]],
+    ['with a replacement surface operation', [{ ...maintenanceHead(), surfaceOp: { op: 'replace', startSeq: 0, endSeq: 0 } }]],
+    ['inside an open compaction', [row('compaction/start', { compactionId: 'c', turn: null }), maintenanceHead()]],
+    ['with a turn coordinate', [...closeTurnWithoutInput(), maintenanceHead({ turn: 1 })]],
+    ['with a step coordinate', [...closeTurnWithoutInput(), maintenanceHead({ step: 1 })]],
+    ['with a false marker', [...closeTurnWithoutInput(), maintenanceHead({ maintenance: false })]],
+    ['with a non-boolean marker', [...closeTurnWithoutInput(), maintenanceHead({ maintenance: 'yes' })]],
+  ])('rejects a maintenance head %s', (_label, rows) => {
+    expect(() => reopen(rows)).toThrow()
+  })
+
+  it('refuses a maintenance head inside a compaction that a later inherited marker orphans', () => {
+    // The inherited end-seed marker downstream makes this still-open compaction
+    // an orphan for the ordinary turn policy. A maintenance head is not lifecycle
+    // work that may outlive the inherited cut, so it does not inherit that
+    // exemption.
+    const rows = [
+      row('compaction/start', { compactionId: 'orphan', turn: null }),
+      maintenanceHead(),
+      row('session/end-seed', { inherited: true }),
+    ]
+    expect(() => reopen(rows, 2, true)).toThrow(/open compaction/)
+  })
+
+  it('accepts an inherited maintenance head in a seeded fork without a parentSession', () => {
+    const inherited = [...closeTurnWithoutInput(), maintenanceHead(), input()]
+    const cut = inherited.length
+    const rows = [
+      ...inherited,
+      row('session/end-seed', { inherited: true }),
+      row('turn/start', { turn: 2 }),
+      row('step/start', { turn: 2, step: 1 }),
+      input(),
+      row('step/end', { turn: 2, step: 1 }),
+      row('turn/end', { turn: 2, reason: { kind: 'completed' } }),
+    ]
+    const reopened = reopenSeededWithoutParent(rows, cut)
+    expect(reopened.messages.map(message => message.role)).toEqual(['system', 'user', 'user'])
+    expect(reopened.messages[0]?.content).toEqual([{ type: 'text', text: 'rendered prompt' }])
+    // The child's own history continues the inherited surface without a second head.
+    expect(reopened.artifact.events.filter(event => event.type === 'system/message')).toHaveLength(1)
   })
 })

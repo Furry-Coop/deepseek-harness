@@ -9,6 +9,7 @@
  */
 
 import type { Message, ToolSchema } from '@deepseek-ai/dsh-llm'
+import { isJsonValue } from '@deepseek-ai/dsh-util-values'
 import { SessionLogOffset, SessionSeq } from './types.ts'
 import { KNOWN_SESSION_EVENT_TYPES, MESSAGE_PROJECTION_EVENT_TYPES } from './known-event-types.ts'
 import type {
@@ -16,6 +17,7 @@ import type {
   SessionEventType,
   SessionSeqCursor,
   SurfaceEvent,
+  SurfaceEventType,
   SurfaceOp,
 } from './types.ts'
 
@@ -157,17 +159,44 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Reject noncanonical request-header fields, developer roles/content, and contradictory tool failure metadata.
+ * Validate which commit alternative a `system/message` payload declares. A
+ * turn-committed prompt names its positive turn and step; an idle-history
+ * maintenance head names neither and carries `maintenance: true` instead.
+ * @param data - the event payload.
+ * @param subject - event location to include in validation errors.
+ */
+function assertSystemMessageCommit(data: Record<string, unknown>, subject: string): void {
+  const maintenance = data['maintenance']
+  if (maintenance !== undefined && maintenance !== true) {
+    throw new Error(`${subject} system message maintenance marker must be true when present`)
+  }
+  const namesPosition = Object.hasOwn(data, 'turn') || Object.hasOwn(data, 'step')
+  if (maintenance === true) {
+    if (namesPosition) throw new Error(`${subject} maintenance system message must omit turn and step`)
+    return
+  }
+  for (const field of ['turn', 'step']) {
+    const value = data[field]
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0 || Object.is(value, -0)) {
+      throw new Error(`${subject} system message ${field} must be a positive safe integer`)
+    }
+  }
+}
+
+/**
+ * Reject noncanonical request-header fields, developer roles/content, contradictory
+ * tool failure metadata, and a `system/message` payload that mixes its commit alternatives.
  * This does not validate complete event payloads or embedded provider streams.
  * @param event - event whose locally related payload fields are inspected.
  * @param subject - event location to include in validation errors.
- * @throws when request-header fields, developer roles/content, or tool failure metadata are invalid.
+ * @throws when request-header fields, developer roles/content, tool failure metadata, or the system-message commit alternative are invalid.
  */
 export function validateSessionEventData(
   event: Pick<SessionEvent, 'type' | 'data'>,
   subject: string,
 ): void {
   const data: unknown = event.data
+  if (event.type === 'system/message' && isRecord(data)) assertSystemMessageCommit(data, subject)
   if (SURFACE_EVENT_TYPES.has(event.type) && isRecord(data)) {
     const message = event.type === 'user/message' ? data : data['message']
     if (isRecord(message)) {
@@ -251,9 +280,52 @@ export interface SessionSurface {
   readonly contentGeneration: number
 }
 
+/**
+ * Host-only admission result for an idle-history maintenance read.
+ *
+ * It names only the protected head position and the first current carrier of
+ * one message identity with its exact recorded-content comparison. It carries
+ * no event, surface array, message payload, or arbitrary historical position;
+ * consumers must not use it as a general history or message query.
+ */
+export interface IdleHistoryAdmission {
+  /** Sequence of the protected system head at surface node 0, or null when the surface has none. */
+  readonly headSeq: SessionSeq | null
+  /** First current surface node carrying the submitted message id and whether its recorded message matches exactly. */
+  readonly carried: {
+    /** Sequence of that current carrier. */
+    readonly seq: SessionSeq
+    /**
+     * Whether the committed recorded message equals the submitted message exactly,
+     * without message projections. A submission that the append boundary rejects
+     * as non-lossless JSON is never that exact retry.
+     */
+    readonly same: boolean
+  } | undefined
+}
+
+/**
+ * Host-internal entry point for the idle-history maintenance admission.
+ *
+ * The read is served by {@link SurfaceManager}'s current fold state, not by a
+ * historical event scan. It is deliberately symbol-keyed so it does not widen
+ * the named public Session API or become a general history accessor.
+ * @internal
+ */
+export const SESSION_IDLE_HISTORY_ADMISSION: unique symbol = Symbol('@deepseek-ai/dsh-session.idle-history-admission')
+
+/** Recorded message one current surface node carries, before any message projection. */
+interface SurfaceRecordedNode {
+  /** Event type that placed the node on the surface. */
+  readonly type: SurfaceEventType
+  /** Recorded message exactly as committed. */
+  readonly message: Message
+}
+
 /** Mutable state shared by complete and incremental folds. */
 interface SurfaceFoldState {
   nodes: SessionSeq[]
+  recordedNodes: Map<SessionSeq, SurfaceRecordedNode>
   replaceGeneration: number
   contentGeneration: number
   projectedMessages: Map<SessionSeq, Message>
@@ -265,17 +337,25 @@ interface SurfaceReplacePlan extends SurfaceFoldReplacement {
   kind: 'replace'
   startIdx: number
   endIdx: number
+  recorded: SurfaceRecordedNode
 }
 
 /** One validated surface transition that has not mutated fold state yet. */
 type SurfacePlan =
-  | { kind: 'append'; seq: SessionSeq }
+  | { kind: 'append'; seq: SessionSeq; recorded: SurfaceRecordedNode }
   | SurfaceReplacePlan
   | { kind: 'project'; projection: SessionMessageProjection; messages: ReadonlyMap<SessionSeq, Message> }
 
 /** Create an empty surface fold state. */
 function createFoldState(): SurfaceFoldState {
-  return { nodes: [], replaceGeneration: 0, contentGeneration: 0, projectedMessages: new Map(), projections: new Set() }
+  return {
+    nodes: [],
+    recordedNodes: new Map(),
+    replaceGeneration: 0,
+    contentGeneration: 0,
+    projectedMessages: new Map(),
+    projections: new Set(),
+  }
 }
 
 /** Whether a runtime value is a non-negative safe event sequence. */
@@ -506,6 +586,28 @@ function assertSystemHeadRewrite(
   }
 }
 
+/** Whether one candidate event is a maintenance system head rather than a turn-committed prompt. */
+function isMaintenanceHead(event: SessionEvent): boolean {
+  return event.type === 'system/message' && 'maintenance' in event.data
+}
+
+/**
+ * Read the message one committed surface event records, before any message projection.
+ * @param event - validated surface event.
+ * @returns the node type and recorded message.
+ */
+function recordedSurfaceNode(event: SurfaceEvent): SurfaceRecordedNode {
+  switch (event.type) {
+    case 'user/message':
+      return { type: event.type, message: event.data }
+    case 'system/message':
+    case 'developer/message':
+    case 'assistant/message':
+    case 'tool/result':
+      return { type: event.type, message: event.data.message }
+  }
+}
+
 /** Validate one event at its replay boundary and prepare its atomic fold transition. */
 function planSurfaceEvent(
   state: SurfaceFoldState,
@@ -517,6 +619,9 @@ function planSurfaceEvent(
 ): SurfacePlan | undefined {
   if (event.seq !== expectedSeq) {
     throw new Error(`session event seq ${event.seq} is not contiguous; expected ${expectedSeq}`)
+  }
+  if (isMaintenanceHead(event) && state.nodes.length > 0) {
+    throw new Error('maintenance system/message must establish the empty surface head, not extend an existing surface')
   }
   const surfaceOp = validateSurfaceMetadata(event)
   assertDeveloperHeader(event, events, baseSeq)
@@ -530,8 +635,12 @@ function planSurfaceEvent(
     throw new Error(`session event "${event.type}" requires a message projection; load its owning plugin or supply its projection definition`)
   }
   if (surfaceOp === undefined) return
+  // `validateSurfaceMetadata` returns an operation only for a surface-eligible
+  // event, so this narrowing restates the type rather than refusing a log.
+  /* v8 ignore next -- surfaceOp is only returned for a surface-eligible event */
+  if (!isSurfaceEvent(event)) return
   if (surfaceOp === 'append') {
-    return { kind: 'append', seq: event.seq }
+    return { kind: 'append', seq: event.seq, recorded: recordedSurfaceNode(event) }
   }
   const range = replacementRange(state, surfaceOp)
   assertSourceEventReferences(event, range.shadowedSeqs)
@@ -542,6 +651,7 @@ function planSurfaceEvent(
     seq: event.seq,
     start: surfaceOp.startSeq,
     end: surfaceOp.endSeq,
+    recorded: recordedSurfaceNode(event),
     ...range,
   }
 }
@@ -566,8 +676,11 @@ function applySurfacePlan(
 ): SurfaceFoldReplacement | undefined {
   if (plan?.kind === 'append') {
     state.nodes.push(plan.seq)
+    state.recordedNodes.set(plan.seq, plan.recorded)
   } else if (plan?.kind === 'replace') {
+    for (const shadowed of plan.shadowedSeqs) state.recordedNodes.delete(shadowed)
     state.nodes.splice(plan.startIdx, plan.endIdx - plan.startIdx + 1, plan.seq)
+    state.recordedNodes.set(plan.seq, plan.recorded)
     state.replaceGeneration += 1
     state.contentGeneration += 1
   } else if (plan?.kind === 'project') {
@@ -668,6 +781,36 @@ export class SurfaceManager implements SessionSurface {
     this._assertProjections()
     if (this._lastProcessedSeq < this.baseSeq + this.log.length - 1) this._processDelta()
     return deriveEventMessage(event, this._state.projectedMessages)
+  }
+
+  /**
+   * Read the idle-history admission from the committed current surface.
+   * @internal
+   * @param message - submitted formal message whose id and exact recorded content are
+   * compared; a non-lossless-JSON submission never matches.
+   * @returns the protected head position and the first current carrier comparison.
+   */
+  [SESSION_IDLE_HISTORY_ADMISSION](message: Message): IdleHistoryAdmission {
+    this._assertProjections()
+    if (this._lastProcessedSeq < this.baseSeq + this.log.length - 1) this._processDelta()
+    const state = this._state
+    const head = state.nodes[0]
+    const headNode = head === undefined ? undefined : state.recordedNodes.get(head)
+    let carried: IdleHistoryAdmission['carried']
+    for (const seq of state.nodes) {
+      const recorded = state.recordedNodes.get(seq)
+      if (recorded?.message.id !== message.id) continue
+      // The submission must pass the same lossless-JSON admission the append
+      // boundary enforces before JSON equality may call it the recorded retry:
+      // JSON equality alone also equates values that boundary rejects, such as
+      // -0 with 0 or an empty object with a Date/Map/Set.
+      carried = { seq, same: isJsonValue(message) && isDeepEqualJson(recorded.message, message) }
+      break
+    }
+    return {
+      headSeq: head !== undefined && headNode?.type === 'system/message' ? head : null,
+      carried,
+    }
   }
 
   /** Surface event sequences in model-visible order. */

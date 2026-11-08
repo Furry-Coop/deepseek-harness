@@ -14,6 +14,7 @@ import type { AgentCancelCause, Session, SessionSeq, UserMessage } from '@deepse
 export type { AgentCancelCause } from '@deepseek-ai/dsh-session'
 import type { Agent, InboxTarget, ModelSelection } from './types.ts'
 export type { Agent } from './types.ts'
+import type { IdleHistoryRequest, IdleHistoryResult } from './idle-history.ts'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 declare module '@deepseek-ai/dsh-system-prompt' {
   interface AssembleContext {
@@ -253,6 +254,36 @@ declare module './types.ts' {
    * @returns the task promise.
    */
     runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>
+
+    /**
+   * Record plugin-owned formal history from the true idle phase without starting
+   * a turn: one identified user message, preceded by a protected system head when
+   * the surface carries none. Absent only on an Agent implementation that cannot
+   * persist idle history, so a caller must treat absence as an unsupported
+   * capability rather than a silent no-op.
+   *
+   * The message is snapshotted before the first await, so mutating the caller's
+   * object afterwards cannot change what is recorded. The operation fails with an
+   * `IdleHistoryError` before writing when a turn or another maintenance task owns
+   * the agent, or when a non-empty surface does not start with a protected system
+   * head: a head is established there only on an empty surface, and an existing
+   * head — including an empty rendering — is never replaced or duplicated. With no
+   * head it assembles and renders the real scoped prompt, so a maintenance head
+   * carries the current prompt registry rather than a cached rendering.
+   *
+   * The message id is the stable request identity. A retry that finds the exact
+   * same message already recorded appends nothing and reports its position; the
+   * same id with different content, source, or attachments is a history conflict.
+   * The message append and its durability checkpoint are separate outcomes: a
+   * committed append is never rolled back, and a failed checkpoint reports the
+   * committed position so a retry with the same identity cannot duplicate it.
+   * This operation writes formal history only — it neither claims, splices, nor
+   * injects inbox input, and it starts no request, turn, or step.
+   * @param request - the exact user message to record as formal history.
+   * @returns the established head and message positions plus the checkpoint outcome.
+   * @throws an `IdleHistoryError` naming the refused phase, identity, surface, or checkpoint.
+   */
+    maintainIdleHistory?(request: IdleHistoryRequest): Promise<IdleHistoryResult>
 
     /**
    * Route identified input to an inbox boundary and optionally wake the driver.

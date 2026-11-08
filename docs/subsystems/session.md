@@ -74,8 +74,18 @@ interface SessionEventMap {
    * Empty later nodes are dormant and project to no message; an empty head with
    * no active later node records "no system prompt". Restored nonempty text follows
    * the same route and series rule; empty nodes never restore older text.
+   *
+   * The `maintenance` alternative records the same rendered prompt outside any
+   * turn: an idle-history maintenance assembles and renders the prompt only when
+   * the surface is empty, then establishes it as surface node 0. That head is
+   * reconciled by a later turn's ordinary head replacement, so it never
+   * duplicates the prompt. The two alternatives are exclusive: a turn-committed
+   * event carries its `turn`/`step` and no marker, and a maintenance head carries
+   * `maintenance: true` and no `turn`/`step`.
    */
-  'system/message': { turn: number; step: number; message: SystemMessage }
+  'system/message':
+    | { turn: number; step: number; message: SystemMessage }
+    | { maintenance: true; message: SystemMessage }
   /**
    * Assembled assistant message for one step (derived history uses this).
    * Carries the step's `usage` when the adapter reported token accounting, so
@@ -297,7 +307,7 @@ Every surface event requires `surfaceOp`; known log-only events forbid both surf
 
 ## Surface types
 
-The message-producing types (`SurfaceEventType` — `system/message`, `developer/message`, `user/message`, `assistant/message`, `tool/result`) carry surface metadata declaring how they join the ordered derived surface. `system/message` holds the rendered system prompt: the loop appends the first one as surface node 0 and, when the prompt changes, replaces exactly the latest system node or appends a new one on an in-history route; the surface fold rejects any other replacement covering a `system/message` at node 0, while a later system node is ordinary history that a compaction replacement may shadow. See the [session surface Agent Note](../../.agents/notes/implemented/architecture/2026-06-18-session-surface.md).
+The message-producing types (`SurfaceEventType` — `system/message`, `developer/message`, `user/message`, `assistant/message`, `tool/result`) carry surface metadata declaring how they join the ordered derived surface. `system/message` holds the rendered system prompt: the loop appends the first one as surface node 0 and, when the prompt changes, replaces exactly the latest system node or appends a new one on an in-history route; the surface fold rejects any other replacement covering a `system/message` at node 0, while a later system node is ordinary history that a compaction replacement may shadow. A `maintenance: true` payload establishes that same head outside any turn for an idle-history maintenance, the only writer allowed to append a system node to an empty surface without a turn or step, and the next turn reconciles it by the ordinary head replacement. See the [session surface Agent Note](../../.agents/notes/implemented/architecture/2026-06-18-session-surface.md).
 
 ### `SurfaceEventType` — the message-producing subset of event types
 
@@ -667,6 +677,13 @@ declare class Session {
    * @returns the derived message, or null when the event produces none.
    */
   deriveEventMessage(event: SessionEvent): Message | null;
+  /**
+   * Read the host-internal idle-history admission from the committed surface.
+   * @internal
+   * @param message - submitted formal message to compare with its current carrier.
+   * @returns the protected head position and the first current carrier comparison.
+   */
+  [SESSION_IDLE_HISTORY_ADMISSION](message: Message): IdleHistoryAdmission;
 }
 ```
 

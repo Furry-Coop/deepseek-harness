@@ -16,8 +16,8 @@ import type { Message } from '@deepseek-ai/dsh-llm'
 import { SESSION_FORMAT_VERSION, SessionLogOffset, SessionSeq } from './types.ts'
 import type { TypertLookup } from '@deepseek-ai/dsh-typert-protocol'
 import type { CreateSessionOptions, EpochHeader, PluginRecord, PluginRecordMap, PluginRecordType, PrepareSessionOptions, RequestContext, SessionEvent, SessionEventMap, SessionEventType, SessionHeader, SessionId, SessionSeedEventState, SurfaceIntent, SurfaceEventType } from './types.ts'
-import { SurfaceManager, validateSessionEventData, validateSurfaceMetadata } from './surface.ts'
-import type { SessionSurface, SessionMessageProjection } from './surface.ts'
+import { SESSION_IDLE_HISTORY_ADMISSION, SurfaceManager, validateSessionEventData, validateSurfaceMetadata } from './surface.ts'
+import type { IdleHistoryAdmission, SessionSurface, SessionMessageProjection } from './surface.ts'
 import { foldRequestHeader } from './request-header.ts'
 import { ToolHistoryProjection } from './tool-history.ts'
 import type { ToolHistory } from '@deepseek-ai/dsh-llm'
@@ -30,8 +30,8 @@ export { SessionPreparation } from './preparation.ts'
 export type { SessionPreparationOptions } from './preparation.ts'
 export type { AssistantMessage, DeveloperMessage, SystemMessage, ToolResultMessage, UserMessage } from '@deepseek-ai/dsh-llm'
 export { interruptedTurnClosers, ToolCallRecovery, TOOL_NOT_STARTED, TOOL_OUTCOME_UNKNOWN } from './repair.ts'
-export type { SessionSurface, SurfaceFoldReplacement, SurfaceFoldResult, SessionMessageProjection, SessionMessageProjectionContext } from './surface.ts'
-export { deriveEventMessage, foldSurface, isAppendSurfaceEvent, isReplacementSurfaceEvent, isSurfaceEvent, isSurfaceEligibleType } from './surface.ts'
+export type { IdleHistoryAdmission, SessionSurface, SurfaceFoldReplacement, SurfaceFoldResult, SessionMessageProjection, SessionMessageProjectionContext } from './surface.ts'
+export { deriveEventMessage, foldSurface, isAppendSurfaceEvent, isReplacementSurfaceEvent, isSurfaceEvent, isSurfaceEligibleType, SESSION_IDLE_HISTORY_ADMISSION } from './surface.ts'
 export { canonicalHeader, foldRequestHeader, headerEquals } from './request-header.ts'
 export { KNOWN_SESSION_EVENT_TYPES } from './known-event-types.ts'
 
@@ -1147,6 +1147,16 @@ export class Session {
    */
   deriveEventMessage(event: SessionEvent): Message | null {
     return this.surfaceManager.deriveEventMessage(event)
+  }
+
+  /**
+   * Read the host-internal idle-history admission from the committed surface.
+   * @internal
+   * @param message - submitted formal message to compare with its current carrier.
+   * @returns the protected head position and the first current carrier comparison.
+   */
+  [SESSION_IDLE_HISTORY_ADMISSION](message: Message): IdleHistoryAdmission {
+    return this.surfaceManager[SESSION_IDLE_HISTORY_ADMISSION](message)
   }
 }
 

@@ -11,6 +11,9 @@ import type {
   AgentOptions,
   AgentStatus,
   CancelOptions,
+  IdleHistoryAppend,
+  IdleHistoryRequest,
+  IdleHistoryResult,
   ModelSelection,
   ModelSelectionProjectionState,
   InboxTarget,
@@ -18,20 +21,22 @@ import type {
   PreStepDecision,
   RequestErrorAction,
 } from '@deepseek-ai/dsh-agent'
-import { AgentModel, agentEvents, assembleContextFor } from '@deepseek-ai/dsh-agent'
-import type { GenerateOptions, LlmCallConfig, Message, PreparedLlmCall } from '@deepseek-ai/dsh-llm'
+import { AgentModel, agentEvents, assembleContextFor, IdleHistoryError } from '@deepseek-ai/dsh-agent'
+import type { GenerateOptions, LlmCallConfig, Message, PreparedLlmCall, SystemMessage } from '@deepseek-ai/dsh-llm'
 import {
   LlmError,
   createAssistantMessage,
   createDeveloperMessage,
+  createSystemMessage,
   errorChain,
+  freezeMessage,
   markAgentLoopRequest,
 } from '@deepseek-ai/dsh-llm'
 import { assertNever, deepFreeze } from '@deepseek-ai/dsh-util-values'
 import type { Scope } from '@deepseek-ai/dsh-scope'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import type { EpochHeader, RequestContext, Session, SessionId, SessionSeq, TurnEndReason, UserMessage } from '@deepseek-ai/dsh-session'
-import { canonicalHeader, headerEquals, ToolCallRecovery } from '@deepseek-ai/dsh-session'
+import { canonicalHeader, headerEquals, SESSION_IDLE_HISTORY_ADMISSION, ToolCallRecovery } from '@deepseek-ai/dsh-session'
 import { joinContextSections, renderContextSections, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import { ToolActivationError, ToolBatchExecutionError } from '@deepseek-ai/dsh-tools'
@@ -337,6 +342,160 @@ export class ReactLoopAgent implements Agent {
         done.resolve()
       }
     })()
+  }
+
+  /**
+   * Record one formal user message from the true idle phase, establishing the
+   * protected system head first only when the surface has none.
+   *
+   * The idle phase is claimed through {@link runMaintenance}, so a running turn
+   * and another maintenance task both refuse this operation while public status
+   * stays `idle`. The message is snapshotted before the first await, so mutating
+   * the caller's object afterwards cannot change what is recorded. Only prompt
+   * assembly awaits: the head commit follows its live and empty-surface recheck,
+   * and the message commit follows its own live recheck, with no new await
+   * between either decision and its commit. A concurrent writer that takes the
+   * head first is therefore reported instead of being overwritten or reordered,
+   * and a cancellation raised by the head publication leaves the already
+   * committed head as recovery state without appending the message. With no
+   * head, the rendered prompt comes from real scoped assembly of the current
+   * prompt registry; nothing is cached or synthesized.
+   * @param request - the exact user message to record as formal history.
+   * @returns the established head and message positions plus the checkpoint outcome.
+   */
+  async maintainIdleHistory(request: IdleHistoryRequest): Promise<IdleHistoryResult> {
+    // The request object is only structurally readonly: capture the exact message
+    // now, before any await can interleave with caller mutation.
+    const message = freezeMessage(request.message)
+    if (this.phase.kind !== 'idle') {
+      throw new IdleHistoryError(
+        `agent "${this.id}" cannot record idle history: ${this.phase.kind === 'maintenance' ? 'a maintenance task' : 'a turn'} already owns it`,
+        'not-idle',
+      )
+    }
+    return await this.runMaintenance(
+      signal => this.recordIdleHistory(message, signal),
+    )
+  }
+
+  /** Record the formal history inside the claimed maintenance phase. */
+  private async recordIdleHistory(message: UserMessage, signal: AbortSignal): Promise<IdleHistoryResult> {
+    this.assertIdleHistoryLive(signal)
+    // The surface owner serves the protected head position and the exact
+    // recorded comparison from its current fold state; this call never reads a
+    // historical event position.
+    const admission = this.session[SESSION_IDLE_HISTORY_ADMISSION](message)
+    const systemHeadSeq = admission.headSeq
+    if (systemHeadSeq === null && this.session.surface.nodes.length !== 0) {
+      // A non-empty surface whose first node is not a system prompt has no
+      // protected head: appending one here would put the prompt after another
+      // writer's messages, and appending without one would leave a log a later
+      // turn makes unreadable. Refuse instead of reordering or shadowing.
+      throw new IdleHistoryError(
+        `agent "${this.id}" cannot record idle history: surface node 0 is not a protected system head`,
+        'history-conflict',
+      )
+    }
+    const recorded = admission.carried
+    if (recorded !== undefined) {
+      // A retry after a committed append (a failed checkpoint, or a caller that
+      // lost the answer) must not record the same information twice, and the same
+      // identity with different content or source must not pass as that retry.
+      if (!recorded.same) {
+        throw new IdleHistoryError(
+          `agent "${this.id}" cannot record idle history: message "${message.id}" is already recorded at seq ${recorded.seq} with different content`,
+          'history-conflict',
+        )
+      }
+      const append: IdleHistoryAppend = { systemHeadSeq: null, messageSeq: recorded.seq, appended: false }
+      return { ...append, checkpointed: await this.checkpointIdleHistory(append) }
+    }
+    const renderedHead = systemHeadSeq === null
+      ? await this.assembleIdleHistoryHead(signal)
+      : undefined
+    if (renderedHead !== undefined) {
+      // Assembly is the only await before the head. Recheck live ownership,
+      // cancellation, and the still-empty surface immediately before the commit,
+      // with no await between this decision and the append below.
+      this.assertIdleHistoryLive(signal)
+      if (this.session.surface.nodes.length !== 0) {
+        throw new IdleHistoryError(
+          `agent "${this.id}" cannot establish its idle-history system head: another writer changed the surface while the prompt was assembled`,
+          'history-conflict',
+        )
+      }
+    }
+    const established = renderedHead === undefined
+      ? null
+      : this.session.append('system/message', { maintenance: true, message: renderedHead }, { surfaceOp: 'append' }).seq
+    // The head publication is itself an event boundary: an observer may cancel
+    // this maintenance or replace its live owner before the call returns. Check
+    // again before the message, with no await before its commit either. When the
+    // head already committed, it stays as legal recovery state and a later call
+    // with the same identity appends only the message after it.
+    this.assertIdleHistoryLive(signal)
+    const appended = this.session.append('user/message', message, { surfaceOp: 'append' })
+    const append: IdleHistoryAppend = { systemHeadSeq: established, messageSeq: appended.seq, appended: true }
+    return { ...append, checkpointed: await this.checkpointIdleHistory(append) }
+  }
+
+  /**
+   * Assemble and render the real scoped prompt for a maintenance head. The
+   * caller rechecks the surface and live ownership before committing it.
+   * @param signal - the claimed maintenance signal.
+   * @returns the rendered system message to commit as the protected head.
+   */
+  private async assembleIdleHistoryHead(signal: AbortSignal): Promise<SystemMessage> {
+    const assembly = await this.loopCtx.systemPrompt.assemble(assembleContextFor(this, signal))
+    return createSystemMessage(renderPrompt(assembly))
+  }
+
+  /**
+   * Run the durability checkpoint after both appends committed. The checkpoint
+   * cannot roll them back, so its failure reports the committed positions
+   * instead of pretending the append was undone. A cancellation after the
+   * message append still runs this checkpoint: refusing it would leave recorded
+   * history that the caller was told about but never made durable. A head
+   * committed alone is never returned as a success, so no checkpoint outcome is
+   * claimed for it.
+   * @param append - positions this call established.
+   * @returns whether at least one durability listener participated.
+   */
+  private async checkpointIdleHistory(append: IdleHistoryAppend): Promise<boolean> {
+    try {
+      return await this.loopCtx.sessions.flush(this.session)
+    } catch (error: unknown) {
+      throw new IdleHistoryError(
+        `agent "${this.id}" recorded idle history at seq ${append.messageSeq} but its durability checkpoint failed`,
+        'checkpoint',
+        append,
+        { cause: error },
+      )
+    }
+  }
+
+  /**
+   * Refuse a maintenance whose agent left the registry or whose explicit signal
+   * was aborted. Public status stays `idle` throughout a maintenance task, so
+   * this reads the live registries and the signal rather than the status.
+   * @param signal - the claimed maintenance signal.
+   * @throws an {@link IdleHistoryError} naming the aborted or replaced agent.
+   */
+  private assertIdleHistoryLive(signal: AbortSignal): void {
+    if (signal.aborted) {
+      throw new IdleHistoryError(
+        `agent "${this.id}" idle-history maintenance was cancelled`,
+        'aborted',
+        undefined,
+        { cause: signal.reason },
+      )
+    }
+    if (this.loopCtx.agents.get(this.id) !== this || this.loopCtx.sessions.get(this.id) !== this.session) {
+      throw new IdleHistoryError(
+        `agent "${this.id}" is no longer the live agent for its session`,
+        'agent-changed',
+      )
+    }
   }
 
   /**

@@ -20,6 +20,7 @@ import { turnBoundaryProjectionDefinition } from './projection.ts'
 
 export * from './runtime-types.ts'
 export * from './types.ts'
+export * from './idle-history.ts'
 export { AgentModel, modelSelectionProjectionDefinition, installModelSelection } from './model-selection.ts'
 export type { ModelSelectionProjectionState } from './model-selection.ts'
 export type * from './projection.ts'

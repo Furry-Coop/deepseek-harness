@@ -1,0 +1,28 @@
+# Bilingual-pair consistency record for 2026-11-09-idle-history-maintenance-head.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/persistence-changes/2026-11-09-idle-history-maintenance-head.md
+/:
+  en: 3d5a424ae7d7e46b
+  zh: c22a8e4a62d8cc1a
+/2026-11-09-idle-history-maintenance-head:
+  en: 1b58e049f8154b0e
+  zh: cd79ddf957b05bb2
+/2026-11-09-idle-history-maintenance-head/summary:
+  en: 41ef858dd151e6e7
+  zh: d126700b5f24e47f
+/2026-11-09-idle-history-maintenance-head/table-of-contents:
+  en: 6cf314a069ceb451
+  zh: 9adff678e9ecab3b
+/2026-11-09-idle-history-maintenance-head/declaration:
+  en: 6907136f28e48c90
+  zh: 02f8298485f3d8e7
+/2026-11-09-idle-history-maintenance-head/compatibility:
+  en: 42976227e494837b
+  zh: f198382c325a9a1d
+/2026-11-09-idle-history-maintenance-head/verification:
+  en: 5e743f70f50beffb
+  zh: 83ace235c7511da3
+/2026-11-09-idle-history-maintenance-head/dev-note:
+  en: b75c8458928b72b9
+  zh: 003ba4e17b4b5269
