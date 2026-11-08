@@ -635,8 +635,9 @@ export class AgentLoop extends Service implements AgentFactory {
           // write handle by session id; the loop only owns the handle itself.
           detachAgent = loopCtx.agents.enter(agent, parentAgent)
           // Lifecycle teardown and initialization cancellation both end creation
-          // listener work. A listener's own stop does not roll back publication:
-          // the lifecycle signal stays live and creation settles as usual.
+          // listener work. A stop leaves the lifecycle signal live, so creation
+          // publishes when the listeners return; a rejection still fails creation
+          // and rolls it back.
           const notificationSignal = AbortSignal.any([abort.signal, maintenanceSignal])
           await loopCtx.agents.announce(agent, source, notificationSignal)
           assertLive()

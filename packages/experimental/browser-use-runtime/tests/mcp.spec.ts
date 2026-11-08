@@ -497,6 +497,65 @@ describe('Session MCP Loader composition', () => {
     expect((await execute(ctx, successor.agent)).isError).toBe(false)
   })
 
+  it('a user stop during pending discovery rejects creation, skips later listeners, and releases the write handle with its queued input', async () => {
+    const { ctx, root, model } = await load(true, 'gate')
+    await ctx.plugin(JsonlSessionPersistence, { root: join(root, 'sessions') })
+    const sessionId = SessionId('user-stop-during-discovery')
+    const queuedText = 'queued while browser discovery is pending'
+    const laterListeners: string[] = []
+    let initializing!: Agent
+    let creationSignal: AbortSignal | undefined
+    ctx.on('agent/created', ({ agent }) => { laterListeners.push(agent.id) })
+    const creation = observeActivation(ctx.agents.create({
+      sessionId,
+      agentOptions: { provider: 'fixture', model: 'fixture' },
+      setup: (inner, agent) => {
+        initializing = agent
+        inner.on('agent/created', ({ signal }) => { creationSignal = signal }, { prepend: true })
+      },
+    }))
+    await expect.poll(async () => (await events(root)).some(event => event.event === 'probe')).toBe(true)
+    // The serial listener is suspended inside browser discovery.
+    expect(laterListeners).toEqual([])
+    initializing.inject(createUserMessage({ content: [{ type: 'text', text: queuedText }], source: { kind: 'user' } }))
+
+    // What session-controller.commands.cancel sends while the Agent is entered.
+    initializing.cancel({ kind: 'user' }, { keepInbox: true })
+    const rejection: unknown = await creation.then(() => { throw new Error('creation resolved instead of rejecting') }, (error: unknown) => error)
+    expect(rejection).toBeInstanceOf(Error)
+    const failure = rejection as Error
+    expect(failure.message).toBe('browser operation canceled')
+    expect(failure.cause).toEqual({ kind: 'user' })
+    expect(creationSignal?.reason).toEqual({ kind: 'user' })
+    // The rejected serial listener did not run the listeners after it.
+    expect(laterListeners).toEqual([])
+    expect(model.requests).toEqual([])
+    // Rollback removed the announced agent and released its browser process.
+    expect(ctx.agents.get(sessionId)).toBeUndefined()
+    expect(ctx.sessions.get(sessionId)).toBeUndefined()
+    expect(ctx.tools.schemas(initializing)).toEqual([])
+    for (const { pid } of (await events(root)).filter(event => event.event === 'start')) {
+      expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }))
+    }
+    // The released write handle left the passive input in the stored log.
+    const reopened = await ctx.sessionPersistence.open(sessionId, 'write')
+    try {
+      const stored = await reopened.read(0, undefined)
+      expect(JSON.stringify(stored.events)).toContain(queuedText)
+      expect(stored.events.filter(event => event.type === 'turn/start')).toEqual([])
+      expect(stored.events.filter(event =>
+        event.type === 'agent/inbox/spliced' && event.data.outcome === 'canceled')).toEqual([])
+    } finally {
+      await reopened.close()
+    }
+    // The factory lifecycle stayed live: a later creation still reaches listeners.
+    await writeFile(join(root, 'release'), '')
+    const successor = await ctx.agents.create({ sessionId: SessionId('user-stop-during-discovery-successor') })
+    expect(laterListeners).toEqual([successor.agent.id])
+    expect((await execute(ctx, successor.agent)).isError).toBe(false)
+    await successor.dispose()
+  })
+
   it('closes the discovered client when a later creation listener rejects', async () => {
     const { ctx, root, model } = await load(false, undefined, undefined, [TOOL, '<unlisted-tools>'])
     let initializing!: Agent
