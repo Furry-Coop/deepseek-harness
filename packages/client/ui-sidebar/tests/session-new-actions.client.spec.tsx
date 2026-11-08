@@ -208,6 +208,47 @@ describe('New Session action group', () => {
     await runtime.dispose()
   })
 
+  it('reports a synchronous throw and leaves the row ready for the next click', async () => {
+    const { runtime } = await bench()
+    const invoked = vi.fn(() => { throw new Error('preset gate offline') })
+    await addAction(runtime, 'sync', 'Synchronous action', 20, invoked)
+    await act(async () => {})
+    const row = groupRows()[0]!
+    row.click()
+    await act(async () => {})
+    expect(document.querySelector('[role="alert"]')?.textContent)
+      .toBe('Extra New Session action failed: preset gate offline')
+    // A throw settles the invocation immediately, so the row already released
+    // its pending guard instead of staying busy forever.
+    expect(row.getAttribute('aria-busy')).toBe('false')
+    row.click()
+    await act(async () => {})
+    expect(invoked).toHaveBeenCalledTimes(2)
+    await runtime.dispose()
+  })
+
+  it('reports a string, empty, or non-Error reason in its text form', async () => {
+    const { runtime, view } = await bench()
+    const cases: [label: string, reason: unknown, detail: string][] = [
+      ['Text reason', 'host rejected the entry', 'host rejected the entry'],
+      ['Empty text reason', '', ''],
+      ['Empty error reason', new Error(''), 'Error'],
+      ['Non-text reason', 42, '42'],
+    ]
+    let order = 20
+    for (const [label, reason] of cases) {
+      await addAction(runtime, label, label, order++, () => { throw reason })
+    }
+    await act(async () => {})
+    for (const [label, , detail] of cases) {
+      view.getByRole('button', { name: label }).click()
+      await act(async () => {})
+      expect(document.querySelector('[role="alert"]')?.textContent)
+        .toBe(`Extra New Session action failed: ${detail}`)
+    }
+    await runtime.dispose()
+  })
+
   it('drops a late rejection once its contribution is withdrawn', async () => {
     const { runtime, startSession, view } = await bench()
     const gate = Promise.withResolvers<undefined>()
