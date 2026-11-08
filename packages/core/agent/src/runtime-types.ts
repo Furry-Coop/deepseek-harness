@@ -283,7 +283,10 @@ declare module '@deepseek-ai/cordis' {
      * own owner's disposal.
      * @param payload.agent - the newly registered agent with its live session and completed setup.
      * @param payload.source - fresh creation, resume, clear, or compaction source.
-     * @param payload.signal - factory initialization cancellation signal, when provided.
+     * @param payload.signal - creation cancellation signal for listeners. It aborts
+     *   on caller, owner, or factory cancellation, which also fails creation.
+     *   `agent.cancel()` during initialization aborts listener work without
+     *   rolling back publication.
      * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
      * @mode serial
      */

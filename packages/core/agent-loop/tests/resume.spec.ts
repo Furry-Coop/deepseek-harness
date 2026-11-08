@@ -2,7 +2,7 @@ import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { ToolCallId, createMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { afterEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { appendFile, mkdtemp, readdir, rm } from 'node:fs/promises'
+import { appendFile, cp, mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
@@ -12,7 +12,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { defineContentToolFixture } from '@deepseek-ai/dsh-tool-testkit'
-import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { type Agent, type AgentHandle } from '@deepseek-ai/dsh-agent'
 import { SessionAlreadyExistsError, type SessionHandle } from '@deepseek-ai/dsh-session-persistence'
 
 import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
@@ -1392,6 +1392,269 @@ describe('creation and resume cancellation edges', () => {
     await rejection
     await disposal
     await expect.poll(() => abandoned.close.mock.calls.length).toBe(1)
+  })
+})
+
+describe('factory initialization cancellation at serial agent/created', () => {
+  /** Resolve once the creation signal aborts; the paused listener waits here. */
+  function aborted(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.resolve()
+    return new Promise((resolve) => {
+      signal.addEventListener('abort', () => { resolve() }, { once: true })
+    })
+  }
+
+  /** Copy a storage root so the resumed lifecycle reads committed bytes only. */
+  async function copyStorageRoot(root: string): Promise<string> {
+    const copy = await mkdtemp(join(tmpdir(), 'dsh-resume-cold-'))
+    dirs.push(copy)
+    await cp(root, copy, { recursive: true })
+    return copy
+  }
+
+  /**
+   * Seed a real session whose committed log ends with a passive next-step
+   * occurrence, then return a cold copy of its storage root. The seeding
+   * lifecycle is disposed after the copy, so the copy carries committed bytes
+   * only; its pending occurrence is what a crash recovery would see.
+   */
+  async function seedPendingPassiveInput(sessionId: SessionId): Promise<{
+    root: string
+    pendingText: string
+    seededTurns: number
+  }> {
+    const pendingText = 'pending background input'
+    const { ctx, root } = await persistentHarness(new MockAdapter([textResponse('seeded answer')]))
+    const handle = await ctx.agents.create({
+      sessionId,
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })
+    handle.agent.followup(createUserMessage({
+      content: [{ type: 'text', text: 'seed question' }],
+      source: { kind: 'user' },
+    }))
+    await waitForIdle(ctx, handle.agent)
+    handle.agent.inject(createUserMessage({
+      content: [{ type: 'text', text: pendingText }],
+      source: { kind: 'user' },
+    }))
+    await handle.agent.whenIdle()
+    await ctx.sessions.flush(handle.agent.session)
+    expect(handle.agent.inbox.nextStep.map(message => message.content)).toEqual([
+      [{ type: 'text', text: pendingText }],
+    ])
+    const seededTurns = handle.agent.session.snapshotEvents()
+      .filter(event => event.type === 'turn/start').length
+    expect(seededTurns).toBe(1)
+    const copy = await copyStorageRoot(root)
+    await handle.dispose()
+    await ctx.fiber.dispose()
+    return { root: copy, pendingText, seededTurns }
+  }
+
+  it('a user stop at serial agent/created aborts the create notification, settles publication, and retains queued input', async () => {
+    const sessionId = SessionId('factory-init-create-user-stop')
+    const queuedText = 'queued during creation'
+    const adapter = new MockAdapter([])
+    const { ctx } = await persistentHarness(adapter)
+
+    const entered = Promise.withResolvers<undefined>()
+    const notificationEnded = Promise.withResolvers<undefined>()
+    let announced: Agent | undefined
+    let creationSignal: AbortSignal | undefined
+    let laterListenerRan = false
+
+    ctx.on('agent/created', async ({ agent, source, signal }) => {
+      if (agent.id !== sessionId) return
+      expect(source).toBe('startup')
+      expect(signal).toBeDefined()
+      // Entered for the announcement, so the public stop path already reaches
+      // this agent through the registry.
+      expect(ctx.agents.get(sessionId)).toBe(agent)
+      expect(ctx.sessions.get(sessionId)).toBe(agent.session)
+      announced = agent
+      creationSignal = signal
+      // A passive message legitimately queued while the notification is suspended.
+      agent.inject(createUserMessage({
+        content: [{ type: 'text', text: queuedText }],
+        source: { kind: 'user' },
+      }))
+      entered.resolve(undefined)
+      // Serial listener: later creation listeners wait for this one.
+      await aborted(signal!)
+      notificationEnded.resolve(undefined)
+    })
+    ctx.on('agent/created', () => { laterListenerRan = true })
+
+    const creating = ctx.agents.create({
+      sessionId,
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })
+    let handle: AgentHandle | undefined
+    try {
+      await entered.promise
+      expect(laterListenerRan).toBe(false)
+      expect(creationSignal?.aborted).toBe(false)
+
+      // The public stop path: session-controller cancels with keepInbox.
+      announced!.cancel({ kind: 'user' }, { keepInbox: true })
+      await promptly(notificationEnded.promise)
+      expect(creationSignal!.aborted).toBe(true)
+      expect(creationSignal!.reason).toEqual({ kind: 'user' })
+      expect(JSON.stringify(announced!.inbox.nextStep)).toContain(queuedText)
+
+      handle = await promptly(creating)
+      expect(handle.agent).toBe(announced)
+      expect(laterListenerRan).toBe(true)
+      expect(handle.agent.status).toBe('idle')
+      // The retained passive input never wakes a turn, and no model request ran.
+      expect(adapter.requests).toEqual([])
+      expect(handle.agent.session.snapshotEvents().filter(event => event.type === 'turn/start'))
+        .toHaveLength(0)
+
+      await ctx.sessions.flush(handle.agent.session)
+      const stored = await readStoredEvents(ctx, sessionId)
+      // keepInbox retained the occurrence: no cancellation splice was recorded.
+      expect(stored.filter(event =>
+        event.type === 'agent/inbox/spliced' && event.data.outcome === 'canceled')).toEqual([])
+      expect(stored.filter(event => event.type === 'turn/start')).toHaveLength(0)
+    } finally {
+      await handle?.dispose()
+      await ctx.fiber.dispose()
+      await creating.catch(() => {})
+    }
+  })
+
+  it('a user stop at serial agent/created during cold resume aborts the notification and keeps the restored passive input', async () => {
+    const sessionId = SessionId('factory-init-resume-user-stop')
+    const { root, pendingText, seededTurns } = await seedPendingPassiveInput(sessionId)
+    const adapter = new MockAdapter([])
+    const ctx = await mountPersistentHarness(root, adapter)
+
+    const entered = Promise.withResolvers<undefined>()
+    const notificationEnded = Promise.withResolvers<undefined>()
+    let announced: Agent | undefined
+    let creationSignal: AbortSignal | undefined
+    let laterListenerRan = false
+
+    ctx.on('agent/created', async ({ agent, source, signal }) => {
+      if (agent.id !== sessionId) return
+      expect(source).toBe('resume')
+      expect(signal).toBeDefined()
+      expect(ctx.agents.get(sessionId)).toBe(agent)
+      expect(ctx.sessions.get(sessionId)).toBe(agent.session)
+      // The pending occurrence was restored from the cold log before the announcement.
+      expect(JSON.stringify(agent.inbox.nextStep)).toContain(pendingText)
+      expect(agent.inbox.nextTurn).toEqual([])
+      announced = agent
+      creationSignal = signal
+      entered.resolve(undefined)
+      await aborted(signal!)
+      notificationEnded.resolve(undefined)
+    })
+    ctx.on('agent/created', () => { laterListenerRan = true })
+
+    const resuming = ctx.agents.resume({
+      resumeSessionId: sessionId,
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })
+    let handle: AgentHandle | undefined
+    try {
+      await entered.promise
+      expect(laterListenerRan).toBe(false)
+      expect(creationSignal?.aborted).toBe(false)
+
+      announced!.cancel({ kind: 'user' }, { keepInbox: true })
+      await promptly(notificationEnded.promise)
+      expect(creationSignal!.aborted).toBe(true)
+      expect(creationSignal!.reason).toEqual({ kind: 'user' })
+      expect(JSON.stringify(announced!.inbox.nextStep)).toContain(pendingText)
+
+      handle = await promptly(resuming)
+      expect(handle.agent).toBe(announced)
+      expect(laterListenerRan).toBe(true)
+      expect(handle.agent.status).toBe('idle')
+      // No model dispatch and no new turn: the passive input never woke one.
+      expect(adapter.requests).toEqual([])
+      expect(handle.agent.session.snapshotEvents().filter(event => event.type === 'turn/start'))
+        .toHaveLength(seededTurns)
+
+      await ctx.sessions.flush(handle.agent.session)
+      const stored = await readStoredEvents(ctx, sessionId)
+      expect(stored.filter(event =>
+        event.type === 'agent/inbox/spliced' && event.data.outcome === 'canceled')).toEqual([])
+      expect(stored.filter(event => event.type === 'turn/start')).toHaveLength(seededTurns)
+    } finally {
+      await handle?.dispose()
+      await ctx.fiber.dispose()
+      await resuming.catch(() => {})
+    }
+  })
+
+  it('an owner release at serial agent/created rolls the unpublished resume back and releases the write handle', async () => {
+    const sessionId = SessionId('factory-init-resume-owner-release')
+    const { root, pendingText, seededTurns } = await seedPendingPassiveInput(sessionId)
+    const adapter = new MockAdapter([])
+    const ctx = await mountPersistentHarness(root, adapter)
+
+    const entered = Promise.withResolvers<undefined>()
+    const notificationEnded = Promise.withResolvers<undefined>()
+    let announced: Agent | undefined
+    let creationSignal: AbortSignal | undefined
+    let laterListenerRan = false
+    let resuming!: ReturnType<typeof ctx.agents.resume>
+
+    ctx.on('agent/created', async ({ agent, source, signal }) => {
+      if (agent.id !== sessionId) return
+      expect(source).toBe('resume')
+      expect(signal).toBeDefined()
+      expect(JSON.stringify(agent.inbox.nextStep)).toContain(pendingText)
+      announced = agent
+      creationSignal = signal
+      entered.resolve(undefined)
+      await aborted(signal!)
+      notificationEnded.resolve(undefined)
+    })
+    ctx.on('agent/created', () => { laterListenerRan = true })
+
+    const owner = await ctx.plugin(Object.assign((inner: Context) => {
+      resuming = inner.agents.resume({
+        resumeSessionId: sessionId,
+        agentOptions: { provider: 'mock', model: 'mock' },
+      })
+    }, { inject: ['agents'] }))
+    try {
+      await entered.promise
+      expect(laterListenerRan).toBe(false)
+      expect(creationSignal?.aborted).toBe(false)
+      // Entered for the announcement, but the resume has not resolved yet.
+      expect(ctx.agents.get(sessionId)).toBe(announced)
+      expect(ctx.sessions.get(sessionId)).toBe(announced?.session)
+
+      // Releasing the owner aborts the factory lifecycle signal the seam exposes.
+      await promptly(owner.dispose())
+      await promptly(notificationEnded.promise)
+      expect(creationSignal!.aborted).toBe(true)
+      expect(String(creationSignal!.reason)).toMatch(/owner disposed during setup/)
+
+      await expect(promptly(resuming)).rejects.toThrow(/owner disposed during setup/)
+      // Rollback: nothing stayed published, and no model work started.
+      expect(ctx.agents.get(sessionId)).toBeUndefined()
+      expect(ctx.sessions.get(sessionId)).toBeUndefined()
+      expect(adapter.requests).toEqual([])
+
+      // The abandoned write handle was closed, so the identity is claimable again.
+      const reopened = await ctx.sessionPersistence.open(sessionId, 'write')
+      const cold = await reopened.read(0, undefined)
+      expect(cold.events.filter(event => event.type === 'turn/start')).toHaveLength(seededTurns)
+      // Rollback retains restored input instead of discarding it.
+      expect(cold.events.filter(event =>
+        event.type === 'agent/inbox/spliced' && event.data.outcome === 'canceled')).toEqual([])
+      await reopened.close()
+    } finally {
+      await ctx.fiber.dispose()
+      await resuming.catch(() => {})
+    }
   })
 })
 

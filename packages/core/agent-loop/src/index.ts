@@ -618,7 +618,7 @@ export class AgentLoop extends Service implements AgentFactory {
       const agent = machine
       assertLive()
 
-      return await agent.runMaintenance(async () => {
+      return await agent.runMaintenance(async (maintenanceSignal) => {
         publication = Promise.withResolvers<void>()
         try {
           assertLive()
@@ -634,7 +634,11 @@ export class AgentLoop extends Service implements AgentFactory {
           // The mounted backend routes announced live events into the active
           // write handle by session id; the loop only owns the handle itself.
           detachAgent = loopCtx.agents.enter(agent, parentAgent)
-          await loopCtx.agents.announce(agent, source, abort.signal)
+          // Lifecycle teardown and initialization cancellation both end creation
+          // listener work. A listener's own stop does not roll back publication:
+          // the lifecycle signal stays live and creation settles as usual.
+          const notificationSignal = AbortSignal.any([abort.signal, maintenanceSignal])
+          await loopCtx.agents.announce(agent, source, notificationSignal)
           assertLive()
           ready = true
           return { agent, dispose }

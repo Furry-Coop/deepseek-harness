@@ -553,7 +553,9 @@ export class AgentRegistry extends Service {
    * Announce an agent previously inserted with {@link enter}.
    * @param agent - the live inserted agent to announce.
    * @param source - fresh creation, resume, clear, or compaction source.
-   * @param signal - optional factory initialization cancellation signal passed to listeners.
+   * @param signal - optional creation-cancellation signal for listeners. It aborts
+   *   on caller, owner, or factory cancellation, or on `agent.cancel()` during
+   *   initialization.
    * @returns completion of the serial creation listeners; a listener failure rejects.
    * @throws if `agent` is not the exact live registry entry for its id, or its
    *   creation announcement already began (including a reentrant call from a
