@@ -1780,6 +1780,53 @@ describe('SessionStore', () => {
     expect(ctx.sessions.get(session.id)).toBeUndefined()
   })
 
+  it('defers a detach requested by a control-write settlement until the post-publication drain finishes', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const session = ctx.sessions.prepare(SessionId('control-write-drain-detach'))
+    const detach = ctx.sessions.enter(session)
+    ctx.sessions.announce(session)
+    const order: string[] = []
+    let attachedWhileB = false
+    ctx.on('session/event', (subject, event) => {
+      if (subject !== session) return
+      if (event.type === 'turn/start') {
+        order.push('outer')
+        // A is the one control record this publication defers.
+        appendAfterPublication(session, 'request/context', { provider: 'A', model: 'model' }, () => {
+          order.push('A settled')
+          // appending is already false here, but the drain still owns B.
+          detach()
+        })
+        return
+      }
+      if (event.type !== 'request/context') return
+      if (event.data.provider === 'A') {
+        order.push('A')
+        // A's own publication queues B in the single slot the drain cleared for A.
+        appendAfterPublication(session, 'request/context', { provider: 'B', model: 'model' }, () => {
+          order.push('B settled')
+        })
+        return
+      }
+      order.push('B')
+      attachedWhileB = ctx.sessions.get(session.id) === session
+    })
+    ctx.on('session/disposed', () => { order.push('disposed') })
+
+    session.append('turn/start', { turn: 1 })
+
+    // The request from A's settlement waits for the drain to run and settle B,
+    // so the deferred detach follows both records instead of clearing B.
+    expect(order).toEqual(['outer', 'A', 'A settled', 'B', 'B settled', 'disposed'])
+    expect(attachedWhileB).toBe(true)
+    expect(session.snapshotEvents().map(event => event.type))
+      .toEqual(['turn/start', 'request/context', 'request/context'])
+    expect(session.snapshotEvents().flatMap(event =>
+      event.type === 'request/context' ? [event.data.provider] : [])).toEqual(['A', 'B'])
+    expect(ctx.sessions.get(session.id)).toBeUndefined()
+  })
+
   it('contains a throwing control-write settlement after committing the record and detaching', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)

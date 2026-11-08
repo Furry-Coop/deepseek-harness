@@ -1373,9 +1373,10 @@ export class SessionStore extends Service {
       if (!entered) return
       entered = false
       // A lifecycle listener may own the advanced detach capability. Keep the
-      // entry and its publication hooks live until synchronous creation or append
-      // publication unwinds, then publish the paired disposal edge.
-      if (entry.announcement === 'dispatching' || entry.appending) {
+      // entry and its publication hooks live until synchronous creation, append
+      // publication, and any post-publication drain unwinds, then publish the
+      // paired disposal edge.
+      if (entry.announcement === 'dispatching' || entry.appending || entry.draining) {
         entry.detachRequested = true
         return
       }
