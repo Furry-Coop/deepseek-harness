@@ -255,7 +255,15 @@ export class AgentPresetRegistry extends TypertRemoteService {
    * @param id - requested preset identity.
    */
   private assertUserSelectable(id: string): void {
-    if (this.definitions.get(id)?.config.userSelectable === false) {
+    this.assertSelectable(id, this.definitions.get(id))
+  }
+
+  /** Reject the definition one user-facing operation resolved.
+   * @param id - requested preset identity.
+   * @param record - the definition resolved for this operation, absent when the roster has none.
+   */
+  private assertSelectable(id: string, record: Definition | undefined): void {
+    if (record?.config.userSelectable === false) {
       throw new RemoteError('agent-preset/not-selectable', `Agent preset "${id}" is not user-selectable`, { agentPreset: id })
     }
   }
@@ -445,7 +453,13 @@ export class AgentPresetRegistry extends TypertRemoteService {
       if (boundary.openTurnStartSeq !== null || boundary.lastTurn > 0) {
         throw new RemoteError('agent-preset/locked', 'This session has already started', { sessionId: agent.id, agentPreset })
       }
-      const current = this.definitions.get(agentPreset)?.generation
+      // Gate and compare against the definition this queued switch actually
+      // resolves: earlier switches on the same Agent can run while the roster
+      // replaces or withdraws an identity, and the unchanged-revision return
+      // below bypasses the mount's own check.
+      const record = this.definitions.get(agentPreset)
+      this.assertSelectable(agentPreset, record)
+      const current = record?.generation
       if (current !== undefined && this.generationFor(agent.ctx) === current
         && this.agentPresetProjectionHandle.stateOf(agent.session) === agentPreset) return agentPreset
       const preset = await this.recompose(agent.ctx, agentPreset)

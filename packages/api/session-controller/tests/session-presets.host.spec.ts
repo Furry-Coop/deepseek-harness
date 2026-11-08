@@ -7,7 +7,8 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { Agent, AgentFactory } from '@deepseek-ai/dsh-agent'
-import { agentPresetProjectionDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
+import AgentPresets, { agentPresetProjectionDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
+import { createScope, scopeOf, scopeParentOf, type ScopeKey } from '@deepseek-ai/dsh-scope'
 import SessionStore, { SESSION_FORMAT_VERSION, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
@@ -36,6 +37,8 @@ interface StoredSession {
 interface HarnessOptions {
   /** Declared presets; the first is the default. Omitted, no roster is composed. */
   readonly presets?: readonly string[]
+  /** Compose the production registry; `presets` then seeds only its deployment default. */
+  readonly realRoster?: boolean
   /** Stored Sessions keyed by id. */
   readonly stored?: ReadonlyMap<SessionId, StoredSession>
   /** Stored Sessions whose writer another owner holds. */
@@ -70,64 +73,77 @@ async function harness(options: HarnessOptions = {}) {
   await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(AgentRegistry)
-  const preset = await ctx.sessionProjections.register(agentPresetProjectionDefinition)
   const presets = options.presets
   const selections: { sessionId: SessionId; agentPreset: string }[] = []
   const resumed: SessionId[] = []
-  if (presets !== undefined) {
-    const known = (id?: string): string => {
-      const wanted = id ?? presets[0] ?? ''
-      if (!presets.includes(wanted)) {
-        throw new RemoteError('agent-preset/not-found', `Unknown agent preset: ${wanted}`, {
-          agentPreset: wanted, available: [...presets],
-        })
+  /** Revision of each live Agent this double composed; `select` treats it as already mounted. */
+  const bound = new Map<SessionId, string>()
+  if (presets !== undefined && options.realRoster === true) {
+    // These declarations carry no plugin rows, so the injected Loader is never
+    // asked to resolve or await one.
+    ctx.provide('loader', { await: () => Promise.resolve() } as never)
+    await ctx.plugin(AgentPresets, { default: presets[0] ?? '' })
+  } else {
+    const preset = await ctx.sessionProjections.register(agentPresetProjectionDefinition)
+    if (presets !== undefined) {
+      const known = (id?: string): string => {
+        const wanted = id ?? presets[0] ?? ''
+        if (!presets.includes(wanted)) {
+          throw new RemoteError('agent-preset/not-found', `Unknown agent preset: ${wanted}`, {
+            agentPreset: wanted, available: [...presets],
+          })
+        }
+        return wanted
       }
-      return wanted
-    }
-    const usable = (id?: string): string => {
-      const wanted = known(id)
-      if (options.broken?.has(wanted) === true) {
-        throw new RemoteError('agent-preset/invalid', 'activation failed', { agentPreset: wanted, reason: 'activation failed' })
+      const usable = (id?: string): string => {
+        const wanted = known(id)
+        if (options.broken?.has(wanted) === true) {
+          throw new RemoteError('agent-preset/invalid', 'activation failed', { agentPreset: wanted, reason: 'activation failed' })
+        }
+        return wanted
       }
-      return wanted
-    }
-    ctx.provide('agentPresets', {
-      defaultId: presets[0],
-      presetForSession: (session: Session) => preset.stateOf(session),
-      resolve: (id?: string) => Promise.resolve(id === undefined ? undefined : options.resolving?.get(id))
-        .then(() => {
-          const knownId = known(id)
-          return {
-            id: knownId,
-            ...(options.internal?.has(knownId) === true ? { userSelectable: false } : {}),
+      ctx.provide('agentPresets', {
+        defaultId: presets[0],
+        presetForSession: (session: Session) => preset.stateOf(session),
+        resolve: (id?: string) => Promise.resolve(id === undefined ? undefined : options.resolving?.get(id))
+          .then(() => {
+            const knownId = known(id)
+            return {
+              id: knownId,
+              ...(options.internal?.has(knownId) === true ? { userSelectable: false } : {}),
+            }
+          }),
+        mount: (_ctx: Context, id?: string, mountOptions?: { readonly requireUserSelectable?: boolean }) => Promise.resolve().then(() => {
+          const knownId = usable(id)
+          if (mountOptions?.requireUserSelectable === true && options.raced?.has(knownId) === true) {
+            throw new RemoteError('agent-preset/not-selectable', `Agent preset "${knownId}" is not user-selectable`, {
+              agentPreset: knownId,
+            })
           }
+          return { id: knownId }
         }),
-      mount: (_ctx: Context, id?: string, mountOptions?: { readonly requireUserSelectable?: boolean }) => Promise.resolve().then(() => {
-        const knownId = usable(id)
-        if (mountOptions?.requireUserSelectable === true && options.raced?.has(knownId) === true) {
-          throw new RemoteError('agent-preset/not-selectable', `Agent preset "${knownId}" is not user-selectable`, {
-            agentPreset: knownId,
-          })
-        }
-        return { id: knownId }
-      }),
-      select: async (agent: Agent, agentPreset: string) => {
-        usable(agentPreset)
-        if (options.internal?.has(agentPreset) === true) {
-          throw new RemoteError('agent-preset/not-selectable', `Agent preset "${agentPreset}" is not user-selectable`, {
-            agentPreset,
-          })
-        }
-        if (options.locked?.has(agent.id) === true) {
-          throw new RemoteError('agent-preset/locked', 'This session has already started', {
-            sessionId: agent.id, agentPreset,
-          })
-        }
-        selections.push({ sessionId: agent.id, agentPreset })
-        agent.session.append('agent-preset/selected', { agentPreset })
-        return agentPreset
-      },
-    } as never)
+        select: async (agent: Agent, agentPreset: string) => {
+          usable(agentPreset)
+          if (options.internal?.has(agentPreset) === true) {
+            throw new RemoteError('agent-preset/not-selectable', `Agent preset "${agentPreset}" is not user-selectable`, {
+              agentPreset,
+            })
+          }
+          if (options.locked?.has(agent.id) === true) {
+            throw new RemoteError('agent-preset/locked', 'This session has already started', {
+              sessionId: agent.id, agentPreset,
+            })
+          }
+          // The production registry returns early only when the Agent already
+          // runs the current revision of the requested definition.
+          if (bound.get(agent.id) === agentPreset && preset.stateOf(agent.session) === agentPreset) return agentPreset
+          selections.push({ sessionId: agent.id, agentPreset })
+          agent.session.append('agent-preset/selected', { agentPreset })
+          bound.set(agent.id, agentPreset)
+          return agentPreset
+        },
+      } as never)
+    }
   }
   const stored = options.stored ?? new Map<SessionId, StoredSession>()
   ctx.provide('sessionPersistence', testSessionPersistence(ctx, {
@@ -151,11 +167,13 @@ async function harness(options: HarnessOptions = {}) {
     setup: Parameters<AgentFactory['createAgent']>[1]['setup'],
   ): Promise<{ agent: Agent; dispose: () => Promise<void> }> => {
     const agent = stubAgent(session)
-    ;(agent as { ctx?: Context }).ctx = ctx
+    // Preset revisions bind through the Agent scope, so every Agent gets one.
+    const scope = createScope(ctx, {})
+    ;(agent as { ctx?: Context }).ctx = scope.ctx
     const detach = ctx.effect(() => ctx.sessions.enter(session))
     try {
       ctx.sessions.announce(session)
-      const commit = await setup?.(ctx, agent)
+      const commit = await setup?.(scope.ctx, agent)
       commit?.commit()
       const unregister = await ctx.agents.register(agent)
       return { agent, dispose: async () => { await unregister(); await detach() } }
@@ -167,6 +185,7 @@ async function harness(options: HarnessOptions = {}) {
   const factory: AgentFactory = {
     async createAgent(_ownerCtx, create) {
       const session = ctx.sessions.prepare(create.sessionId, create.meta === undefined ? {} : { meta: create.meta })
+      if (create.meta?.agentPreset !== undefined) bound.set(session.id, create.meta.agentPreset)
       return publish(session, create.setup)
     },
     async resume(_ownerCtx, resume) {
@@ -178,6 +197,7 @@ async function harness(options: HarnessOptions = {}) {
       if (record === undefined || options.unreadable?.has(id) === true) {
         throw new Error(`test persistence cannot open Session "${id}" for writing`)
       }
+      bound.delete(id)
       if (options.publishedByOtherResume?.has(id) === true) {
         await publish(ctx.sessions.prepare(id, { meta: record.header, seed: [...record.events] }), undefined)
         throw Object.assign(new Error(`session "${id}" is written by this process`), { name: 'SessionAlreadyOwnedError' })
@@ -197,7 +217,7 @@ async function harness(options: HarnessOptions = {}) {
   })
   const presetOf = (id: SessionId): string | null | undefined => {
     const session = ctx.sessions.get(id)
-    return session === undefined ? undefined : preset.stateOf(session)
+    return session === undefined ? undefined : ctx.get('agentPresets')?.presetForSession(session)
   }
   const selectedEvents = (id: SessionId): unknown[] => {
     const session = ctx.sessions.get(id)
@@ -309,14 +329,14 @@ describe('session.create reuse of a live blank Session', () => {
   })
 
   it('keeps a blank Session that already runs the requested preset', async () => {
-    const { ctx, remote, selections } = await harness({ presets: ['standard', 'minimal'] })
-    await remote.create({ sessionId: SessionId('draft') })
-    ctx.sessions.get(SessionId('draft'))?.append('agent-preset/selected', { agentPreset: 'minimal' })
+    const { remote, selections, selectedEvents } = await harness({ presets: ['standard', 'minimal'] })
+    await remote.create({ sessionId: SessionId('draft'), agentPreset: 'minimal' })
 
     const reused = await remote.create({ sessionId: SessionId('draft'), agentPreset: 'minimal' })
 
     expect(reused).toMatchObject({ ok: true, value: { sessionId: 'draft', agentPreset: 'minimal' } })
     expect(selections).toEqual([])
+    expect(selectedEvents(SessionId('draft'))).toEqual([])
   })
 
   it('validates the requested preset before touching the blank Session', async () => {
@@ -371,6 +391,19 @@ describe('session.create reuse of a live blank Session', () => {
 
     if (!created.ok) throw new Error(`create failed: ${created.error.message}`)
     expect(created.value.sessionId).not.toBe('racing')
+  })
+
+  it('creates a new Session when a turn starts before a same-preset reuse', async () => {
+    const { remote } = await harness({
+      presets: ['standard'],
+      locked: new Set([SessionId('settled')]),
+    })
+    await remote.create({ sessionId: SessionId('settled') })
+
+    const created = await remote.create({ sessionId: SessionId('settled') })
+
+    if (!created.ok) throw new Error(`create failed: ${created.error.message}`)
+    expect(created.value.sessionId).not.toBe('settled')
   })
 
   it('serializes concurrent reuse of one Session in request order', async () => {
@@ -722,5 +755,62 @@ describe('session.create Workspace placement', () => {
     expect(created.value.sessionId).not.toBe('placed-draft')
     expect(selections).toEqual([])
     expect(presetOf(draft)).toBe('minimal')
+  })
+})
+
+/** Scope key of the preset revision the live Agent's context resolves through. */
+function presetRevision(agent: Agent): ScopeKey | undefined {
+  const scope = scopeOf(agent.ctx)
+  return scope === undefined ? undefined : scopeParentOf(scope)
+}
+
+/** Scope key of a preset identity's current revision. */
+async function currentRevision(ctx: Context, id: string): Promise<ScopeKey> {
+  await using lease = await ctx.agentPresets.acquireScope(id)
+  return lease.key
+}
+
+describe('session.create reuse with the production preset registry', () => {
+  it('keeps a blank Session that already runs the current revision without another selection', async () => {
+    const { ctx, remote, selectedEvents } = await harness({ presets: ['standard'], realRoster: true })
+    await ctx.agentPresets.register({ id: 'shared', plugins: [] })
+
+    const created = await remote.create({ sessionId: SessionId('settled'), agentPreset: 'shared' })
+    if (!created.ok) throw new Error(`create failed: ${created.error.message}`)
+    const agent = ctx.agents.get(SessionId('settled'))
+    if (agent === undefined) throw new Error('create published no Agent')
+    const revision = presetRevision(agent)
+    expect(revision).toBe(await currentRevision(ctx, 'shared'))
+
+    const reused = await remote.create({ sessionId: SessionId('settled'), agentPreset: 'shared' })
+
+    expect(reused).toMatchObject({ ok: true, value: { sessionId: 'settled', agentPreset: 'shared' } })
+    expect(presetRevision(agent)).toBe(revision)
+    expect(selectedEvents(SessionId('settled'))).toEqual([])
+    expect(ctx.agentPresets.inspectCompositions()).toHaveLength(1)
+  })
+
+  it('rebinds a blank Session recording a withdrawn internal revision of the requested preset', async () => {
+    const { ctx, remote, cwd } = await harness({ presets: ['standard'], realRoster: true })
+    const withdraw = await ctx.agentPresets.register({ id: 'shared', userSelectable: false, plugins: [] })
+    const internalRevision = await currentRevision(ctx, 'shared')
+    // Trusted composition: an internal preset mounted by id, as internal roles
+    // and cold recovery do.
+    const { agent } = await ctx.agents.create({
+      sessionId: SessionId('retained'),
+      meta: { cwd, agentPreset: 'shared' },
+      setup: async (agentCtx) => { await ctx.agentPresets.mount(agentCtx, 'shared') },
+    })
+    await withdraw()
+    await ctx.agentPresets.register({ id: 'shared', plugins: [] })
+    const publicRevision = await currentRevision(ctx, 'shared')
+    expect(publicRevision).not.toBe(internalRevision)
+    expect(presetRevision(agent)).toBe(internalRevision)
+
+    const reused = await remote.create({ sessionId: SessionId('retained'), agentPreset: 'shared' })
+
+    expect(reused).toMatchObject({ ok: true, value: { sessionId: 'retained', agentPreset: 'shared' } })
+    expect(presetRevision(agent)).toBe(publicRevision)
+    expect(ctx.agentPresets.inspectCompositions()).toHaveLength(1)
   })
 })

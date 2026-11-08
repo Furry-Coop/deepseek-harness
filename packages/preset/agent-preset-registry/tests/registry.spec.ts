@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { createScope } from '@deepseek-ai/dsh-scope'
+import { createScope, scopeOf, scopeParentOf } from '@deepseek-ai/dsh-scope'
 import AgentRegistry, { assembleContextFor } from '@deepseek-ai/dsh-agent'
 import { entryListProblem } from '../src/index.ts'
 import { currentKey, harness, declare, contribution, agentOn, liveRegistries, plugin } from './harness.ts'
@@ -415,6 +415,42 @@ it('logs the default preset a blank Session runs once it is selected without a r
   expect(await ctx.agentPresets.select(agent, 'standard')).toBe('standard')
 
   expect(ctx.agentPresets.presetForSession(agent.session)).toBe('standard')
+})
+
+it('re-applies the internal gate to the definition a queued selection resolves', async () => {
+  const ctx = await setup()
+  await declare(ctx, contribution('standard'))
+  const shared = await declare(ctx, contribution('shared'))
+  const agent = await agentOn(ctx, 'queued')
+  expect(await ctx.agentPresets.select(agent, 'shared')).toBe('shared')
+
+  // A switch that never mounts holds the queue; the roster and the Agent's
+  // revision both change before the queued selection below runs.
+  let release!: () => void
+  const paused = new Promise<void>((resolve) => { release = resolve })
+  let entered!: () => void
+  const started = new Promise<void>((resolve) => { entered = resolve })
+  ctx.loader.builtins.failingGate = { async apply() {
+    entered()
+    await paused
+    throw new Error('activation refused')
+  } }
+  const pending = declare(ctx, { id: 'pending', plugins: [{ name: 'cordis:failingGate' }] })
+  await started
+  const failed = ctx.agentPresets.select(agent, 'pending')
+  const queued = ctx.agentPresets.select(agent, 'shared')
+
+  await shared.dispose()
+  await declare(ctx, { id: 'shared', userSelectable: false, plugins: [] })
+  const internalRevision = await currentKey(ctx, 'shared')
+  await ctx.agentPresets.mount(agent.ctx, 'shared')
+  expect(scopeParentOf(scopeOf(agent.ctx)!)).toBe(internalRevision)
+
+  release()
+  await pending
+  await expect(failed).rejects.toMatchObject({ code: 'agent-preset/invalid' })
+  await expect(queued).rejects.toMatchObject({ code: 'agent-preset/not-selectable' })
+  expect(scopeParentOf(scopeOf(agent.ctx)!)).toBe(internalRevision)
 })
 
 it('recomposes and logs a repeated selection once the preset definition was replaced', async () => {

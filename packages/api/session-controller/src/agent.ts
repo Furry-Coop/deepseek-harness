@@ -423,7 +423,7 @@ export class ApiSessionAgentController {
     }
   }
 
-  /** @returns the live blank Session under the requested preset, or undefined when it cannot be reused. */
+  /** @returns the live blank Session running the requested preset revision, or undefined when it cannot be reused. */
   private async reuseLive(
     live: Agent,
     request: ApiSessionCreateRequest,
@@ -431,10 +431,16 @@ export class ApiSessionAgentController {
   ): Promise<Agent | undefined> {
     if (!request.reusable(live.id) || !this.isBlank(live.session)) return undefined
     this.assertPresetApplicable(live.id, request.agentPreset)
-    const current = this.presetForSession(live.session)
     const presets = this.ctx.get('agentPresets')
     const target = composition.agentPreset
-    if (presets === undefined || target === undefined || target === current) return live
+    if (presets === undefined || target === undefined) return live
+    // The recorded preset id does not prove which revision the live Agent runs:
+    // a withdrawn internal definition keeps its generation through that Agent's
+    // binding, and a later public definition can reuse the id. Selection
+    // compares the binding the Agent holds against the current revision, so a
+    // real revision change rebinds before this ordinary caller receives the
+    // Agent, while an unchanged revision keeps its composition without another
+    // record.
     try {
       await presets.select(live, target)
     } catch (error: unknown) {
