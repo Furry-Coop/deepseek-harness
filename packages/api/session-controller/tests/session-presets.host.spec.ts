@@ -293,7 +293,7 @@ describe('session.create Agent preset identity', () => {
     expect(presetOf(SessionId('s-internal'))).toBeUndefined()
   })
 
-  it('rejects a create when the preset turns internal between resolution and the adopted generation', async () => {
+  it('reports a preset that turns internal after adoption as an unknown creation outcome', async () => {
     const { remote, presetOf } = await harness({
       presets: ['standard', 'internal'],
       raced: new Set(['internal']),
@@ -301,7 +301,12 @@ describe('session.create Agent preset identity', () => {
 
     const response = await remote.create({ sessionId: SessionId('s-raced'), agentPreset: 'internal' })
 
-    expect(response).toMatchObject({ ok: false, error: { code: 'agent-preset/not-selectable' } })
+    // The refusal came from the preset mount inside the factory, after the Host
+    // may already have stored the Session, so it is not reported as a
+    // pre-create refusal; the original diagnostic stays in the message.
+    expect(response).toMatchObject({ ok: false, error: { code: 'gateway/internal' } })
+    if (response.ok) throw new Error('expected the create to fail')
+    expect(response.error.message).toContain('agent-preset/not-selectable')
     expect(presetOf(SessionId('s-raced'))).toBeUndefined()
   })
 })

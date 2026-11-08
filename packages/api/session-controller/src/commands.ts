@@ -21,10 +21,11 @@ import type { SessionEvent, SessionHeader, SessionId, UserMessage } from '@deeps
 import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
 import { SessionTitleInvalidError } from '@deepseek-ai/dsh-session-title'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
-import { RemoteError, remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
+import { RemoteError, remoteErrorOf, type RemoteFailure } from '@deepseek-ai/dsh-typert-protocol'
 import type { Workspace } from '@deepseek-ai/dsh-workspace'
 import {
   ApiSessionAgentController,
+  ApiSessionCreationFailed,
   ApiSessionCwdConflict,
   ApiSessionPresetConflict,
   ApiSessionSubagentOwnership,
@@ -82,34 +83,35 @@ function operationKey(operation: SessionCreateOperationContext): string {
 }
 
 /**
- * Whether a failed attempt provably created nothing, created a known Session,
- * or left the result unknown.
+ * Whether a failed attempt provably created nothing, created a Session whose
+ * identity the Controller holds, or left the result unknown.
+ *
+ * The Agent Controller records whether the attempt entered a factory call and
+ * the identity that call returned; no failure code thrown by a plugin decides
+ * this. Only failures this Controller raises itself are read by code.
  * @param error - the failure thrown out of the creation attempt.
- * @returns the creation knowledge carried by the failure code.
+ * @returns the creation knowledge the Controller holds for the attempt.
  */
 function creationKnowledgeOf(error: unknown): SessionCreationKnowledge {
-  // The Controller refuses a named preset on a reused blank Session before
-  // creating anything, so this class carries the same knowledge as its mapped
-  // `agent-preset/conflict` Remote failure.
-  if (error instanceof ApiSessionPresetConflict) return 'none'
-  const failure = remoteErrorOf(error)
-  if (failure === undefined) return 'unknown'
-  switch (failure.code) {
+  if (error instanceof ApiSessionCreationFailed) {
+    if (!error.enteredFactory) return 'none'
+    return error.sessionId === undefined ? 'unknown' : 'known'
+  }
+  switch (remoteErrorOf(error)?.code) {
+    case 'session/workspace-attach-failed':
+    case 'session/policy-prepare-failed':
+      return 'known'
     case 'gateway/bad-request':
     case 'workspace/not-found':
-    case 'agent-preset/conflict':
-    case 'agent-preset/not-found':
-    case 'agent-preset/invalid':
     case 'session/policy-unavailable':
     case 'session/source-not-policy':
     case 'session/policy-source-unknown':
     case 'session/policy-conflict':
     case 'session/policy-begin-failed':
       return 'none'
-    case 'session/workspace-attach-failed':
-    case 'session/policy-prepare-failed':
-      return 'known'
     default:
+      // An unclassified failure may already have produced a Session: never
+      // offer the same operation a second chance on that assumption.
       return 'unknown'
   }
 }
@@ -202,16 +204,18 @@ export class SessionCommandController {
     }
     const cwd = workspace?.path ?? request.cwd ?? this.defaultCwd
     const policies = this.policies
-    if (policies === undefined) return await this.createNow(request, workspace, cwd, request.sessionId)
+    if (policies === undefined) {
+      return await this.runCreation(() => this.createNow(request, workspace, cwd, request.sessionId))
+    }
     const operation = request.operation
     if (operation === undefined) {
       // The historical path still passes through the policy-compatibility
       // check: an ordinary intent may reuse only a candidate every policy
       // leaves unclaimed, and an unreadable claim is never treated as ordinary.
-      return await policies.coordinate(async () => {
+      return await this.runCreation(() => policies.coordinate(async () => {
         const candidate = await this.reusableCandidate(request.sessionId, true, undefined, policies)
         return await this.createNow(request, workspace, cwd, candidate)
-      })
+      }))
     }
     const key = operationKey(operation)
     const settled = this.settledOperations.get(key)
@@ -239,8 +243,18 @@ export class SessionCommandController {
       // anything else did (or may have) produced a Session and replays as-is.
       if (creationKnowledgeOf(error) === 'none') this.settledOperations.delete(key)
       else pending.settled = true
-      deferred.reject(error)
-      throw error
+      const failure = this.creationFailure(error)
+      deferred.reject(failure)
+      throw failure
+    }
+  }
+
+  /** Map a failed attempt to the failure delivered to its caller. */
+  private async runCreation(task: () => Promise<SessionCreateValue>): Promise<SessionCreateValue> {
+    try {
+      return await task()
+    } catch (error: unknown) {
+      throw this.creationFailure(error)
     }
   }
 
@@ -260,19 +274,14 @@ export class SessionCommandController {
     cwd: string,
     candidate: SessionId | undefined,
   ): Promise<SessionCreateValue> {
-    let created: ApiSessionCreated
-    try {
-      created = await this.agents.createSession({
-        ...(candidate === undefined ? {} : { sessionId: candidate }),
-        cwd,
-        ...(request.agentPreset === undefined ? {} : { agentPreset: request.agentPreset }),
-        reusable: sessionId => candidate === sessionId
-          && !this.ctx.workspaceRegistry.archivedSessionIds.includes(sessionId)
-          && (workspace === undefined || workspace.sessionIds.includes(sessionId)),
-      })
-    } catch (error) {
-      this.rejectCreation(error)
-    }
+    const created = await this.agents.createSession({
+      ...(candidate === undefined ? {} : { sessionId: candidate }),
+      cwd,
+      ...(request.agentPreset === undefined ? {} : { agentPreset: request.agentPreset }),
+      reusable: sessionId => candidate === sessionId
+        && !this.ctx.workspaceRegistry.archivedSessionIds.includes(sessionId)
+        && (workspace === undefined || workspace.sessionIds.includes(sessionId)),
+    })
     const sessionId = created.agent.id
     if (workspace !== undefined) await this.attachCreated(sessionId, workspace, undefined)
     return { sessionId, ...(created.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }) }
@@ -351,13 +360,16 @@ export class SessionCommandController {
           && workspace.sessionIds.includes(sessionId),
       })
     } catch (error) {
+      const creation = creationKnowledgeOf(error)
+      const knownId = error instanceof ApiSessionCreationFailed ? error.sessionId : undefined
       await this.finishOperation(begun?.participant, {
         kind: 'failed',
         stage: 'create',
-        creation: creationKnowledgeOf(error),
+        creation,
         message: messageOf(error),
+        ...(creation === 'known' && knownId !== undefined ? { sessionId: knownId, workspaceId: workspace.id } : {}),
       })
-      this.rejectCreation(error)
+      throw error
     }
     const sessionId = created.agent.id
     const reused = candidate === sessionId
@@ -891,25 +903,64 @@ export class SessionCommandController {
     return found.agent
   }
 
-  private rejectCreation(error: unknown): never {
-    if (remoteErrorOf(error) !== undefined) throw error
+  /**
+   * The failure delivered for one failed creation attempt.
+   *
+   * A failure raised from inside a factory call is reported generically: its
+   * code may come from a plugin, and a Session may already exist, so the code
+   * cannot promise that the attempt created nothing. The original code stays
+   * in the message for diagnostics. A proven pre-create refusal keeps its owner
+   * code — so callers keep the preset hint — and gains this Controller's
+   * `creation: 'none'` evidence.
+   * @param error - the failure thrown out of the attempt.
+   * @returns the Remote failure for the caller.
+   */
+  private creationFailure(error: unknown): RemoteFailure {
+    if (!(error instanceof ApiSessionCreationFailed)) return this.creationRefusal(error)
+    if (error.enteredFactory) {
+      const original = remoteErrorOf(error.failure)
+      const reason = original === undefined
+        ? messageOf(error.failure)
+        : `${original.code}: ${original.message}`
+      return new RemoteError('gateway/internal', `failed to create session: ${reason}`, {})
+    }
+    const refusal = this.creationRefusal(error.failure)
+    switch (refusal.code) {
+      case 'agent-preset/not-found':
+        return new RemoteError(refusal.code, refusal.message, { ...refusal.details, creation: 'none' })
+      case 'agent-preset/invalid':
+        return new RemoteError(refusal.code, refusal.message, { ...refusal.details, creation: 'none' })
+      default:
+        return refusal
+    }
+  }
+
+  /**
+   * The failure delivered for a creation failure this Controller raised itself:
+   * pre-create validation, or a partial success that names the real Session.
+   * @param error - the failure thrown out of the attempt.
+   * @returns the Remote failure for the caller.
+   */
+  private creationRefusal(error: unknown): RemoteFailure {
+    const failure = remoteErrorOf(error)
+    if (failure !== undefined) return failure
     if (error instanceof ApiSessionPresetConflict) {
-      throw new RemoteError('agent-preset/conflict', error.message, {
+      return new RemoteError('agent-preset/conflict', error.message, {
         sessionId: error.sessionId,
         requestedPreset: error.requestedPreset,
       })
     }
     if (error instanceof ApiSessionCwdConflict) {
-      throw new RemoteError('session/conflict', error.message, {
+      return new RemoteError('session/conflict', error.message, {
         sessionId: error.sessionId,
         requestedCwd: error.requestedCwd,
         ...(error.existingCwd === undefined ? {} : { existingCwd: error.existingCwd }),
       })
     }
     if (error instanceof ApiSessionSubagentOwnership) {
-      throw apiSessionSubagentOwnershipError(error.sessionId)
+      return apiSessionSubagentOwnershipError(error.sessionId)
     }
-    throw new RemoteError('gateway/internal', `failed to create session: ${String(error)}`, {})
+    return new RemoteError('gateway/internal', `failed to create session: ${String(error)}`, {})
   }
 
   private async forkWorkspace(source: SessionHeader): Promise<Workspace | undefined> {

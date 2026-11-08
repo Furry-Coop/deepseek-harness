@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-11-09-creation-outcome-stage-evidence.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-11-09-creation-outcome-stage-evidence.md
+/agent-note-creation-outcomes-come-from-the-controller-stage-not-the-failure-code:
+  en: d87d0bc9d0df0976
+  zh: db3ab13507d919fd
+/agent-note-creation-outcomes-come-from-the-controller-stage-not-the-failure-code/problem:
+  en: 1953f74130aea031
+  zh: dd7bf3db1733ee19
+/agent-note-creation-outcomes-come-from-the-controller-stage-not-the-failure-code/decision:
+  en: 74cfa1062b588235
+  zh: 460c991c20815dfa
+/agent-note-creation-outcomes-come-from-the-controller-stage-not-the-failure-code/alternatives-considered:
+  en: 9e4c3d2d1b4d3d82
+  zh: 043a36212c93ccd8
+/agent-note-creation-outcomes-come-from-the-controller-stage-not-the-failure-code/testing:
+  en: 18c785a98c7ea7a2
+  zh: 65146cd4368ffd8c
+/agent-note-creation-outcomes-come-from-the-controller-stage-not-the-failure-code/consequences:
+  en: 9f403c87117ef5aa
+  zh: d750902e88324d5f

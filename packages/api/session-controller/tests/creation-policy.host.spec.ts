@@ -9,9 +9,10 @@ import type { SessionOperationId } from '../src/types.ts'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentFactory, AgentSetup } from '@deepseek-ai/dsh-agent'
 import { agentPresetProjectionDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
+import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import SessionStore, { SESSION_FORMAT_VERSION, SessionId } from '@deepseek-ai/dsh-session'
-import type { Session, SessionHeader } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import Storage from '@deepseek-ai/dsh-storage'
@@ -101,9 +102,9 @@ async function bench(
 }
 
 /** Publish every Agent creation through the real registry under a Session created in the request cwd. */
-function installCreateSession(ctx: Context) {
+function installCreateSession(ctx: Context, fixedId?: SessionId) {
   return vi.spyOn(ctx.agents, 'create').mockImplementation(async (options) => {
-    const session = ctx.sessions.create(options.sessionId, {
+    const session = ctx.sessions.create(fixedId ?? options.sessionId, {
       meta: {
         cwd: options.meta?.cwd ?? '/workspace',
         ...(options.meta?.agentPreset === undefined ? {} : { agentPreset: options.meta.agentPreset }),
@@ -713,49 +714,50 @@ describe('operation de-duplication', () => {
 
 describe('operation identity and continuation', () => {
   it('replays one operation identity once and retries only a proven pre-create refusal', async () => {
-    const ctx = await bench()
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-creation-preflight-')))
+    tempDirs.push(cwd)
+    const ctx = await bench({ path: cwd })
     const policies = new SessionCreationPolicyRegistry()
     const calls: string[] = []
     policies.register(policy('@nodes/dsh-plugin:conversation', ['saved'], calls))
-    let attempts = 0
-    const agents = agentsOf(ctx, (request) => {
-      attempts += 1
-      if (attempts === 1) {
+    const agents = new ApiSessionAgentController(ctx)
+    let resolutions = 0
+    vi.spyOn(agents, 'composeAgent').mockImplementation(() => {
+      resolutions += 1
+      // The preset roster refuses the first attempt before any factory call.
+      if (resolutions === 1) {
         return Promise.reject(new RemoteError('agent-preset/not-found', 'unknown preset', {
           agentPreset: 'missing',
           available: ['standard'],
         }))
       }
-      return publishedSession(ctx, SessionId('created'))(request)
+      return Promise.resolve({ setup: () => {} })
     })
+    const create = installCreateSession(ctx, SessionId('created'))
     const controller = new SessionCommandController(ctx, agents, '/default', policies)
     const operation = {
       operationId: opId('op-1'),
       kind: 'restore' as const,
       policyId: '@nodes/dsh-plugin:conversation',
-      sourceSessionId: SessionId('saved'),
-    } as const
+    }
 
-    // First attempt is refused before creation; because that refusal is
-    // provably pre-create, the same operation may retry and succeed.
+    // The roster refusal happened before the Controller entered the factory,
+    // so the wire says so explicitly and the same operation may retry.
     await expect(controller.create({
       workspaceId: 'ws-1' as WorkspaceId,
-      sessionId: SessionId('saved'),
       agentPreset: 'missing',
       operation,
-    })).rejects.toMatchObject({ code: 'agent-preset/not-found' })
-    const retried = await controller.create({
-      workspaceId: 'ws-1' as WorkspaceId,
-      sessionId: SessionId('saved'),
-      operation,
+    })).rejects.toMatchObject({
+      code: 'agent-preset/not-found',
+      details: { agentPreset: 'missing', creation: 'none' },
     })
-    await expect(controller.create({
-      workspaceId: 'ws-1' as WorkspaceId,
-      sessionId: SessionId('saved'),
-      operation,
-    })).resolves.toEqual(retried)
+    const retried = await controller.create({ workspaceId: 'ws-1' as WorkspaceId, operation })
+    await expect(controller.create({ workspaceId: 'ws-1' as WorkspaceId, operation })).resolves.toEqual(retried)
     await ctx.fiber.dispose()
-    expect(attempts).toBe(2)
+    expect(retried.sessionId).toBe(SessionId('created'))
+    expect(resolutions).toBe(2)
+    // The factory ran once: the proven pre-create refusal never reached it.
+    expect(create).toHaveBeenCalledOnce()
     expect(calls).toEqual(['begin:op-1', 'finish:failed', 'begin:op-1', 'prepare:created', 'finish:created'])
   })
 
@@ -853,9 +855,19 @@ describe('failed creation settlement', () => {
 
   it.each([
     { label: 'raw Error', failure: () => new Error('factory unavailable') },
+    { label: 'non-Error rejection', failure: () => 'factory unavailable' },
     { label: 'typed gateway/internal', failure: () => new RemoteError('gateway/internal', 'mount failed', {}) },
-  ])('classifies a $label creation failure as unknown and does not retry it', async ({ failure }) => {
-    const ctx = await bench()
+    {
+      label: 'the pre-create preset code',
+      failure: () => new RemoteError('agent-preset/not-found', 'unknown preset', {
+        agentPreset: 'missing',
+        available: ['standard'],
+      }),
+    },
+  ])('classifies a $label factory failure as unknown and does not retry it', async ({ failure }) => {
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-creation-unknown-')))
+    tempDirs.push(cwd)
+    const ctx = await bench({ path: cwd })
     const policies = new SessionCreationPolicyRegistry()
     const outcomes: SessionCreationOutcome[] = []
     policies.register({
@@ -864,8 +876,10 @@ describe('failed creation settlement', () => {
         finishOperation: (outcome) => { outcomes.push(outcome) },
       }),
     })
-    const createSession = vi.fn(() => Promise.reject(failure()))
-    const controller = new SessionCommandController(ctx, agentsOf(ctx, createSession), '/default', policies)
+    // The failure comes from the factory itself: the Controller has entered a
+    // call that may already have written a Session, whatever code it carries.
+    const create = vi.spyOn(ctx.agents, 'create').mockRejectedValue(failure())
+    const controller = new SessionCommandController(ctx, agentsOf(ctx), '/default', policies)
     const request = {
       workspaceId: 'ws-1' as WorkspaceId,
       operation: {
@@ -877,10 +891,85 @@ describe('failed creation settlement', () => {
 
     await expect(controller.create(request)).rejects.toMatchObject({ code: 'gateway/internal' })
     await expect(controller.create(request)).rejects.toMatchObject({ code: 'gateway/internal' })
-    expect(createSession).toHaveBeenCalledOnce()
+    expect(create).toHaveBeenCalledOnce()
     expect(outcomes).toHaveLength(1)
     expect(outcomes[0]).toMatchObject({ kind: 'failed', stage: 'create', creation: 'unknown' })
     expect(outcomes[0]).not.toHaveProperty('sessionId')
+    await ctx.fiber.dispose()
+  })
+
+  it('keeps an unclassified attempt settled instead of retrying it', async () => {
+    const ctx = await bench()
+    const policies = new SessionCreationPolicyRegistry()
+    const outcomes: SessionCreationOutcome[] = []
+    policies.register({
+      id: '@nodes/dsh-plugin:conversation',
+      beginOperation: () => Promise.resolve({
+        finishOperation: (outcome) => { outcomes.push(outcome) },
+      }),
+    })
+    // A failure this Controller did not classify may already have produced a
+    // Session, so the operation stays settled rather than being retried.
+    const createSession = vi.fn(() => Promise.reject(new RemoteError('session/not-found', 'gone', {
+      sessionId: SessionId('missing'),
+    })))
+    const controller = new SessionCommandController(ctx, agentsOf(ctx, createSession), '/default', policies)
+    const request = {
+      workspaceId: 'ws-1' as WorkspaceId,
+      operation: {
+        operationId: opId('op-unclassified'),
+        kind: 'new' as const,
+        policyId: '@nodes/dsh-plugin:conversation',
+      },
+    }
+
+    await expect(controller.create(request)).rejects.toMatchObject({ code: 'session/not-found' })
+    await expect(controller.create(request)).rejects.toMatchObject({ code: 'session/not-found' })
+    expect(createSession).toHaveBeenCalledOnce()
+    expect(outcomes).toHaveLength(1)
+    expect(outcomes[0]).toMatchObject({ kind: 'failed', stage: 'create', creation: 'unknown' })
+    await ctx.fiber.dispose()
+  })
+
+  it('settles the actual identity when the factory returned before the later failure', async () => {
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-creation-known-')))
+    tempDirs.push(cwd)
+    const ctx = await bench({ path: cwd })
+    const policies = new SessionCreationPolicyRegistry()
+    const outcomes: SessionCreationOutcome[] = []
+    policies.register({
+      id: '@nodes/dsh-plugin:conversation',
+      beginOperation: () => Promise.resolve({
+        finishOperation: (outcome) => { outcomes.push(outcome) },
+      }),
+    })
+    // The Agent exists and its identity is known, but reading the preset it
+    // runs still fails afterwards.
+    ctx.provide('agentPresets', {
+      presetForSession: () => { throw new Error('preset projection unavailable') },
+    } as never)
+    const create = installCreateSession(ctx, SessionId('created'))
+    const controller = new SessionCommandController(ctx, agentsOf(ctx), '/default', policies)
+    const request = {
+      workspaceId: 'ws-1' as WorkspaceId,
+      operation: {
+        operationId: opId('op-known'),
+        kind: 'new' as const,
+        policyId: '@nodes/dsh-plugin:conversation',
+      },
+    }
+
+    await expect(controller.create(request)).rejects.toMatchObject({ code: 'gateway/internal' })
+    await expect(controller.create(request)).rejects.toMatchObject({ code: 'gateway/internal' })
+    expect(create).toHaveBeenCalledOnce()
+    expect(outcomes).toEqual([{
+      kind: 'failed',
+      stage: 'create',
+      creation: 'known',
+      message: 'preset projection unavailable',
+      sessionId: SessionId('created'),
+      workspaceId: 'ws-1',
+    }])
     await ctx.fiber.dispose()
   })
 
@@ -1063,6 +1152,31 @@ describe('source continuation ownership', () => {
     expect(secondCreate).not.toHaveBeenCalled()
     await unreadable.fiber.dispose()
     await ctx.fiber.dispose()
+  })
+
+  it('continues an explicitly selected source that the selected policy owns', async () => {
+    const ctx = await bench()
+    const policies = new SessionCreationPolicyRegistry()
+    const calls: string[] = []
+    policies.register(policy('@nodes/dsh-plugin:conversation', ['owned-source'], calls))
+    const controller = new SessionCommandController(
+      ctx,
+      agentsOf(ctx, request => publishedSession(ctx, SessionId('continued'))(request)),
+      '/default',
+      policies,
+    )
+
+    await expect(controller.create({
+      workspaceId: 'ws-1' as WorkspaceId,
+      operation: {
+        operationId: opId('op-owned'),
+        kind: 'workspace',
+        policyId: '@nodes/dsh-plugin:conversation',
+        sourceSessionId: SessionId('owned-source'),
+      },
+    })).resolves.toMatchObject({ sessionId: 'continued' })
+    await ctx.fiber.dispose()
+    expect(calls).toEqual(['begin:op-owned', 'prepare:continued', 'finish:created'])
   })
 
   it('continues an unclaimed source ordinarily and refuses a source several policies claim', async () => {
@@ -1321,6 +1435,54 @@ async function realFixture() {
   return { host, root, workspacePath, claimsPath }
 }
 
+/**
+ * Boot one Host process whose Agent factory is the production AgentLoop over
+ * the real Workspace registry and JSONL Session persistence.
+ * @param root - durable root holding workspace storage and Session logs.
+ * @param workspacePath - project directory of the Workspace entity.
+ * @returns the booted Host and the durable Workspace it sees.
+ */
+async function bootRealLoopHost(root: string, workspacePath: string): Promise<RealHost> {
+  const ctx = new Context()
+  realContexts.push(ctx)
+  await mountAgentLoopTestDependencies(ctx)
+  await ctx.plugin(Storage)
+  await ctx.plugin(StorageJson, { root: join(root, 'storage') })
+  await ctx.plugin(StorageDomain, { backend: 'json' })
+  await ctx.plugin(JsonlSessionPersistence, { root: join(root, 'logs'), compression: 'none' })
+  await ctx.plugin(WorkspaceRegistry)
+  await mountAgentLoopTestHarness(ctx)
+  const controller = await createSessionTestController(ctx, {
+    defaultModelSelection: () => ({ provider: 'fixture', model: 'fixture-model' }),
+    cwd: workspacePath,
+  })
+  const workspace = ctx.workspaceRegistry.list()[0] ?? await ctx.workspaceRegistry.create(workspacePath)
+  return { ctx, controller, workspacePath, workspaceId: workspace.id, claimsPath: join(root, 'claims.json') }
+}
+
+/** Boot one production-AgentLoop Host over a fresh durable root. */
+async function realLoopFixture() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-creation-outcome-')))
+  tempDirs.push(root)
+  const workspacePath = join(root, 'project')
+  mkdirSync(workspacePath, { recursive: true })
+  const host = await bootRealLoopHost(root, workspacePath)
+  return { host, root, workspacePath }
+}
+
+/** Read one stored Session through a Host that never activated an Agent. */
+async function coldReadSessionEvents(root: string, sessionId: SessionId): Promise<readonly SessionEvent[]> {
+  const ctx = new Context()
+  realContexts.push(ctx)
+  await ctx.plugin(JsonlSessionPersistence, { root: join(root, 'logs'), compression: 'none' })
+  const handle = await ctx.sessionPersistence.open(sessionId, 'read')
+  try {
+    return (await handle.read()).events
+  } finally {
+    await handle.close()
+  }
+}
+
 describe('real Controller, loader activation, and Workspace', () => {
   it('drops a policy with its fiber and refuses a queued operation after a same-id remount', async () => {
     const { host } = await realFixture()
@@ -1486,5 +1648,127 @@ describe('real Controller, loader activation, and Workspace', () => {
       code: 'session/policy-prepare-failed',
     })
     expect(create).toHaveBeenCalledOnce()
+  })
+})
+
+describe('creation outcome through the production AgentLoop', () => {
+  it('settles one operation as unknown when a creation listener refuses after a durable write', async () => {
+    const { host, root } = await realLoopFixture()
+    const created: SessionId[] = []
+    const outcomes: SessionCreationOutcome[] = []
+    await mountPolicy(host, {
+      id: REAL_POLICY,
+      beginOperation: () => ({
+        finishOperation: (outcome) => { outcomes.push(outcome) },
+      }),
+    })
+    await host.ctx.plugin({
+      name: 'test:refuse-after-durable-write',
+      apply: (inner: Context) => {
+        inner.effect(() => inner.on('agent/created', async ({ agent, source }) => {
+          if (source !== 'startup') return
+          created.push(agent.id)
+          agent.model.select({ provider: 'fixture', model: 'fixture-model' })
+          // The flush result, not the creation handle, is the independent
+          // evidence that the Session's events reached the log.
+          expect(await agent.ctx.sessions.flush(agent.session)).toBe(true)
+          throw new RemoteError('agent-preset/not-found', 'fixture refused after durable write', {
+            agentPreset: 'fixture',
+            available: [],
+          })
+        }), 'test: refuse after durable write')
+      },
+    })
+    const request = {
+      workspaceId: host.workspaceId,
+      operation: { operationId: opId('op-refused'), kind: 'new' as const, policyId: REAL_POLICY },
+    }
+
+    const rejected = host.controller.create(request).then(
+      () => { throw new Error('expected the creation listener to refuse') },
+      (error: unknown) => error as Error,
+    )
+    const first = await rejected
+    const second = await host.controller.create(request).then(
+      () => { throw new Error('expected the replay to reject') },
+      (error: unknown) => error as Error,
+    )
+    // Replaying the same operation must not mint a second Session, even though
+    // the refused attempt already wrote one durably.
+    expect(created).toHaveLength(1)
+    // The refusal was thrown from inside a factory call that may already have
+    // written a Session, so the plugin's own code cannot classify the attempt
+    // as pre-create: the Host reports an unknown outcome instead.
+    expect(first).toMatchObject({ code: 'gateway/internal' })
+    expect(first.message).toContain('agent-preset/not-found')
+    expect(second).toMatchObject({ code: 'gateway/internal', message: first.message })
+    // The operation cache kept the settled attempt: the factory ran once.
+    expect(outcomes).toEqual([expect.objectContaining({
+      kind: 'failed',
+      stage: 'create',
+      creation: 'unknown',
+    })])
+    expect(outcomes[0]).not.toHaveProperty('sessionId')
+
+    // Ending the Host and reading through an independent reader proves the one
+    // Session the refused attempt durably wrote; the generic backend did not
+    // roll those events back.
+    await host.ctx.fiber.dispose()
+    const events = await coldReadSessionEvents(root, created[0]!)
+    expect(events.filter(event => event.type === 'model/selection')).toHaveLength(1)
+    expect(created).toHaveLength(1)
+  })
+
+  it('retries the same operation when the preset was refused before any Session existed', async () => {
+    const { host } = await realLoopFixture()
+    const created: SessionId[] = []
+    const outcomes: SessionCreationOutcome[] = []
+    await mountPolicy(host, {
+      id: REAL_POLICY,
+      beginOperation: () => ({
+        finishOperation: (outcome) => { outcomes.push(outcome) },
+      }),
+    })
+    await host.ctx.plugin({
+      name: 'test:note-created',
+      apply: (inner: Context) => {
+        inner.effect(() => inner.on('agent/created', ({ agent, source }) => {
+          if (source === 'startup') created.push(agent.id)
+        }), 'test: note created')
+      },
+    })
+    // The roster refuses an id it does not declare; the retry names none.
+    host.ctx.provide('agentPresets', {
+      resolve: (id?: string) => id === 'missing'
+        ? Promise.reject(new RemoteError('agent-preset/not-found', 'unknown preset: missing', {
+          agentPreset: 'missing',
+          available: ['fixture'],
+        }))
+        : Promise.resolve({ id: id ?? 'fixture' }),
+      mount: () => Promise.resolve(),
+      presetForSession: () => 'fixture',
+    } as never)
+    const operation = {
+      operationId: opId('op-preflight'),
+      kind: 'new' as const,
+      policyId: REAL_POLICY,
+    }
+
+    await expect(host.controller.create({
+      workspaceId: host.workspaceId,
+      agentPreset: 'missing',
+      operation,
+    })).rejects.toMatchObject({
+      code: 'agent-preset/not-found',
+      details: { agentPreset: 'missing', creation: 'none' },
+    })
+    expect(created).toEqual([])
+    const retried = await host.controller.create({ workspaceId: host.workspaceId, operation })
+    await expect(host.controller.create({ workspaceId: host.workspaceId, operation })).resolves.toEqual(retried)
+    expect(created).toEqual([retried.sessionId])
+    expect(outcomes).toEqual([
+      expect.objectContaining({ kind: 'failed', stage: 'create', creation: 'none' }),
+      expect.objectContaining({ kind: 'created', sessionId: retried.sessionId }),
+    ])
   })
 })

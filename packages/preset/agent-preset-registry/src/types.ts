@@ -38,10 +38,31 @@ export interface AgentPresetDocument {
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface RemoteErrorDetailsMap {
-    /** No declaration supplies the requested identity. */
-    'agent-preset/not-found': { readonly agentPreset: string; readonly available: readonly string[] }
-    /** The id is unusable, already taken, or its composition cannot be installed. */
-    'agent-preset/invalid': { readonly agentPreset: string; readonly reason: string }
+    /**
+     * No declaration supplies the requested identity.
+     *
+     * `creation` is the Session Controller's evidence that its own creation
+     * attempt ended before entering a Session-materializing factory call, so
+     * no Session exists for it; the preset registry itself never sets it. Its
+     * absence leaves the creation result unknown and must not be read as
+     * "nothing was created".
+     */
+    'agent-preset/not-found': {
+      readonly agentPreset: string
+      readonly available: readonly string[]
+      readonly creation?: 'none'
+    }
+    /**
+     * The id is unusable, already taken, or its composition cannot be installed.
+     *
+     * `creation` carries the Session Controller's pre-create evidence for every
+     * Session creation attempt, exactly as on `agent-preset/not-found`.
+     */
+    'agent-preset/invalid': {
+      readonly agentPreset: string
+      readonly reason: string
+      readonly creation?: 'none'
+    }
     /** The session's conversation has started, so its composition is fixed. */
     'agent-preset/locked': { readonly sessionId: SessionId; readonly agentPreset: string }
     /** The preset is internal: mountable by id, but not a user-selectable mode. */
