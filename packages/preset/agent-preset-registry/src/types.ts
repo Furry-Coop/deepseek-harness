@@ -44,6 +44,8 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'agent-preset/invalid': { readonly agentPreset: string; readonly reason: string }
     /** The session's conversation has started, so its composition is fixed. */
     'agent-preset/locked': { readonly sessionId: SessionId; readonly agentPreset: string }
+    /** The preset is internal: mountable by id, but not a user-selectable mode. */
+    'agent-preset/not-selectable': { readonly agentPreset: string }
   }
 }
 

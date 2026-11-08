@@ -50,6 +50,10 @@ interface HarnessOptions {
   readonly locked?: ReadonlySet<SessionId>
   /** Declared presets whose activation failed. */
   readonly broken?: ReadonlySet<string>
+  /** Declared presets that are internal: mountable by id but not user-selectable. */
+  readonly internal?: ReadonlySet<string>
+  /** Presets that become internal between resolve and the user-path mount. */
+  readonly raced?: ReadonlySet<string>
   /** Requested presets whose resolution waits for the paired promise. */
   readonly resolving?: ReadonlyMap<string, Promise<void>>
   /** Workspace placement served to `workspaceId` requests. */
@@ -91,10 +95,29 @@ async function harness(options: HarnessOptions = {}) {
       defaultId: presets[0],
       presetForSession: (session: Session) => preset.stateOf(session),
       resolve: (id?: string) => Promise.resolve(id === undefined ? undefined : options.resolving?.get(id))
-        .then(() => ({ id: known(id) })),
-      mount: (_ctx: Context, id?: string) => Promise.resolve().then(() => ({ id: usable(id) })),
+        .then(() => {
+          const knownId = known(id)
+          return {
+            id: knownId,
+            ...(options.internal?.has(knownId) === true ? { userSelectable: false } : {}),
+          }
+        }),
+      mount: (_ctx: Context, id?: string, mountOptions?: { readonly requireUserSelectable?: boolean }) => Promise.resolve().then(() => {
+        const knownId = usable(id)
+        if (mountOptions?.requireUserSelectable === true && options.raced?.has(knownId) === true) {
+          throw new RemoteError('agent-preset/not-selectable', `Agent preset "${knownId}" is not user-selectable`, {
+            agentPreset: knownId,
+          })
+        }
+        return { id: knownId }
+      }),
       select: async (agent: Agent, agentPreset: string) => {
         usable(agentPreset)
+        if (options.internal?.has(agentPreset) === true) {
+          throw new RemoteError('agent-preset/not-selectable', `Agent preset "${agentPreset}" is not user-selectable`, {
+            agentPreset,
+          })
+        }
         if (options.locked?.has(agent.id) === true) {
           throw new RemoteError('agent-preset/locked', 'This session has already started', {
             sessionId: agent.id, agentPreset,
@@ -236,6 +259,30 @@ describe('session.create Agent preset identity', () => {
     await remote.create({ sessionId: SessionId('s6') })
 
     expect(ctx.sessions.get(SessionId('s6'))?.header.agentPreset).toBeUndefined()
+  })
+
+  it('rejects a user-created Session that names an internal preset', async () => {
+    const { remote, presetOf } = await harness({
+      presets: ['standard', 'internal'],
+      internal: new Set(['internal']),
+    })
+
+    const response = await remote.create({ sessionId: SessionId('s-internal'), agentPreset: 'internal' })
+
+    expect(response).toMatchObject({ ok: false, error: { code: 'agent-preset/not-selectable' } })
+    expect(presetOf(SessionId('s-internal'))).toBeUndefined()
+  })
+
+  it('rejects a create when the preset turns internal between resolution and the adopted generation', async () => {
+    const { remote, presetOf } = await harness({
+      presets: ['standard', 'internal'],
+      raced: new Set(['internal']),
+    })
+
+    const response = await remote.create({ sessionId: SessionId('s-raced'), agentPreset: 'internal' })
+
+    expect(response).toMatchObject({ ok: false, error: { code: 'agent-preset/not-selectable' } })
+    expect(presetOf(SessionId('s-raced'))).toBeUndefined()
   })
 })
 

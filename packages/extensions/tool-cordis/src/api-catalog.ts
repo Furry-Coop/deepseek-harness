@@ -210,9 +210,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'The declared composition beside its published metadata.',
       },
       {
-        signature: 'async mount(ctx: Context, id?: string): Promise<AgentPreset>',
+        signature: 'async mount( ctx: Context, id?: string, options: { readonly requireUserSelectable?: boolean } = {}, ): Promise<AgentPreset>',
         description: 'Bind an unpublished Agent to the current preset revision.',
-        parameters: [{ name: 'ctx', description: 'Agent context from its setup callback.' }, { name: 'id', description: 'Requested preset, or the default.' }],
+        parameters: [{ name: 'ctx', description: 'Agent context from its setup callback.' }, { name: 'id', description: 'Requested preset, or the default.' }, { name: 'options', description: '`requireUserSelectable` rejects an internal preset on a user path.' }],
         returns: 'Bound preset identity.',
       },
       {
@@ -234,9 +234,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'The service, or undefined.',
       },
       {
-        signature: 'async recompose(ctx: Context, id: string): Promise<AgentPreset>',
+        signature: 'async recompose( ctx: Context, id: string, options: { readonly requireUserSelectable?: boolean } = { requireUserSelectable: true }, ): Promise<AgentPreset>',
         description: 'Rebind a blank Agent; the caller owns the blank-session check.',
-        parameters: [{ name: 'ctx', description: 'Agent context.' }, { name: 'id', description: 'Requested preset.' }],
+        parameters: [{ name: 'ctx', description: 'Agent context.' }, { name: 'id', description: 'Requested preset.' }, { name: 'options', description: '`requireUserSelectable` defaults to true for this user-facing switch.' }],
         returns: 'The bound identity.',
       },
       {
@@ -775,9 +775,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'Detached layer values alongside their Loader entries.',
       },
       {
-        signature: 'async edit( entry: Entry, change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>, ): Promise<void>',
+        signature: 'async edit( entry: Entry, change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>, validate?: (resolved: Readonly<Record<string, unknown>>, fiber: Fiber) => void, ): Promise<void>',
         description: 'Validate, persist, and reconcile a plugin\'s next config; ordinary fields keep normal lifecycle rules.',
-        parameters: [{ name: 'entry', description: 'Current Loader entry, also used to detect replacement during the write.' }, { name: 'change', description: 'Derive a raw config from the current entry and its inherited layer.' }],
+        parameters: [{ name: 'entry', description: 'Current Loader entry, also used to detect replacement during the write.' }, { name: 'change', description: 'Derive a raw config from the current entry and its inherited layer.' }, { name: 'validate', description: 'Optional owner check on the resolved effective config and the live fiber checked for activation, before persistence.' }],
         returns: 'Fulfillment after Loader reconciliation completes.',
       },
     ],
@@ -3316,6 +3316,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         signature: 'async update(ns: string, patch: object, expectedRevision?: number): Promise<void>',
         description: 'Merge editable fields into an entry\'s config.',
         parameters: [{ name: 'ns', description: 'Profile entry id.' }, { name: 'patch', description: 'Fields to merge.' }, { name: 'expectedRevision', description: 'Revision returned by describe.' }],
+      },
+      {
+        signature: 'registerValidator( owner: Context, path: readonly string[], validate: SettingsWriteValidator[\'validate\'], ): () => void',
+        description: 'Register a synchronous check on one field of the owner plugin\'s config. The check runs inside the same write acceptance as `update`, `replace`, and `mutate`, before the profile patch changes; throwing rejects the write.',
+        parameters: [{ name: 'owner', description: 'plugin context whose fiber owns the validator registration.' }, { name: 'path', description: 'field path within that plugin\'s config.' }, { name: 'validate', description: 'receives the next field value and config from the resolved write acceptance; volatile references are unwrapped.' }],
+        returns: 'the exact disposer; unloading or HMR of the owner also removes it.',
       },
       {
         signature: 'async replace(ns: string, section: object, expectedRevision?: number): Promise<void>',
@@ -7577,7 +7583,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'PresetDefinition',
-    declaration: 'export interface PresetDefinition {\n    readonly id: string;\n    readonly name?: string;\n    readonly description?: string;\n    readonly order?: number;\n    readonly plugins: readonly (Omit<EntryOptions, \'id\' | \'disabled\'> & {\n        id?: string;\n        disabled?: EntryOptions[\'disabled\'] | JsExpr;\n    })[];\n}',
+    declaration: 'export interface PresetDefinition {\n    readonly id: string;\n    readonly name?: string;\n    readonly description?: string;\n    readonly order?: number;\n    readonly userSelectable?: boolean;\n    readonly plugins: readonly (Omit<EntryOptions, \'id\' | \'disabled\'> & {\n        id?: string;\n        disabled?: EntryOptions[\'disabled\'] | JsExpr;\n    })[];\n}',
   },
   {
     name: 'PresetOption',
@@ -8870,6 +8876,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SettingsSecretView',
     declaration: 'export interface SettingsSecretView {\n    path: string[];\n    set: boolean;\n}',
+  },
+  {
+    name: 'SettingsWriteValidator',
+    declaration: 'export interface SettingsWriteValidator {\n    readonly path: readonly string[];\n    validate(value: unknown, next: Readonly<Record<string, unknown>>): void;\n}',
   },
   {
     name: 'ShareAccess',

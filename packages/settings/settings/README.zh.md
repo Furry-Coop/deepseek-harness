@@ -38,6 +38,8 @@ Settings 启动后、Loader 完成所有条目的加载时，早期版本留在 
 
 每个表单报告 `autoGenerate`（默认开启），供按 schema 生成页面的客户端使用；目前没有已发布的客户端这样做。自带页面的插件在 `apply` 中于可选的 `ctx.inject(['settings'], ...)` 子级内以 effect 注册 `configure({ auto: false }, ctx.fiber)`：子级指明策略所属的插件 fiber，迟加载或被替换的 Settings 服务也会采用该策略，业务插件无需 Settings 即可运行。策略不移除配置读写。
 
+插件也可以在同一可选子级内用 `registerValidator(owner, path, validate)` 为自己的一个字段注册同步 owner 校验。该校验在 `update`、`replace`、`mutate` 中作用于同一次写入受理解析出的配置：配置表达式与 schema 校验已经完成，volatile 引用已展开为其校验后的值；校验器不会重复求值表达式。抛错会拒绝写入，值、修订号和消费者当前状态均保持不变。注册是 owner fiber 的 effect，卸载或 HMR 会移除。
+
 <a id="understand-the-implementation"></a>
 ## 理解实现
 

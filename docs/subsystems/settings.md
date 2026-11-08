@@ -10,7 +10,7 @@ A form namespace is the local id of a uniquely addressed entry in the active pro
 
 ## Edits
 
-`update` merges submitted fields. `replace` resets live fields to inherited configuration before applying submitted fields. `mutate` addresses individual paths, preserving secrets absent from a client response. Every write validates the complete Config and refuses stale revisions before persistence.
+`update` merges submitted fields. `replace` resets live fields to inherited configuration before applying submitted fields. `mutate` addresses individual paths, preserving secrets absent from a client response. Every write validates the complete Config, runs the owning plugin's registered field validators on that resolved result, and refuses stale revisions before persistence.
 
 `settings/document-updated` invalidates form descriptors after Loader configuration changes. It is a UI notification; consumers use `loader/volatile-update` only when they need to refresh registration facts.
 
@@ -54,6 +54,17 @@ describe(options?: SettingsDescribeOptions): SettingsDescriptor[]
  * @param expectedRevision Revision returned by describe.
  */
 async update(ns: string, patch: object, expectedRevision?: number): Promise<void>
+
+/**
+ * Register a synchronous check on one field of the owner plugin's config.
+ * The check runs inside the same write acceptance as `update`, `replace`, and
+ * `mutate`, before the profile patch changes; throwing rejects the write.
+ * @param owner - plugin context whose fiber owns the validator registration.
+ * @param path - field path within that plugin's config.
+ * @param validate - receives the next field value and config from the resolved write acceptance; volatile references are unwrapped.
+ * @returns the exact disposer; unloading or HMR of the owner also removes it.
+ */
+registerValidator( owner: Context, path: readonly string[], validate: SettingsWriteValidator['validate'], ): () => void
 
 /** Reset all live fields, then set the supplied fields; ordinary config is preserved.
  * @param ns Profile entry id.

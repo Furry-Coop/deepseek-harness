@@ -10,7 +10,7 @@
 
 ## 编辑
 
-`update` 合并提交的字段。`replace` 先将即时字段重置为继承配置，再应用提交的字段。`mutate` 操作独立路径，保留客户端响应中未包含的秘密值。每次写入都会验证完整 Config，并在持久化前拒绝过期修订号。
+`update` 合并提交的字段。`replace` 先将即时字段重置为继承配置，再应用提交的字段。`mutate` 操作独立路径，保留客户端响应中未包含的秘密值。每次写入都会验证完整 Config，在该解析结果上运行 owner 插件注册的字段校验，并在持久化前拒绝过期修订号。
 
 `settings/document-updated` 在 Loader 配置变化后使表单描述符失效。这是 UI 通知；消费者仅在需要刷新注册信息时使用 `loader/volatile-update`。
 
@@ -54,6 +54,17 @@ describe(options?: SettingsDescribeOptions): SettingsDescriptor[]
  * @param expectedRevision Revision returned by describe.
  */
 async update(ns: string, patch: object, expectedRevision?: number): Promise<void>
+
+/**
+ * Register a synchronous check on one field of the owner plugin's config.
+ * The check runs inside the same write acceptance as `update`, `replace`, and
+ * `mutate`, before the profile patch changes; throwing rejects the write.
+ * @param owner - plugin context whose fiber owns the validator registration.
+ * @param path - field path within that plugin's config.
+ * @param validate - receives the next field value and config from the resolved write acceptance; volatile references are unwrapped.
+ * @returns the exact disposer; unloading or HMR of the owner also removes it.
+ */
+registerValidator( owner: Context, path: readonly string[], validate: SettingsWriteValidator['validate'], ): () => void
 
 /** Reset all live fields, then set the supplied fields; ordinary config is preserved.
  * @param ns Profile entry id.

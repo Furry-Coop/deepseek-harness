@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-10-26-internal-agent-presets.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-10-26-internal-agent-presets.md
+/agent-note-keep-internal-agent-presets-out-of-user-choices-with-an-owner-write-check:
+  en: 0d882b997de8f4ba
+  zh: b54f03d58b2ae941
+/agent-note-keep-internal-agent-presets-out-of-user-choices-with-an-owner-write-check/problem:
+  en: 68c794331e99b070
+  zh: c84b3059311f9e03
+/agent-note-keep-internal-agent-presets-out-of-user-choices-with-an-owner-write-check/decision:
+  en: b193b76c9439842b
+  zh: 86ba492c72a46c41
+/agent-note-keep-internal-agent-presets-out-of-user-choices-with-an-owner-write-check/alternatives-considered:
+  en: c8f8b8aec29eb48b
+  zh: 13f4b5d9738f254b
+/agent-note-keep-internal-agent-presets-out-of-user-choices-with-an-owner-write-check/testing:
+  en: a89655a97254079e
+  zh: f9355dd4e28a18be
+/agent-note-keep-internal-agent-presets-out-of-user-choices-with-an-owner-write-check/consequences:
+  en: c9a7fed01f07e30a
+  zh: f327985555515dc6

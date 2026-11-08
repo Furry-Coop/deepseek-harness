@@ -855,6 +855,7 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
   SettingsSecretView: 'settings.md',
   SettingsPathOp: 'settings.md',
   SettingsDescribeOptions: 'settings.md',
+  SettingsWriteValidator: 'settings.md',
   SkillListRequest: 'skills.md',
   SkillListValue: 'skills.md',
   AuthorizationEntry: 'credentials.md',

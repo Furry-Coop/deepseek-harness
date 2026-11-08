@@ -36,6 +36,98 @@ it('isolates instances, hides ordinary fields, rejects invalid edits, and redact
   expect(ctx.settings.describe({ redactSecrets: true }).find(row => row.ns === 'first')!.value).toEqual({ count: 2, list: [] })
 })
 
+it('refuses an owner-validated field before persisting or advancing the revision', async () => {
+  const injected: Array<PromiseLike<unknown>> = []
+  const { ctx, profile } = await fixture({
+    apply: (pluginCtx) => {
+      injected.push(pluginCtx.inject(['settings'], (child) => {
+        child.settings.registerValidator(pluginCtx, ['count'], (value) => {
+          if (value === 3) throw new Error('count 3 is reserved')
+        })
+      }))
+    },
+  })
+  await Promise.all(injected)
+  const beforeFile = readFileSync(profile.patchPath, 'utf8')
+  const before = ctx.settings.describe().find(row => row.ns === 'first')!
+  await expect(ctx.settings.update('first', { count: 3 })).rejects.toThrow('reserved')
+  await expect(ctx.settings.replace('first', { count: 3 })).rejects.toThrow('reserved')
+  await expect(ctx.settings.mutate('first', [{ op: 'set', path: ['count'], value: 3 }])).rejects.toThrow('reserved')
+  const after = ctx.settings.describe().find(row => row.ns === 'first')!
+  expect(after.value).toEqual(before.value)
+  expect(after.revision).toBe(before.revision)
+  expect(readFileSync(profile.patchPath, 'utf8')).toBe(beforeFile)
+  await ctx.settings.update('first', { count: 4 })
+  expect(ctx.settings.describe().find(row => row.ns === 'first')!.value).toMatchObject({ count: 4 })
+})
+
+it('validates the resolved expression value rather than its Volatile reference', async () => {
+  const injected: Array<PromiseLike<unknown>> = []
+  const { ctx, profile } = await fixture({
+    apply: (pluginCtx) => {
+      injected.push(pluginCtx.inject(['settings'], (child) => {
+        child.settings.registerValidator(pluginCtx, ['count'], (value) => {
+          if (value === 3) throw new Error('count 3 is reserved')
+        })
+      }))
+    },
+  })
+  await Promise.all(injected)
+  const beforeFile = readFileSync(profile.patchPath, 'utf8')
+  const before = ctx.settings.describe().find(row => row.ns === 'first')!
+  await expect(ctx.settings.update('first', { count: { __jsExpr: '3' } }))
+    .rejects.toThrow('reserved')
+  const after = ctx.settings.describe().find(row => row.ns === 'first')!
+  expect(after.value).toEqual(before.value)
+  expect(after.revision).toBe(before.revision)
+  expect(readFileSync(profile.patchPath, 'utf8')).toBe(beforeFile)
+})
+
+it('reads a validator path only through object segments and keeps the sibling check after disposal', async () => {
+  const injected: Array<PromiseLike<unknown>> = []
+  const nestedDisposers: Array<() => void> = []
+  let seen: unknown = 'unset'
+  let remaining: unknown = 'unset'
+  const { ctx } = await fixture({
+    apply: (pluginCtx) => {
+      injected.push(pluginCtx.inject(['settings'], (child) => {
+        nestedDisposers.push(child.settings.registerValidator(pluginCtx, ['count', 'nested'], (value) => {
+          seen = value
+        }))
+        child.settings.registerValidator(pluginCtx, ['count'], (value) => {
+          remaining = value
+        })
+      }))
+    },
+  })
+  await Promise.all(injected)
+  await ctx.settings.update('first', { count: 5 })
+  expect(seen).toBeUndefined()
+  for (const dispose of nestedDisposers) dispose()
+  seen = 'unset'
+  remaining = 'unset'
+  await ctx.settings.update('first', { count: 6 })
+  expect(seen).toBe('unset')
+  expect(remaining).toBe(6)
+})
+
+it('rejects an empty validator field path', async () => {
+  const { ctx } = await fixture({ hmr: false })
+  expect(() => ctx.settings.registerValidator(ctx, [], () => {})).toThrow('non-empty field path')
+})
+
+it('passes the fiber checked inside the write lock to the config check', async () => {
+  const { ctx } = await fixture({ hmr: false })
+  const entry = ctx.configEditor.entries().find(row => row.options.id === 'first')!
+  const checked = entry.fiber!
+  let validated: unknown
+  await ctx.configEditor.edit(entry, raw => ({ ...raw, count: 6 }), (resolved, fiber) => {
+    expect((resolved as { count: { get(): number } }).count.get()).toBe(6)
+    validated = fiber
+  })
+  expect(validated === checked.ctx.fiber).toBe(true)
+})
+
 it('refuses an edit shadowed by a higher home layer', async () => {
   const { ctx, home, profile } = await fixture()
   writeFileSync(join(home, 'cordis.patch.yml'), JSON.stringify([{ id: 'default-model', config: { provider: 'test', model: 'home' } }]))

@@ -6,6 +6,8 @@ export interface AgentPreset {
   readonly name?: string
   readonly description?: string
   readonly order?: number
+  /** Whether the user-facing roster offers this preset; absent means selectable. */
+  readonly userSelectable?: boolean
   readonly broken?: string
 }
 

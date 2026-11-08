@@ -124,6 +124,98 @@ describe('declarative preset revisions', () => {
     ]))
   })
 
+  it('excludes an internal preset from user selection and defaults while keeping id-based mounting', async () => {
+    const ctx = await harness({ live: true })
+    contexts.push(ctx)
+    await declare(ctx, contribution('standard'))
+    await declare(ctx, { ...contribution('internal'), userSelectable: false })
+
+    expect((await ctx.agentPresets.list()).find(row => row.id === 'internal')).toMatchObject({ userSelectable: false })
+    expect((await ctx.agentPresets.remoteExportList()).presets.map(row => row.id)).toEqual(['standard'])
+    expect(await ctx.agentPresets.resolve('internal')).toMatchObject({ id: 'internal', userSelectable: false })
+
+    const agent = await agentOn(ctx, 'internal-selection')
+    await expect(ctx.agentPresets.select(agent, 'internal'))
+      .rejects.toMatchObject({ code: 'agent-preset/not-selectable' })
+    await expect(ctx.agentPresets.recompose(createScope(ctx, {}).ctx, 'internal'))
+      .rejects.toMatchObject({ code: 'agent-preset/not-selectable' })
+
+    const mounted = await agentOn(ctx, 'internal-mount', 'internal')
+    expect(ctx.agentPresets.composedPreset(mounted.ctx)).toBe('internal')
+    expect(ctx.tools.schemas(mounted).map(row => row.name)).toEqual(['internal'])
+    await using lease = await ctx.agentPresets.acquireScope('internal')
+    expect(lease.key).toBeDefined()
+
+    // A direct live config update is not a Settings write: it carries any
+    // string, so the effective default must fall back rather than reject the
+    // reload. The owner check covers the Settings write boundary in
+    // settings-integration.spec.ts, and the next case covers a saved default
+    // whose declaration arrives later.
+    const live = liveRegistries.get(ctx)!
+    await live.update({ selectedDefault: 'internal' })
+    expect(live.entry.options.config).toMatchObject({ selectedDefault: 'internal' })
+    expect(ctx.agentPresets.defaultId).toBe('standard')
+    const fresh = await agentOn(ctx, 'internal-default')
+    expect(ctx.agentPresets.composedPreset(fresh.ctx)).toBe('standard')
+  })
+
+  it('allows an internal definition to load after a saved internal default, then keeps it out of new sessions', async () => {
+    const ctx = await harness({ live: true })
+    contexts.push(ctx)
+    await declare(ctx, contribution('standard'))
+    await liveRegistries.get(ctx)!.update({ selectedDefault: 'internal' })
+    await declare(ctx, { id: 'internal', userSelectable: false, plugins: [] })
+    expect(ctx.agentPresets.defaultId).toBe('standard')
+    const fresh = await agentOn(ctx, 'saved-internal-default')
+    expect(ctx.agentPresets.composedPreset(fresh.ctx)).toBe('standard')
+    const explicit = await agentOn(ctx, 'saved-internal-explicit', 'internal')
+    expect(ctx.agentPresets.composedPreset(explicit.ctx)).toBe('internal')
+  })
+
+  it('rejects an internal deployment default even when the saved override names a selectable preset', async () => {
+    const ctx = await harness({ live: true, defaultPreset: 'internal' })
+    contexts.push(ctx)
+    await liveRegistries.get(ctx)!.update({ selectedDefault: 'standard' })
+    await expect(declare(ctx, { id: 'internal', userSelectable: false, plugins: [] }))
+      .rejects.toThrow('cannot be the deployment default')
+  })
+
+  it('rejects an internal preset as the deployment default', async () => {
+    const ctx = await setup()
+    await expect(ctx.agentPresets.register({ id: 'standard', userSelectable: false, plugins: [] }))
+      .rejects.toThrow('not user-selectable')
+  })
+
+  it('rejects a user mount when the retained generation became internal while activation settled', async () => {
+    const ctx = await setup()
+    const { plugin } = await import('./harness.ts')
+    let release!: () => void
+    const paused = new Promise<void>((resolve) => { release = resolve })
+    let entered!: () => void
+    const started = new Promise<void>((resolve) => { entered = resolve })
+    ctx.loader.builtins.slowProvider = { async apply(host: Context) {
+      entered()
+      await paused
+      host.provide('serviceThatDoesNotExist', { label: 'late host' })
+    } }
+    const hostUpdate = ctx.loader.root.update([{ id: 'slow', name: 'cordis:slowProvider' }])
+    await started
+    const old = await declare(ctx, { id: 'replaceable', plugins: [{ name: plugin('needs-missing') }] })
+    const target = createScope(ctx, {})
+    const mounting = ctx.agentPresets.mount(target.ctx, 'replaceable', { requireUserSelectable: true })
+    await old.dispose()
+    await declare(ctx, { id: 'replaceable', userSelectable: false, plugins: [] })
+    release()
+    await hostUpdate
+    await expect(mounting).rejects.toMatchObject({ code: 'agent-preset/not-selectable' })
+
+    // The trusted explicit mount and cold-read lease still address the id.
+    const trusted = createScope(ctx, {})
+    expect(await ctx.agentPresets.mount(trusted.ctx, 'replaceable')).toEqual({ id: 'replaceable' })
+    await using lease = await ctx.agentPresets.acquireScope('replaceable')
+    expect(lease.key).toBeDefined()
+  })
+
   it('renders a declaration as entry-list YAML for reading, conditions included', async () => {
     const ctx = await setup()
     await declare(ctx, {

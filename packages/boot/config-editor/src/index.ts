@@ -2,7 +2,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { Context, FiberState, Service } from '@deepseek-ai/cordis'
+import { Context, FiberState, Service, type Fiber } from '@deepseek-ai/cordis'
 import { entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import yaml from 'js-yaml'
 import type { Entry, EntryOptions } from '@deepseek-ai/cordis-plugin-loader'
@@ -82,11 +82,13 @@ export class ConfigEditor extends Service {
   /** Validate, persist, and reconcile a plugin's next config; ordinary fields keep normal lifecycle rules.
    * @param entry Current Loader entry, also used to detect replacement during the write.
    * @param change Derive a raw config from the current entry and its inherited layer.
+   * @param validate Optional owner check on the resolved effective config and the live fiber checked for activation, before persistence.
    * @returns Fulfillment after Loader reconciliation completes.
    */
   async edit(
     entry: Entry,
     change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>,
+    validate?: (resolved: Readonly<Record<string, unknown>>, fiber: Fiber) => void,
   ): Promise<void> {
     const run = async (): Promise<void> => {
       const path = this.documentPath
@@ -100,7 +102,12 @@ export class ConfigEditor extends Service {
         const next = change(current, inherited)
         const fiber = entry.fiber
         if (fiber.state !== FiberState.ACTIVE) throw new Error('Configuration plugin is no longer active')
-        fiber.resolveConfig(next)
+        const resolved = fiber.resolveConfig(next)
+        // Owner checks see the config after this fiber's hooks and schema
+        // validation, together with the actual fiber just checked for
+        // activation. They run before any profile patch is written;
+        // expressions are not evaluated a second time.
+        validate?.(resolved as Readonly<Record<string, unknown>>, fiber.ctx.fiber)
         let before: string
         try { before = await readFile(path, 'utf8') }
         catch (error) {

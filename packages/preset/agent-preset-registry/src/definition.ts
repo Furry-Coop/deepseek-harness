@@ -7,6 +7,13 @@ export interface PresetDefinition {
   readonly name?: string
   readonly description?: string
   readonly order?: number
+  /**
+   * Whether the user-facing roster offers this preset as a new-session mode
+   * (default true). A non-selectable preset stays mountable by id for internal
+   * compositions and cold reads, but cannot be selected, defaulted, or listed
+   * as a user choice.
+   */
+  readonly userSelectable?: boolean
   readonly plugins: readonly (Omit<EntryOptions, 'id' | 'disabled'> & { id?: string; disabled?: EntryOptions['disabled'] | JsExpr })[]
 }
 

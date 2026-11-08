@@ -6,13 +6,26 @@ import { onTestFinished } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import Timer from '@deepseek-ai/cordis-plugin-timer'
+import type { EntryOptions } from '@deepseek-ai/cordis-plugin-loader'
+import type { Plugin } from '@deepseek-ai/cordis'
 import { boot, initProfile, readProfilePatches, type ProfileContext } from '@deepseek-ai/dsh-app-boot'
 import ConfigEditor from '@deepseek-ai/dsh-config-editor'
 import Hmr from '@deepseek-ai/dsh-hmr'
 import DefaultModel from '@deepseek-ai/dsh-agent-default-model'
 import Settings from '../src/index.ts'
 
-export async function configurationFixture(options: { schema?: z; apply?: (ctx: Context, config: unknown) => void; hmr?: boolean } = {}) {
+/** Optional profile rows and Loader builtins for consumers that need a real extra entry. */
+export interface ConfigurationFixtureOptions {
+  schema?: z
+  apply?: (ctx: Context, config: unknown) => void
+  hmr?: boolean
+  /** Rows inserted after the standard probe rows. */
+  rows?: readonly EntryOptions[]
+  /** Loader builtins made available to those rows. */
+  builtins?: Readonly<Record<string, Plugin>>
+}
+
+export async function configurationFixture(options: ConfigurationFixtureOptions = {}) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'settings-config-')))
   const dir = join(home, 'profiles', 'test')
   onTestFinished(() => { rmSync(home, { recursive: true, force: true }) })
@@ -27,6 +40,7 @@ export async function configurationFixture(options: { schema?: z; apply?: (ctx: 
     { id: 'default-model', name: 'cordis:model', config: { provider: 'test', model: 'original' } },
     { id: 'first', name: 'cordis:probe', config: { ordinary: 'fixed', token: 'private' } },
     { id: 'second', name: 'cordis:probe', config: { ordinary: 'second' } },
+    ...options.rows ?? [],
   ] }]))
   writeFileSync(join(dir, 'cordis.yml'), '[]\n')
   const profile: ProfileContext = {
@@ -43,6 +57,7 @@ export async function configurationFixture(options: { schema?: z; apply?: (ctx: 
       ctx.provide('appReady', { onReady: (listener: () => void) => { listener(); return () => {} } })
       Object.assign(ctx.loader.builtins, {
         editor: ConfigEditor, settings: Settings, model: DefaultModel, probe: Probe,
+        ...options.builtins,
       })
     })
     onTestFinished(async () => { await ctx.fiber.dispose() })

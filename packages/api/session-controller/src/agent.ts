@@ -238,7 +238,12 @@ export class ApiSessionAgentController {
    */
   async createSession(request: ApiSessionCreateRequest): Promise<ApiSessionCreated> {
     const named = request.sessionId
-    if (named === undefined) return this.created(await this.createMinted(request.cwd, await this.composeAgent(request.agentPreset)))
+    if (named === undefined) {
+      return this.created(await this.createMinted(
+        request.cwd,
+        await this.composeAgent(request.agentPreset, { requireUserSelectable: true }),
+      ))
+    }
     return this.inOrder(named, async () => this.created(await this.claim(named, request)))
   }
 
@@ -266,20 +271,48 @@ export class ApiSessionAgentController {
   /**
    * Resolve the preset id and pre-publication Agent setup for a create or resume.
    * @param presetId - requested preset or the configured default when omitted.
+   * @param options - `requireUserSelectable` rejects a preset the roster hides from user
+   * choices; trusted fork and cold-resume callers omit it.
    * @returns the resolved preset identity and Agent setup callback.
    */
-  async composeAgent(presetId: string | undefined): Promise<ApiSessionComposition> {
+  async composeAgent(
+    presetId: string | undefined,
+    options: { readonly requireUserSelectable?: boolean } = {},
+  ): Promise<ApiSessionComposition> {
     const presets = this.ctx.get('agentPresets')
     if (presets === undefined) {
       return { setup: (agentCtx) => { installModelSelection(agentCtx) } }
     }
-    const resolvedId = (await presets.resolve(presetId)).id
+    const resolved = await presets.resolve(presetId)
+    if (options.requireUserSelectable === true && resolved.userSelectable === false) {
+      throw new RemoteError('agent-preset/not-selectable', `Agent preset "${resolved.id}" is not user-selectable`, {
+        agentPreset: resolved.id,
+      })
+    }
+    const resolvedId = resolved.id
     return {
       agentPreset: resolvedId,
       setup: async (agentCtx) => {
         installModelSelection(agentCtx)
-        await presets.mount(agentCtx, resolvedId)
+        await presets.mount(agentCtx, resolvedId, options)
       },
+    }
+  }
+
+  /**
+   * Reject a user-facing fork that would copy an internal preset into a new
+   * ordinary Session. Cold resume composes without this check.
+   * @param presetId - preset identity read from the Session being forked.
+   * @throws RemoteError `agent-preset/not-selectable` when the preset is internal.
+   */
+  async assertUserSelectablePreset(presetId: string): Promise<void> {
+    const presets = this.ctx.get('agentPresets')
+    if (presets === undefined) return
+    const resolved = await presets.resolve(presetId)
+    if (resolved.userSelectable === false) {
+      throw new RemoteError('agent-preset/not-selectable', `Agent preset "${resolved.id}" is not user-selectable`, {
+        agentPreset: resolved.id,
+      })
     }
   }
 
@@ -350,7 +383,7 @@ export class ApiSessionAgentController {
       if (live.session.header.cwd !== request.cwd) {
         throw new ApiSessionCwdConflict(live.id, request.cwd, live.session.header.cwd)
       }
-      const composition = await this.composeAgent(request.agentPreset)
+      const composition = await this.composeAgent(request.agentPreset, { requireUserSelectable: true })
       return await this.reuseLive(live, request, composition) ?? this.createMinted(request.cwd, composition)
     }
     let observation: SessionObservation
@@ -358,7 +391,7 @@ export class ApiSessionAgentController {
       observation = await this.ctx.sessionQuery.observeSession(sessionId)
     } catch (error: unknown) {
       if (!(error instanceof SessionQueryError) || error.code !== 'SESSION_QUERY_SESSION_NOT_FOUND') throw error
-      return this.createAgent(sessionId, request.cwd, await this.composeAgent(request.agentPreset))
+      return this.createAgent(sessionId, request.cwd, await this.composeAgent(request.agentPreset, { requireUserSelectable: true }))
     }
     let reusable: boolean
     {
@@ -371,7 +404,7 @@ export class ApiSessionAgentController {
       }
       reusable = request.reusable(sessionId) && !observed.events.some(event => event.type === 'turn/start')
     }
-    const composition = await this.composeAgent(request.agentPreset)
+    const composition = await this.composeAgent(request.agentPreset, { requireUserSelectable: true })
     if (!reusable) return this.createMinted(request.cwd, composition)
     this.assertPresetApplicable(sessionId, request.agentPreset)
     try {

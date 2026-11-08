@@ -2,7 +2,7 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { Agent, AgentHandle, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
-import type {} from '@deepseek-ai/dsh-agent-preset-registry'
+import { agentPresetProjectionDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
@@ -176,6 +176,16 @@ function completedSession(
   return session
 }
 
+function completedPresetSession(ctx: Context, id: string, agentPreset: string) {
+  const session = ctx.sessions.create(SessionId(id), { meta: { cwd: '/workspace', agentPreset } })
+  session.append('turn/start', { turn: 1 })
+  session.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: 'work' }], source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  return session
+}
+
 function resolvedHandle(ctx: Context, sessionId: SessionId): AgentHandle {
   return {
     agent: { id: sessionId, status: 'idle', ctx } as Agent,
@@ -252,6 +262,163 @@ describe('Session fork failures', () => {
     const creationController = new SessionCommandController(creation, controllerAgents(creation), '/default')
     await expectFailure(creationController.fork({ sessionId: source.id }), 'gateway/internal')
     await creation.fiber.dispose()
+  })
+
+  it('rejects forking a Session under an internal preset without creating a child', async () => {
+    const ctx = await baseContext()
+    await ctx.sessionProjections.register(agentPresetProjectionDefinition)
+    ctx.provide('agentPresets', {
+      resolve: (id: string) => Promise.resolve({ id, userSelectable: false }),
+    } as never)
+    ctx.provide('workspaceRegistry', { list: () => [] } as never)
+    const source = ctx.sessions.create(SessionId('internal-source'), {
+      meta: { cwd: '/workspace', agentPreset: 'internal' },
+    })
+    source.append('turn/start', { turn: 1 })
+    source.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'work' }], source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    source.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    const create = vi.spyOn(ctx.agents, 'create')
+    const controller = new SessionCommandController(ctx, controllerAgents(ctx), '/default')
+
+    await expectFailure(controller.fork({ sessionId: source.id }), 'agent-preset/not-selectable')
+    expect(create).not.toHaveBeenCalled()
+    await ctx.fiber.dispose()
+  })
+
+  it('rejects a fork whose preset turns internal between observation and the adopted generation', async () => {
+    const ctx = await baseContext()
+    await ctx.sessionProjections.register(agentPresetProjectionDefinition)
+    ctx.provide('agentPresets', {
+      resolve: (id: string) => Promise.resolve({ id }),
+      mount: (_ctx: Context, id: string, options?: { requireUserSelectable?: boolean }) => {
+        if (options?.requireUserSelectable === true) {
+          return Promise.reject(new RemoteError('agent-preset/not-selectable', `Agent preset "${id}" is not user-selectable`, { agentPreset: id }))
+        }
+        return Promise.resolve({ id })
+      },
+    } as never)
+    ctx.provide('workspaceRegistry', { list: () => [] } as never)
+    const source = ctx.sessions.create(SessionId('raced-source'), {
+      meta: { cwd: '/workspace', agentPreset: 'internal' },
+    })
+    source.append('turn/start', { turn: 1 })
+    source.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'work' }], source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    source.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    const create = vi.spyOn(ctx.agents, 'create').mockImplementation(async (options: CreateAgentOptions) => {
+      const session = ctx.sessions.create(options.sessionId, { meta: { cwd: '/workspace' } })
+      await options.setup?.(ctx, { id: options.sessionId, status: 'idle', ctx, session } as Agent)
+      return resolvedHandle(ctx, options.sessionId)
+    })
+    const controller = new SessionCommandController(ctx, new ApiSessionAgentController(ctx), '/default')
+
+    await expectFailure(controller.fork({ sessionId: source.id }), 'agent-preset/not-selectable')
+    expect(create).toHaveBeenCalledOnce()
+    await ctx.fiber.dispose()
+  })
+
+  it('creates a fork under an explicit preset when no roster is composed', async () => {
+    const ctx = await baseContext()
+    await ctx.sessionProjections.register(agentPresetProjectionDefinition)
+    ctx.provide('workspaceRegistry', { list: () => [] } as never)
+    const source = completedPresetSession(ctx, 'unroster-source', 'internal')
+    const create = vi.spyOn(ctx.agents, 'create').mockImplementation(
+      (options: CreateAgentOptions) => Promise.resolve(resolvedHandle(ctx, options.sessionId)),
+    )
+    const controller = new SessionCommandController(ctx, controllerAgents(ctx, {
+      composeAgent: () => Promise.resolve({ agentPreset: 'internal', setup: () => {} }),
+    }), '/default')
+
+    const forked = await controller.fork({ sessionId: source.id })
+    expect(forked.sessionId).toMatch(/^session-/)
+    expect(create).toHaveBeenCalledOnce()
+    await ctx.fiber.dispose()
+  })
+
+  it('maps a not-selectable creation message back to the preset refusal', async () => {
+    const ctx = await baseContext()
+    await ctx.sessionProjections.register(agentPresetProjectionDefinition)
+    ctx.provide('agentPresets', { resolve: (id: string) => Promise.resolve({ id }) } as never)
+    ctx.provide('workspaceRegistry', { list: () => [] } as never)
+    const source = completedPresetSession(ctx, 'message-source', 'internal')
+    vi.spyOn(ctx.agents, 'create').mockRejectedValue(new Error('Agent preset "internal" is not user-selectable'))
+    const controller = new SessionCommandController(ctx, controllerAgents(ctx), '/default')
+
+    await expect(controller.fork({ sessionId: source.id })).rejects.toMatchObject({
+      code: 'agent-preset/not-selectable',
+      details: { agentPreset: 'internal' },
+    })
+    await ctx.fiber.dispose()
+  })
+
+  it('maps a default not-selectable creation message without a source preset', async () => {
+    const ctx = await baseContext()
+    await ctx.sessionProjections.register(agentPresetProjectionDefinition)
+    ctx.provide('agentPresets', { resolve: (id: string) => Promise.resolve({ id }) } as never)
+    ctx.provide('workspaceRegistry', { list: () => [] } as never)
+    const source = completedSession(ctx, 'default-message-source', '/workspace')
+    vi.spyOn(ctx.agents, 'create').mockRejectedValue(new Error('Agent preset "internal" is not user-selectable'))
+    const controller = new SessionCommandController(ctx, controllerAgents(ctx), '/default')
+
+    await expect(controller.fork({ sessionId: source.id })).rejects.toMatchObject({
+      code: 'agent-preset/not-selectable',
+      details: { agentPreset: '' },
+    })
+    await ctx.fiber.dispose()
+  })
+
+  it('unwraps a preset refusal preserved as a creation cause', async () => {
+    const ctx = await baseContext()
+    await ctx.sessionProjections.register(agentPresetProjectionDefinition)
+    ctx.provide('agentPresets', { resolve: (id: string) => Promise.resolve({ id }) } as never)
+    ctx.provide('workspaceRegistry', { list: () => [] } as never)
+    const source = completedPresetSession(ctx, 'cause-source', 'internal')
+    vi.spyOn(ctx.agents, 'create').mockRejectedValue(new Error('wrapped creation failure', {
+      cause: new RemoteError('agent-preset/not-selectable', 'Agent preset "internal" is not user-selectable', {
+        agentPreset: 'internal',
+      }),
+    }))
+    const controller = new SessionCommandController(ctx, controllerAgents(ctx), '/default')
+
+    await expectFailure(controller.fork({ sessionId: source.id }), 'agent-preset/not-selectable')
+    await ctx.fiber.dispose()
+  })
+
+  it('reports a creation failure whose cause is not a preset refusal', async () => {
+    const ctx = await baseContext()
+    await ctx.sessionProjections.register(agentPresetProjectionDefinition)
+    ctx.provide('agentPresets', { resolve: (id: string) => Promise.resolve({ id }) } as never)
+    ctx.provide('workspaceRegistry', { list: () => [] } as never)
+    const source = completedPresetSession(ctx, 'primitive-cause-source', 'internal')
+    vi.spyOn(ctx.agents, 'create').mockRejectedValue(new Error('wrapped creation failure', {
+      cause: 'not user-selectable',
+    }))
+    const controller = new SessionCommandController(ctx, controllerAgents(ctx), '/default')
+
+    await expectFailure(controller.fork({ sessionId: source.id }), 'gateway/internal')
+    await ctx.fiber.dispose()
+  })
+
+  it('rejects a fork whose source records no preset but the effective default is internal', async () => {
+    const ctx = await baseContext()
+    await ctx.sessionProjections.register(agentPresetProjectionDefinition)
+    ctx.provide('agentPresets', {
+      resolve: (id?: string) => Promise.resolve(id === undefined
+        ? { id: 'internal', userSelectable: false }
+        : { id }),
+      mount: (_ctx: Context, id: string) => Promise.resolve({ id }),
+    } as never)
+    ctx.provide('workspaceRegistry', { list: () => [] } as never)
+    const source = completedSession(ctx, 'default-source', '/workspace')
+    const create = vi.spyOn(ctx.agents, 'create')
+    const controller = new SessionCommandController(ctx, new ApiSessionAgentController(ctx), '/default')
+
+    await expectFailure(controller.fork({ sessionId: source.id }), 'agent-preset/not-selectable')
+    expect(create).not.toHaveBeenCalled()
+    await ctx.fiber.dispose()
   })
 
   it('omits absent cwd and preset metadata before reporting Workspace attachment failure', async () => {

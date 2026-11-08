@@ -38,6 +38,8 @@ Reset restores the value beneath the profile override, including schema defaults
 
 Each form reports `autoGenerate`, enabled by default, for clients that build pages from the schema; no shipped client does so yet. A plugin that ships its own page registers `configure({ auto: false }, ctx.fiber)` as an effect inside an optional `ctx.inject(['settings'], ...)` child from `apply`: the child names the plugin fiber the policy belongs to, a late-loading or replaced Settings service picks the policy up, and the business plugin runs without Settings. The policy does not remove configuration reads or writes.
 
+A plugin may also register a synchronous owner check for one of its fields with `registerValidator(owner, path, validate)` from the same optional child. The check runs inside `update`, `replace`, and `mutate` on the resolved config from the same write acceptance: configuration expressions and schema validation have run, and volatile references are unwrapped to their validated values. It never re-evaluates expressions. Throwing rejects the write and leaves the value, revision, and effective consumer state unchanged. The registration is an effect of the owner fiber, so unloading or HMR removes it.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

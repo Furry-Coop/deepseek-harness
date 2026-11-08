@@ -676,9 +676,10 @@ async resolve(id?: string): Promise<AgentPreset>
 /** Bind an unpublished Agent to the current preset revision.
  * @param ctx Agent context from its setup callback.
  * @param id Requested preset, or the default.
+ * @param options `requireUserSelectable` rejects an internal preset on a user path.
  * @returns Bound preset identity.
  */
-async mount(ctx: Context, id?: string): Promise<AgentPreset>
+async mount( ctx: Context, id?: string, options: { readonly requireUserSelectable?: boolean } = {}, ): Promise<AgentPreset>
 
 /** Join a child to the exact revision retained by its parent.
  * @param ctx Child Agent context.
@@ -703,9 +704,10 @@ serviceFor<K extends string & keyof Context>(agent: { ctx: Context }, name: K): 
 /** Rebind a blank Agent; the caller owns the blank-session check.
  * @param ctx Agent context.
  * @param id Requested preset.
+ * @param options `requireUserSelectable` defaults to true for this user-facing switch.
  * @returns The bound identity.
  */
-async recompose(ctx: Context, id: string): Promise<AgentPreset>
+async recompose( ctx: Context, id: string, options: { readonly requireUserSelectable?: boolean } = { requireUserSelectable: true }, ): Promise<AgentPreset>
 
 /** Select a preset before a session starts its first turn. A Session whose
  * log records the preset and whose Agent runs its current revision keeps its

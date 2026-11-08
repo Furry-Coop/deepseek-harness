@@ -256,7 +256,11 @@ export class SessionCommandController {
       )
     }
     const childId = brandString<SessionId>(`session-${randomUUID()}`)
-    const composition = await this.agents.composeAgent(this.agents.presetForObservation(source))
+    const sourcePreset = this.agents.presetForObservation(source)
+    if (sourcePreset !== undefined) await this.agents.assertUserSelectablePreset(sourcePreset)
+    // Omitting a source preset still resolves the default; fork is a user
+    // creation path, so the effective preset must obey the user-selection rule too.
+    const composition = await this.agents.composeAgent(sourcePreset, { requireUserSelectable: true })
     try {
       const { provider, model } = this.ctx.agentDefaultModel.currentSelection()
       await this.ctx.agents.create({
@@ -274,6 +278,13 @@ export class SessionCommandController {
         setup: composition.setup,
       })
     } catch (error) {
+      const refusal = presetRefusal(error)
+      if (refusal !== undefined) throw refusal
+      if (String(error).includes('not user-selectable')) {
+        throw new RemoteError('agent-preset/not-selectable', String(error), {
+          agentPreset: sourcePreset ?? '',
+        })
+      }
       throw new RemoteError(
         'gateway/internal',
         `failed to fork session "${request.sessionId}": ${String(error)}`,
@@ -551,4 +562,16 @@ function hasPromptRequest(agent: Agent, requestId: SessionRequestId): boolean {
     const source = event.data.source
     return source.kind === 'user' && 'rpcId' in source && source.rpcId === requestId
   })
+}
+
+/** Find a preset refusal preserved under creation wrappers. */
+function presetRefusal(error: unknown): Error | undefined {
+  let current: unknown = error
+  for (let depth = 0; depth < 5 && current !== undefined; depth += 1) {
+    if (current instanceof Error && remoteErrorOf(current)?.code === 'agent-preset/not-selectable') return current
+    current = typeof current === 'object' && current !== null && 'cause' in current
+      ? (current as { readonly cause?: unknown }).cause
+      : undefined
+  }
+  return undefined
 }
