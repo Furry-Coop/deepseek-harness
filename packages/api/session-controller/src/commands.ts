@@ -267,6 +267,31 @@ export class SessionCommandController {
     }
   }
 
+  /** Whether the Controller may hand this exact candidate back to the Factory. */
+  private inheritsCandidate(
+    candidate: SessionId | undefined,
+    workspace: Workspace | undefined,
+  ): (sessionId: SessionId) => boolean {
+    return sessionId => candidate === sessionId
+      && !this.ctx.workspaceRegistry.archivedSessionIds.includes(sessionId)
+      && (workspace === undefined || workspace.sessionIds.includes(sessionId))
+  }
+
+  /** The native creation call both admission paths share. */
+  private async createAgentSession(
+    request: SessionCreateRequest,
+    cwd: string,
+    candidate: SessionId | undefined,
+    inherits: (sessionId: SessionId) => boolean,
+  ): Promise<ApiSessionCreated> {
+    return this.agents.createSession({
+      ...(candidate === undefined ? {} : { sessionId: candidate }),
+      cwd,
+      ...(request.agentPreset === undefined ? {} : { agentPreset: request.agentPreset }),
+      reusable: inherits,
+    })
+  }
+
   /** One creation attempt without policy participation. */
   private async createNow(
     request: SessionCreateRequest,
@@ -274,14 +299,7 @@ export class SessionCommandController {
     cwd: string,
     candidate: SessionId | undefined,
   ): Promise<SessionCreateValue> {
-    const created = await this.agents.createSession({
-      ...(candidate === undefined ? {} : { sessionId: candidate }),
-      cwd,
-      ...(request.agentPreset === undefined ? {} : { agentPreset: request.agentPreset }),
-      reusable: sessionId => candidate === sessionId
-        && !this.ctx.workspaceRegistry.archivedSessionIds.includes(sessionId)
-        && (workspace === undefined || workspace.sessionIds.includes(sessionId)),
-    })
+    const created = await this.createAgentSession(request, cwd, candidate, this.inheritsCandidate(candidate, workspace))
     const sessionId = created.agent.id
     if (workspace !== undefined) await this.attachCreated(sessionId, workspace, undefined)
     return { sessionId, ...(created.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }) }
@@ -349,16 +367,9 @@ export class SessionCommandController {
     }
     let created: ApiSessionCreated
     try {
-      created = await this.agents.createSession({
-        ...(candidate === undefined ? {} : { sessionId: candidate }),
-        cwd,
-        ...(request.agentPreset === undefined ? {} : { agentPreset: request.agentPreset }),
-        // The compatibility decision is already made; the Controller still
-        // applies its own archived and membership rules to the one candidate.
-        reusable: sessionId => candidate === sessionId
-          && !this.ctx.workspaceRegistry.archivedSessionIds.includes(sessionId)
-          && workspace.sessionIds.includes(sessionId),
-      })
+      // The compatibility decision is already made; the Controller still
+      // applies its own archived and membership rules to the one candidate.
+      created = await this.createAgentSession(request, cwd, candidate, this.inheritsCandidate(candidate, workspace))
     } catch (error) {
       const creation = creationKnowledgeOf(error)
       const knownId = error instanceof ApiSessionCreationFailed ? error.sessionId : undefined
