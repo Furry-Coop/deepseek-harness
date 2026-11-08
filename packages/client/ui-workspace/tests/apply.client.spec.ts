@@ -322,6 +322,9 @@ describe('ui-workspace apply', () => {
     expect(b.slots.spec(ROW_ACTION)).toEqual({ kind: 'list', scope: 'root' })
     expect(b.slots.spec('sidebar.session.row.trailing')).toEqual({ kind: 'list', scope: 'root', inline: true })
     expect(b.slots.spec('sidebar.session.row.leading')).toEqual({ kind: 'list', scope: 'root', inline: true })
+    expect(b.slots.spec('sidebar.session.row.badge')).toEqual({ kind: 'list', scope: 'root', inline: true })
+    // Occupants render the host-standard badge through this package's Factory.
+    expect(b.slots.snapshot('factory:sidebar.session.badge')).toHaveLength(1)
 
     const rows = (key: RowListName) => b.slots.entries(key)
       .map(registration => [registration.options.id, registration.options.order, registration.component, registration.locale])
@@ -925,6 +928,8 @@ describe('ui-workspace apply', () => {
     expect(b.slots.entries('shell.overlay')).toHaveLength(0)
     expect(b.slots.entries('workspace.toast')).toHaveLength(0)
     expect(b.slots.snapshot('factory:workspace.toast.content')).toEqual([])
+    // The badge Factory leaves with the plugin fiber too.
+    expect(b.slots.snapshot('factory:sidebar.session.badge')).toEqual([])
   })
 })
 

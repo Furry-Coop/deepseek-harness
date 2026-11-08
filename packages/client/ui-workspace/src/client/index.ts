@@ -11,10 +11,12 @@ import type {} from '@deepseek-ai/dsh-client-ui-context-menu/client'
  * client half. WorkspaceBrowser additionally declares the two Session row
  * action lists. Built-in Session menu actions contribute structured data to
  * ctx.contextMenus, while external React entries retain the legacy Slot. Dialogs and
- * the row-action notice register in `shell.overlay` (see the contract module doc). It also declares two
- * Session-row seats: the leading decoration a row renders only while its own
- * primary state is idle, and the section the row's hover card renders between
- * its relative time and its trailing status line. Export discipline:
+ * the row-action notice register in `shell.overlay` (see the contract module doc). It also declares the
+ * Session-row decoration seats: the leading cell, the badge strip, the
+ * trailing icon list, and the section the row's hover card renders between its
+ * relative time and its trailing status line. The host-standard
+ * `sidebar.session.badge` Factory is registered independently of the browser,
+ * because an occupant's row contribution calls it. Export discipline:
  * packages/client/AGENTS.md.
  */
 import type {} from '@deepseek-ai/dsh-client-product-analytics/client'
@@ -49,6 +51,7 @@ import { createWorkspaceShortcutControls, installWorkspaceShortcuts } from './sh
 import { UiWorkspaceService } from './navigation.ts'
 import { createWorkspaceViewStore } from './stores.ts'
 import { WorkspaceBrowser } from './rows/WorkspaceBrowser.tsx'
+import { SessionRowBadge } from './SessionRowBadge.tsx'
 import { ArchiveSessionRowButton, SessionArchiveConfirmDialog } from './session-actions/ArchiveSession.tsx'
 import { derive } from './session-actions/derived.ts'
 import { registerSessionMenus } from './session-actions/context-menus.tsx'
@@ -62,7 +65,8 @@ import { en, ja, es, fr, de, ru, pt, zh, type WorkspaceKey } from './locales.ts'
 export type { StartSessionOptions, UiWorkspace } from './navigation.ts'
 export type {
   DirectoryFlowOwnerProps, DirectoryFlowSlotName, DirectoryPickingHooks, DirectoryPickingInjected,
-  MenuOpenState, RowToast, SessionRenameTarget, SessionRowOwnerProps, UseMenuOpenState, WorkspaceBrowserInjected,
+  MenuOpenState, RowToast, SessionRenameTarget, SessionRowBadgeOwnerProps, SessionRowBadgeProps,
+  SessionRowOwnerProps, UseMenuOpenState, WorkspaceBrowserInjected,
   SessionRowScheduleOwnerProps,
   WorkspaceBrowserProps,
   WorkspacePickerInjected, WorkspacePickerProps,
@@ -134,6 +138,10 @@ export function apply(ctx: Context): void {
     },
   })
   ctx.effect(() => ctx.locale.register(NS, { zh, en, ja, es, fr, de, ru, pt }), 'ui-workspace: dictionaries')
+  // The badge presentation is a reusable Factory of this plugin, independent of
+  // the browser entry: an occupant calls it from its row contribution, so it
+  // must resolve even while no browsing region is mounted.
+  ctx.slots.registerFactory({ name: 'sidebar.session.badge', scope: 'root' }, SessionRowBadge)
   const shortcutControls = createWorkspaceShortcutControls()
 
   const searchSessions: WorkspaceBrowserInjected['searchSessions'] = async (query, signal) => {
@@ -335,6 +343,7 @@ export function apply(ctx: Context): void {
         'sidebar.workspaces.session.row.action': { kind: 'list', scope: 'root' },
         'sidebar.session.row.leading': { kind: 'list', scope: 'root', inline: true },
         'sidebar.session.row.trailing': { kind: 'list', scope: 'root', inline: true },
+        'sidebar.session.row.badge': { kind: 'list', scope: 'root', inline: true },
         'sidebar.session.row.hover': { kind: 'list', scope: 'root' },
       },
       store: viewStore,

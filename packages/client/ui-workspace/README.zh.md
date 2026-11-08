@@ -105,11 +105,11 @@ Workspace 和 Session 的启动基线均就绪后，空安装环境调用 `works
 
 本包是一条组合：两个目标 slot 都由其他插件声明，因此 `apply` 使用 `slots.inject()` 在各自的声明生命周期内完成注册，并在目标 slot 的声明恢复后重新注册。
 
-浏览器入口为每个 Session 行声明三个 root 作用域的 `list` 子 slot：`sidebar.session.row.leading`、`sidebar.session.row.trailing` 和 `sidebar.session.row.hover`。三者只接收 `sessionId`，占用方据此读取自己的数据，不建立 Session 绑定。Session 作用域的 slot 会激活并保留列表中每个 Session。
+浏览器入口为每个 Session 行声明四个 root 作用域的 `list` 子 slot：`sidebar.session.row.leading`、`sidebar.session.row.badge`、`sidebar.session.row.trailing` 和 `sidebar.session.row.hover`。四者只接收 `sessionId`，占用方据此读取自己的数据，不建立 Session 绑定。Session 作用域的 slot 会激活并保留列表中每个 Session。
 
-前置 slot 仅在该行主状态为 idle 时占用状态单元，归档行留空。尾部 slot 按 `order` 升序放置非交互图标，位置在时间标签之后、置顶标记之前。空白行不渲染尾部 slot；空 slot 不增加间距。悬浮 slot 仅在该行的悬浮卡片打开时挂载。
+前置 slot 仅在该行主状态为 idle 时占用状态单元，归档行留空。标记 slot 按 `order` 升序接收简短的插件标注，位置在原生时间或紧凑状态文字之前、在悬停、打开的菜单或键盘焦点会用操作按钮替换的静止单元之外；占用方以 `{ text, title? }` 渲染宿主标准的 `sidebar.session.badge` Factory，宿主共用同一宽度预算，长文字省略，并在窄侧栏中优先让出宽度。尾部 slot 按 `order` 升序放置非交互图标，位置在时间标签之后、置顶标记之前。空白行不渲染标记与尾部 slot；空 slot 不增加间距。悬浮 slot 仅在该行的悬浮卡片打开时挂载。
 
-在支持悬停的设备上，鼠标移入 Session 行、通过键盘聚焦行或其操作按钮、打开行菜单，都会用操作按钮替代时间、尾部图标和置顶标记。鼠标点击不会让按钮在指针移出后仍然显示。内置 Session 和 Workspace 行操作按钮使用 24px 点击热区，通过补偿外边距保留紧凑的布局占位与图标位置。
+在支持悬停的设备上，鼠标移入 Session 行、通过键盘聚焦行或其操作按钮、打开行菜单，都会用操作按钮替代时间、尾部图标和置顶标记，而标记仍然可见。鼠标点击不会让按钮在指针移出后仍然显示。内置 Session 和 Workspace 行操作按钮使用 24px 点击热区，通过补偿外边距保留紧凑的布局占位与图标位置。
 
 Session 行可通过 Tab 聚焦，使用不带修饰键的 Enter 或空格打开；Tab 也可移到行内操作按钮，组合键则继续交由全局快捷键处理。
 

@@ -40,13 +40,15 @@ type RowTranslate = WorkspaceBrowserProps['t']
 
 /**
  * Child-seat renderer threaded from the browser root: the row's action lists,
- * its leading and trailing decorations, and its hover-card section. The leading
- * seat is rendered only while the row's primary state is idle, so a status dot and a
- * leading occupant never share the row; the hover seat only while the row's
- * card is open.
+ * its leading, badge, and trailing decorations, and its hover-card section. The
+ * leading seat is rendered only while the row's primary state is idle, so a
+ * status dot and a leading occupant never share the row; the badge strip stays
+ * outside the resting cell so action buttons do not replace it; the hover seat
+ * only while the row's card is open.
  */
 type RowRenderSlots = PropsRenderSlots<
   | 'sidebar.workspaces.session.row.action'
+  | 'sidebar.session.row.badge'
   | 'sidebar.session.row.trailing'
   | 'sidebar.session.row.leading'
   | 'sidebar.session.row.hover'
@@ -584,7 +586,7 @@ export function SearchResultItem({
  * called only after a single press on the title since the window last lost focus.
  * @param props.renderSlot - child-seat renderer for the row's action lists
  * (`sidebar.workspaces.session.menu.item` / `sidebar.workspaces.session.row.action`),
- * its leading and trailing decorations, and its hover-card section.
+ * its leading, badge, and trailing decorations, and its hover-card section.
  * @param props.onReveal - scroll this row into view after search navigation, then acknowledge it.
  * @param props.drag - optional row-drag target wiring; blank rows, and rows whose access excludes
  * `workspace/insertSessionBefore`, cannot start a drag.
@@ -616,6 +618,7 @@ export function SessionNodeItem({
   t: RowTranslate
 } & Pick<WorkspaceBrowserProps, 'useSessionAccess'> & PropsRenderSlots<
   | 'sidebar.workspaces.session.row.action'
+  | 'sidebar.session.row.badge'
   | 'sidebar.session.row.trailing'
   | 'sidebar.session.row.leading'
   | 'sidebar.session.row.hover'
@@ -731,6 +734,17 @@ export function SessionNodeItem({
       >
         {title}
       </span>
+      {/* Plugin badges share one host container directly before the native
+          resting cell. The container stays mounted while hover, an open menu,
+          or keyboard focus replaces that cell with action buttons, so a badge
+          stays readable throughout. An entry that knows nothing about the row
+          returns no content, so the container has no `.rowBadge` child and is
+          hidden. */}
+      {!row.blank && (
+        <span className={css.rowBadges}>
+          {renderSlot('sidebar.session.row.badge', { sessionId: node.id })}
+        </span>
+      )}
       {/* Blank rows have no first prompt, so neither trailing details nor
           actions for existing content are available. */}
       {!row.blank && (

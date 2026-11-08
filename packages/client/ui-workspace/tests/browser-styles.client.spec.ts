@@ -182,6 +182,33 @@ describe('WorkspaceBrowser.module.css list', () => {
       .toBe('linear-gradient(to right, transparent, #000 12px, #000 calc(100% - 12px), transparent)')
   })
 
+  it('keeps plugin badges readable while the resting cell yields to hover, menu, and focus', () => {
+    // The resting cell is what hover, an open menu, and keyboard focus replace
+    // with action buttons; the badge strip is its previous sibling and owns the
+    // shared label budget, so those states never hide a badge.
+    expect(rowDeclarations('.sessionRow:hover .rowResting')?.get('display')).toBe('none')
+    expect(rowDeclarations('.sessionRow.menuOpen .rowResting')?.get('display')).toBe('none')
+    expect(rowDeclarations(":global(html[data-input-modality='keyboard']) .sessionRow:focus-within .rowResting")?.get('display'))
+      .toBe('none')
+    expect(rowDeclarations('.sessionRow:hover .rowBadges')).toBeUndefined()
+    expect(rowDeclarations('.sessionRow.menuOpen .rowBadges')).toBeUndefined()
+    expect(rowDeclarations(":global(html[data-input-modality='keyboard']) .sessionRow:focus-within .rowBadges")).toBeUndefined()
+    const badges = rowDeclarations('.rowBadges')
+    expect(badges?.get('max-width')).toBe('96px')
+    expect(badges?.get('min-width')).toBe('0')
+    expect(badges?.get('flex')).toBe('0 1 auto')
+    expect(badges?.get('overflow')).toBe('hidden')
+    const badge = rowDeclarations('.rowBadge')
+    expect(badge?.get('min-width')).toBe('0')
+    expect(badge?.get('overflow')).toBe('hidden')
+    expect(badge?.get('text-overflow')).toBe('ellipsis')
+    // The action strip keeps its fixed footprint and only the badge budget
+    // gives way, so the two never overlap in a narrow sidebar.
+    expect(rowDeclarations('.rowActions')?.get('flex')).toBe('none')
+    // No badge contribution leaves the row exactly as before: no width or gap.
+    expect(rowDeclarations('.rowBadges:not(:has(> [data-slot] .rowBadge))')?.get('display')).toBe('none')
+  })
+
   it('pins both rail controls to the shared left anchor during the column slide', () => {
     expect(declarations('.rail .sectionHeader')?.get('justify-content')).toBe('flex-start')
     expect(declarations('.rail .iconButton')?.get('width')).toBe('36px')

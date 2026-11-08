@@ -29,10 +29,12 @@
  * they receive the captured row identity and render together before Archive.
  *
  * The browser entry additionally declares `list` seats per Session row
- * (`sidebar.session.row.leading`, `sidebar.session.row.trailing`, and
- * `sidebar.session.row.hover`) for ambient row decorations. They receive only
- * the row's Session identity; a Session binding would activate and retain
- * every listed Session.
+ * (`sidebar.session.row.leading`, `sidebar.session.row.badge`,
+ * `sidebar.session.row.trailing`, and `sidebar.session.row.hover`) for ambient
+ * row decorations. They receive only the row's Session identity; a Session
+ * binding would activate and retain every listed Session. Occupants of the
+ * badge seat render the host-standard `sidebar.session.badge` Factory, which
+ * keeps the shared width budget, clipping, and accessible name in this package.
  */
 import type { ContextMenuTarget } from '@deepseek-ai/dsh-client-ui-context-menu/client'
 import type {
@@ -125,6 +127,39 @@ export interface SessionRowScheduleOwnerProps {
   readonly sessionId: SessionId
 }
 
+/**
+ * Owner share of the badge seat: the row identity. An occupant renders one
+ * short label through the `'sidebar.session.badge'` factory, which owns the
+ * shared width budget, clipping, and host styling; an occupant that knows
+ * nothing about the row returns no content, leaving no element or width behind.
+ */
+export interface SessionRowBadgeOwnerProps {
+  /** Session this row shows. */
+  readonly sessionId: SessionId
+}
+
+/** Input of one host-standard Session-row badge. */
+export interface SessionRowBadgeProps {
+  /** Short visible text; the host clips it at the shared width budget. */
+  readonly text: string
+  /** Complete explanation for the pointer tooltip and assistive technology. */
+  readonly title?: string
+}
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotFactoryMap {
+    /**
+     * Host-standard one-row badge: the host owns its inline geometry, shared
+     * width budget, clipping, and accessible name; an occupant supplies only
+     * the text and its complete explanation.
+     */
+    'sidebar.session.badge': {
+      scope: 'root'
+      props: SessionRowBadgeProps
+    }
+  }
+}
+
 /** Owner share of the trailing icon list; rendering does not bind the Session. */
 export interface SessionRowTrailingOwnerProps {
   /** Session this row shows. */
@@ -156,6 +191,17 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * bind or retain the Session.
      */
     'sidebar.session.row.trailing': { kind: 'list'; scope: 'root'; inline: true; owner: SessionRowTrailingOwnerProps }
+    /**
+     * Short plugin labels in the trailing cell of one Session row, in ascending
+     * `order`, before the native relative time or compact status text. The seat
+     * exists on every listed row that shows a time — archived rows included —
+     * and not on a blank provisional row or a search result. Occupants render
+     * through the owner's `sidebar.session.badge` factory so the host keeps the
+     * shared width budget, inline layout, and accessible name. The labels stay
+     * outside the resting cell that hover, an open menu, or keyboard focus
+     * replaces with action buttons, so they remain readable throughout.
+     */
+    'sidebar.session.row.badge': { kind: 'list'; scope: 'root'; inline: true; owner: SessionRowBadgeOwnerProps }
     /**
      * Section of the Session row's hover card between its relative time and
      * its trailing status line. Mounted only while that card is open.
@@ -502,6 +548,7 @@ export type WorkspaceBrowserProps =
     | 'sidebar.workspaces.directoryFlow'
     | 'sidebar.workspaces.session.row.action'
     | 'sidebar.session.row.trailing'
+    | 'sidebar.session.row.badge'
     | 'sidebar.session.row.leading'
     | 'sidebar.session.row.hover'
   >

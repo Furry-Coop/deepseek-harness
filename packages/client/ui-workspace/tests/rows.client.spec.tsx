@@ -32,6 +32,7 @@ const wid = (id: string) => id as WorkspaceId
 type RowSlotName =
   | 'sidebar.workspaces.session.menu.item'
   | 'sidebar.workspaces.session.row.action'
+  | 'sidebar.session.row.badge'
   | 'sidebar.session.row.trailing'
   | 'sidebar.session.row.leading'
   | 'sidebar.session.row.hover'
@@ -1116,13 +1117,13 @@ describe('workspace browser rows', () => {
       }
       const view = render(<SessionNodeItem node={node} currentId={undefined} now={0} onOpen={vi.fn()} t={t} />)
       const row = screen.getByRole('treeitem')
-      const title = screen.getByText('Needs input')
       expect(row.querySelector('[data-state="warning"]')).toBeTruthy()
       expect(row.querySelector('[data-state="ongoing"]')).toBeNull()
       expect(row.textContent).toContain(label)
-      expect(title.nextElementSibling?.textContent).toBe(compactLabel)
+      const timeCell = row.querySelector('[class*="rowResting"]')?.firstElementChild as HTMLElement
+      expect(timeCell.textContent).toBe(compactLabel)
       expect(rowCss.timestamp).toBeTypeOf('string')
-      expect(title.nextElementSibling?.firstElementChild?.classList.contains(rowCss.timestamp!)).toBe(false)
+      expect(timeCell.classList.contains(rowCss.timestamp!)).toBe(false)
       expect(row.querySelector('[class*="time"]')?.getAttribute('aria-hidden')).toBe('true')
       expect(row.textContent).not.toContain('刚刚')
 
@@ -1151,8 +1152,9 @@ describe('workspace browser rows', () => {
     }
     render(<SessionNodeItem node={node} currentId={undefined} now={0} onOpen={vi.fn()} t={tEn} />)
     const row = screen.getByRole('treeitem')
-    expect(screen.getByText('Needs input').nextElementSibling?.textContent).toBe(compactLabel)
-    expect(screen.getByText(compactLabel).getAttribute('aria-hidden')).toBe('true')
+    const timeCell = row.querySelector('[class*="rowResting"]')?.firstElementChild as HTMLElement
+    expect(timeCell.textContent).toBe(compactLabel)
+    expect(timeCell.getAttribute('aria-hidden')).toBe('true')
     expect(row.textContent).not.toContain('now')
   })
 
@@ -1447,7 +1449,10 @@ describe('session row decoration seats', () => {
         .querySelector('[data-seat="sidebar.session.row.leading"]')?.parentElement
       expect(cell?.previousElementSibling ?? null).toBeNull()
       expect(cell?.nextElementSibling?.textContent).toBe('Idle Session')
-      expect(cell?.nextElementSibling?.nextElementSibling?.textContent).toBe('刚刚')
+      // The empty badge strip sits between the title and the resting time cell,
+      // so the time is reached through that container rather than as the
+      // title's immediate sibling.
+      expect(cell?.nextElementSibling?.nextElementSibling?.nextElementSibling?.textContent).toBe('刚刚')
     }
     assertPlacement()
     // Rerender through the same row: the seat stays leading without the flat

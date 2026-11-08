@@ -257,6 +257,7 @@ type SessionTreeProps = Pick<
   | 'useRemoteAccess' | 'useSessionAccess' | 'useWorkspaceAccess'
 > & PropsRenderSlots<
   | 'sidebar.workspaces.session.row.action'
+  | 'sidebar.session.row.badge'
   | 'sidebar.session.row.trailing'
   | 'sidebar.session.row.leading'
   | 'sidebar.session.row.hover'

@@ -243,6 +243,42 @@
   margin-inline-end: -1px;
 }
 
+/* Plugin badges in the trailing cell, before the native time/status text and
+   outside the resting cell that hover, an open menu, or keyboard focus
+   replaces with action buttons, so a badge stays readable throughout. One host
+   container owns the shared width budget for every contributing plugin; it
+   exists only visually while at least one host badge renders (the slot anchor
+   itself is layout-neutral, so `:empty` cannot decide this). The container
+   shrinks before the fixed action controls, so a narrow sidebar clips the label
+   instead of overlapping the row actions. The badge is not interactive: its
+   complete explanation is the native title and accessible name, and a click
+   still bubbles to the row's own open action. */
+.rowBadges {
+  flex: 0 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 96px;
+  overflow: hidden;
+  margin-inline-end: 6px;
+}
+
+.rowBadges:not(:has(> [data-slot] .rowBadge)) {
+  display: none;
+}
+
+.rowBadge {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
 .pinIndicator {
   display: inline-flex;
   flex: none;

@@ -782,10 +782,14 @@ describe('WorkspaceBrowser', () => {
     const owner = { sessionId: sid('alpha-s'), displayTitle: 'alpha-s' }
     expect(rendered).not.toHaveBeenCalledWith('sidebar.workspaces.session.menu.item', owner)
     expect(rendered).toHaveBeenCalledWith('sidebar.workspaces.session.row.action', owner)
+    // Grouped rows offer the badge seat beside the native row action list.
+    expect(rendered).toHaveBeenCalledWith('sidebar.session.row.badge', { sessionId: sid('alpha-s') })
     rendered.mockClear()
     act(() => { b.store.actions.setGroupBy('flat') })
     expect(rendered).not.toHaveBeenCalledWith('sidebar.workspaces.session.menu.item', owner)
     expect(rendered).toHaveBeenCalledWith('sidebar.workspaces.session.row.action', owner)
+    // The flat list threads the same badge seat.
+    expect(rendered).toHaveBeenCalledWith('sidebar.session.row.badge', { sessionId: sid('alpha-s') })
   })
 
   it('shows five sessions by default and clears transient show-all when the Workspace collapses', () => {
