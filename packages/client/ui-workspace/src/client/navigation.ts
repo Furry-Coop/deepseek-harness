@@ -123,7 +123,7 @@ export interface StartSessionOperation {
 /** Native actions this Client forwards in one Host creation request. */
 interface StartSessionCreateOperation {
   readonly operationId: SessionOperationId
-  readonly kind: 'new' | 'workspace'
+  readonly kind: 'new' | 'workspace' | 'restore'
   readonly policyId?: string
   readonly sourceSessionId?: SessionId
   readonly reuseBlank?: false
@@ -139,6 +139,8 @@ interface CreationRequestOptions {
 /** A New Session call waiting on the native New Session page for a Workspace. */
 interface PendingStartSession {
   readonly operation: StartSessionOperation
+  /** The waiting call's own choices for the Session the pick creates. */
+  readonly creation: Pick<CreationRequestOptions, 'agentPreset' | 'reuseBlank'>
   /** Navigation lease created when the page was entered. */
   readonly navigation: AbortSignal
   /** Removes the abort listeners that discharge this wait. */
@@ -281,9 +283,10 @@ export class DirectoryBrowseError extends Error {
 /** Implements Workspace archive and directory UI operations. */
 class UiWorkspaceService extends Service implements UiWorkspace {
   /**
-   * The latest in-flight connection per Workspace and operation identity; a
-   * request joins it only when both name the same preset (ordinary calls share
-   * only the Workspace key).
+   * The latest in-flight connection per Workspace and creation identity; a
+   * request joins it only when both name the same preset. Ordinary calls share
+   * one Workspace slot, while an operation shares only with its own policy and
+   * operation identity.
    */
   private readonly connecting = new Map<string, {
     readonly agentPreset: string | undefined
@@ -340,18 +343,17 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
   /**
    * @param reuse - preset, reuse policy, and operation context for the reused
-   *   or created blank; absent creates a fresh Session.
+   *   or created blank.
    */
   private async connectBlank(
     workspaceId: WorkspaceId,
-    reuse: CreationRequestOptions | undefined,
+    reuse: CreationRequestOptions,
   ): Promise<SessionId> {
     const workspace = this.workspaces.list.getSnapshot().items
       .find(item => item.workspaceId === workspaceId)
     if (workspace === undefined) {
       throw new Error(`uiWorkspace.connectWorkspace: unknown workspace ${workspaceId}`)
     }
-    if (reuse === undefined) return this.sessions.create({ workspaceId })
     // An operation with its own identity never joins another operation's
     // attempt; a repeated delivery of the same one does.
     const key = creationKey(workspaceId, reuse)
@@ -408,22 +410,34 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   }
 
   /**
-   * Reopen a saved blank Session under the preset its log recorded, or under
-   * the Host default once that preset no longer activates. Listed values are
-   * cached hints that can lag the log after an unclean Host exit, so the
-   * Session's projections are reloaded before the preset is read; a Session
-   * that still awaits a format migration reloads only those cached hints.
+   * Reopen a saved blank Session under the preset its log recorded, continuing
+   * its own creation-policy source identity.
+   *
+   * Listed values are cached hints that can lag the log after an unclean Host
+   * exit, so the Session's projections are reloaded before the preset is read;
+   * a Session that still awaits a format migration reloads only those cached
+   * hints. Only the Host's own pre-create evidence may re-ask without the
+   * recorded preset: a preset failure that lacks it may already have created a
+   * Session and is never replayed.
    */
   private async restoreBlank(workspaceId: WorkspaceId, sessionId: SessionId): Promise<SessionId> {
     await this.sessions.refreshProjections(sessionId)
     const recorded = this.sessions.list.getSnapshot().byId[sessionId]?.projectionValues?.agentPreset
-    const request = { workspaceId, sessionId }
+    // Naming the saved blank as the source keeps its creation policy: the Host
+    // resolves that ownership and registers the reused blank under it. An
+    // ordinary request would let the Host treat a policy-owned blank as an
+    // ordinary candidate and create another Session beside it.
+    const operation: StartSessionCreateOperation = {
+      operationId: newOperationId(),
+      kind: 'restore',
+      sourceSessionId: sessionId,
+    }
+    const request = { workspaceId, sessionId, operation }
     if (typeof recorded !== 'string') return this.createNamed(request)
     try {
       return await this.createNamed({ ...request, agentPreset: recorded })
     } catch (error: unknown) {
-      const code = sessionCreateErrorOf(error)?.rpcError.code
-      if (code !== 'agent-preset/not-found' && code !== 'agent-preset/invalid') throw error
+      if (!confirmedPreCreatePresetRefusal(error)) throw error
       return this.createNamed(request)
     }
   }
@@ -478,7 +492,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   private async openWorkspaceSession(
     workspaceId: WorkspaceId,
     beforeOpen: ((sessionId: SessionId) => void) | undefined,
-    reuse: CreationRequestOptions | undefined,
+    reuse: CreationRequestOptions,
     operation?: StartSessionOperation,
   ): Promise<void> {
     const pending = operation === undefined ? this.takePending() : undefined
@@ -504,8 +518,11 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       this.deliver(active, { kind: 'cancelled', reason: 'caller' })
       return
     }
+    // The waiting call owns the Session it asked for; a native pick only
+    // supplies the target Workspace. Adopting the pick's own choices would
+    // silently drop the chosen preset and the explicit no-reuse intent.
     const creation = {
-      ...reuse,
+      ...(pending === undefined ? reuse : pending.creation),
       operation: operationContext(active, pending === undefined ? 'new' : 'workspace'),
     }
     let sessionId: SessionId
@@ -552,8 +569,9 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       this.deliver(active, { kind: 'session', sessionId, workspaceId, navigation: 'superseded' })
       return
     }
+    let committed: 'opened' | 'superseded'
     try {
-      this.replaceMain(sessionId, navigation, 'reveal', beforeOpen)
+      committed = this.replaceMain(sessionId, navigation, 'reveal', beforeOpen)
     } catch (error: unknown) {
       this.deliver(active, {
         kind: 'failed',
@@ -565,7 +583,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       })
       throw error
     }
-    this.deliver(active, { kind: 'session', sessionId, workspaceId, navigation: 'opened' })
+    this.deliver(active, { kind: 'session', sessionId, workspaceId, navigation: committed })
   }
 
   /**
@@ -592,8 +610,16 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     }
   }
 
-  /** Keep a New Session call waiting on the native New Session page. */
-  private retainPending(operation: StartSessionOperation): void {
+  /**
+   * Keep a New Session call waiting on the native New Session page.
+   * @param operation - the waiting call's lifecycle and callbacks.
+   * @param creation - the waiting call's own preset and reuse intent, kept so
+   * the native Workspace pick continues this call rather than an ordinary one.
+   */
+  private retainPending(
+    operation: StartSessionOperation,
+    creation: Pick<CreationRequestOptions, 'agentPreset' | 'reuseBlank'>,
+  ): void {
     const navigation = this.ctx.layout.beginNavigation()
     const settle = (outcome: StartSessionOutcome): void => {
       // A nested New Session can install its own wait before this one's caller
@@ -609,7 +635,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       navigation.removeEventListener('abort', onNavigation)
       operation.signal?.removeEventListener('abort', onCaller)
     }
-    this.pending = { operation, navigation, detach }
+    this.pending = { operation, creation, navigation, detach }
     navigation.addEventListener('abort', onNavigation, { once: true })
     operation.signal?.addEventListener('abort', onCaller, { once: true })
   }
@@ -677,6 +703,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         this.deliver(operation, { kind: 'cancelled', reason: 'caller' })
         return
       }
+      const creation: Pick<CreationRequestOptions, 'agentPreset' | 'reuseBlank'> = {
+        ...(agentPreset === undefined ? {} : { agentPreset }),
+        ...(operation.reuseBlank === false ? { reuseBlank: false } : {}),
+      }
       if (target === undefined) {
         if (initializeDraft) {
           const message = this.ctx.locale.bind('workspace')('draft.workspaceRequired')
@@ -688,13 +718,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         // call stays alive until that page produces a Workspace or its
         // navigation ends.
         this.clearMain()
-        this.retainPending(operation)
+        this.retainPending(operation, creation)
         return
       }
-      const opening = this.openWorkspaceSession(target, prepareBeforeOpen, {
-        ...(agentPreset === undefined ? {} : { agentPreset }),
-        ...(operation.reuseBlank === false ? { reuseBlank: false } : {}),
-      }, operation)
+      const opening = this.openWorkspaceSession(target, prepareBeforeOpen, creation, operation)
       void opening.catch(
         (reason: unknown) => { console.warn('new session failed:', reason) },
       )
@@ -868,12 +895,26 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     this.ctx.layout.selectPanel(null)
   }
 
+  /**
+   * Commit one main selection, releasing a retained reference the caller's
+   * preparation superseded.
+   *
+   * The result is decided at the commit point. A reveal ends the navigation
+   * lease through the native panel selection, so a signal read after this call
+   * returns cannot tell an opening from a supersession.
+   * @param target - Session or addressed child to display.
+   * @param signal - navigation lease this selection belongs to.
+   * @param panel - whether the commit also reveals the Conversation.
+   * @param beforeOpen - synchronous preparation after the reference is retained.
+   * @returns `opened` when this call displayed the Session, `superseded` when
+   * preparation or an earlier cancellation released it first.
+   */
   private replaceMain(
     target: SessionTarget,
     signal: AbortSignal,
     panel: 'reveal' | 'preserve',
     beforeOpen?: (sessionId: SessionId) => void,
-  ): void {
+  ): 'opened' | 'superseded' {
     signal.throwIfAborted()
     const reference = this.sessions.retain(target, { source: 'mainView' })
     try {
@@ -881,7 +922,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       beforeOpen?.(reference.sessionId)
       if (signal.aborted) {
         reference.release()
-        return
+        return 'superseded'
       }
       const subagentAddress = typeof target === 'string'
         ? this.sessions.subagentAddress(reference.sessionId)
@@ -898,6 +939,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     this.mainReference = reference
     previous?.release()
     if (panel === 'reveal') this.ctx.layout.selectPanel(null)
+    return 'opened'
   }
 
 }
@@ -909,6 +951,24 @@ class UiWorkspaceService extends Service implements UiWorkspace {
  */
 function sessionCreateErrorOf(error: unknown): SessionCreateError | undefined {
   return error instanceof Error && error.name === 'SessionCreateError' ? error as SessionCreateError : undefined
+}
+
+/**
+ * Whether a failed restore proves, by the Host's own evidence, that the preset
+ * refused the attempt before any Session was created.
+ *
+ * The Controller's stage record, not the failure code, decides this: it
+ * attaches `creation: 'none'` only when the attempt ended before a call that
+ * could materialize a Session. A preset failure without that marker may have
+ * persisted a Session and must never be replayed on an assumption.
+ * @param error - the failed creation attempt.
+ * @returns true only for a preset refusal carrying the pre-create marker.
+ */
+function confirmedPreCreatePresetRefusal(error: unknown): boolean {
+  const failure = sessionCreateErrorOf(error)?.rpcError
+  if (failure === undefined) return false
+  if (failure.code !== 'agent-preset/not-found' && failure.code !== 'agent-preset/invalid') return false
+  return 'creation' in failure.details && failure.details.creation === 'none'
 }
 
 /**
@@ -993,9 +1053,18 @@ function newOperationId(): SessionOperationId {
   return brandString<SessionOperationId>(randomUUID())
 }
 
-/** In-flight key: ordinary calls share per Workspace, operations share per identity. */
+/**
+ * In-flight key: ordinary calls share per Workspace; operations share per
+ * Workspace, policy, and operation identity, mirroring the Host's own key. An
+ * operation id that happens to read `native` therefore never joins an ordinary
+ * connection.
+ */
 function creationKey(workspaceId: WorkspaceId, reuse: CreationRequestOptions): string {
-  return `${workspaceId}\u0000${reuse.operation?.operationId ?? 'native'}`
+  const operation = reuse.operation
+  const identity = operation === undefined
+    ? 'ordinary'
+    : `operation\u0000${operation.policyId ?? ''}\u0000${operation.operationId}`
+  return `${workspaceId}\u0000${identity}`
 }
 
 /** Stable tie-breaking follows Host Workspace order. */
