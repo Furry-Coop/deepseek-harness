@@ -72,7 +72,7 @@ const handle = await ctx.agents.create({
 
 ### 一个步骤做什么
 
-每个步骤都会发送会话的派生历史——最新的非空 `system/message` 节点是有效提示词，渲染提示词为空时则没有系统消息——及其可见工具 schema；模型的工具调用经过受守卫的工具流水线，每个被接纳的事实都会在下一步据此派生之前追加到会话日志。循环把完整的原始调用批次传给 `ctx.tools.execute()`；内置执行器保留模型顺序的结果和独占屏障。取消是协作式的：`agent.cancel()` 中止当前活动，并在未设置 `keepInbox` 时清除待处理工作；被取消的流会终结已送达用户的文本。
+每个步骤都会发送会话的派生历史——最新的非空 `system/message` 节点是有效提示词，渲染提示词为空时则没有系统消息——及其可见工具 schema；模型的工具调用经过受守卫的工具流水线，每个被接纳的事实都会在下一步据此派生之前追加到会话日志。循环把完整的原始调用批次传给 `ctx.tools.execute()`；内置执行器保留模型顺序的结果和独占屏障。取消是协作式的：`agent.cancel()` 在进入时捕获当前活动与两份待处理列表，只中止该活动，并在未设置 `keepInbox` 时只删除捕获到的待处理输入，因此由 abort 监听器或清除通知投递的输入继续待处理并唤醒下一次活动；被取消的流会终结已送达用户的文本。锁存在被中止活动或维护任务上的唤醒，只有在其本次投递插入的那条待处理 occurrence 仍待处理时才会兑现；移除该 occurrence 会撤回锁存唤醒，其余留存输入继续作为被动输入等待之后真实到达的唤醒（[决策](../../../.agents/notes/implemented/architecture/2026-11-08-wakeup-insertion-identity.zh.md)）。
 
 -----
 
@@ -107,7 +107,7 @@ const handle = await ctx.agents.create({
 
 ### 创建与拆除
 
-新建和恢复共用一个受回滚保护的初始化流程：围绕已取得的 Session 构造具象 agent 与带作用域上下文；存储构造历史、进入 SessionStore 并完成 `session/created`；等待可选 setup 及其 commit；进入 AgentRegistry；等待串行 `agent/created` 监听器；随后释放已排队输入。创建监听器收到的信号会在调用方、所有者或工厂 teardown 时中止，也会在初始化期间的 `agent.cancel()` 时中止。`agent.cancel()` 的停止会结束监听器工作：监听器返回时创建照常发布；监听器拒绝时创建仍然失败并回滚；调用方、所有者或工厂的 teardown 同样会回滚创建。创建运行时子 Agent 的调用方设置 `options.parentAgent`；调用方 Context 则单独拥有事务和存活句柄。Setup、commit、监听器失败或所有者 dispose 都会回滚已准备的资源。setup 期间 Session 可写；每次移除都会发出 `session/disposed`，包括 Agent 创建宣告前的 setup 失败。初始化失败保留恢复出的收件箱输入及已存储事件，并在释放自身作用域及已取得的写句柄后才拒绝。持久化层仍在创建写句柄时发生取消，可以更早拒绝；该句柄在创建完成后关闭。已送达的宣告仍可被观察，并有配对的销毁通知。Teardown 停止并排空驱动器、撤销作用域、关闭会话写路径、detach agent，再 detach 会话。每次 detach 都绑定到确切进入的对象，因此陈旧 disposer 无法移除之后出现的同 id 替代项。
+新建和恢复共用一个受回滚保护的初始化流程：围绕已取得的 Session 构造具象 agent 与带作用域上下文；存储构造历史、进入 SessionStore 并完成 `session/created`；等待可选 setup 及其 commit；进入 AgentRegistry；等待串行 `agent/created` 监听器；随后释放已排队输入。创建监听器收到的信号会在调用方、所有者或工厂 teardown 时中止，也会在初始化期间的 `agent.cancel()` 时中止。`agent.cancel()` 的停止会结束监听器工作：监听器返回时创建照常发布；监听器拒绝时创建仍然失败并回滚；调用方、所有者或工厂的 teardown 同样会回滚创建。创建运行时子 Agent 的调用方设置 `options.parentAgent`；调用方 Context 则单独拥有事务和存活句柄。Setup、commit、监听器失败或所有者 dispose 都会回滚已准备的资源。setup 期间 Session 可写；每次移除都会发出 `session/disposed`，包括 Agent 创建宣告前的 setup 失败。初始化失败保留恢复出的收件箱输入及已存储事件，且不派发锁存的唤醒，因此停在初始化维护任务之后的输入继续待处理，等待之后的唤醒；它在释放自身作用域及已取得的写句柄后才拒绝。持久化层仍在创建写句柄时发生取消，可以更早拒绝；该句柄在创建完成后关闭。已送达的宣告仍可被观察，并有配对的销毁通知。Teardown 停止并排空驱动器、撤销作用域、关闭会话写路径、detach agent，再 detach 会话。每次 detach 都绑定到确切进入的对象，因此陈旧 disposer 无法移除之后出现的同 id 替代项。
 
 loop 在发布工厂前等待必需的注册完成。它对模型选择和 inbox 句柄调用 `readerFor(session)`，将读取回调放入一个类型化对象传给驱动器；模型和 inbox 小组件接收各自的回调。工厂卸载时，全局注册可以先于 teardown 完成而消失；保留句柄在整个作用域清理期间仍可读取，包括作用域内 abort 监听器发起取消的时刻。调用方卸载、工厂卸载和句柄释放等待同一次 teardown。
 

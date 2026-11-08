@@ -56,9 +56,21 @@ type Phase =
     kind: 'maintenance'
     abort: AbortController
     lastTurn: number
-    wakeRequested: boolean
+    /** Waking occurrences latched for replay at convergence. */
+    wakes: Set<UserMessage>
+    /** A disposal cancel reached this activity; the signal keeps its first abort reason. */
+    disposed: boolean
   }
-  | { kind: 'running'; abort: AbortController; turn: number; step: number; wakeRequested: boolean }
+  | {
+    kind: 'running'
+    abort: AbortController
+    turn: number
+    step: number
+    /** Waking occurrences latched for replay at convergence. */
+    wakes: Set<UserMessage>
+    /** A disposal cancel reached this activity; the signal keeps its first abort reason. */
+    disposed: boolean
+  }
 
 type StepEndReason = Extract<TurnEndReason, { kind: 'completed' | 'max-tokens' }>
 
@@ -126,6 +138,11 @@ export class ReactLoopAgent implements Agent {
   readonly scope: Scope
   readonly ctx: Context
 
+  /** Waking occurrences an in-progress cancellation holds until it removes them. */
+  private readonly deferredWakes = new Set<UserMessage>()
+  /** Nesting depth of cancellation bookkeeping; an idle wake waits until it reaches zero. */
+  private cancelDepth = 0
+
   /** Fused dispatcher, built once in the constructor so hot-path dispatches never allocate. */
   private readonly dispatch: AgentEventDispatch
 
@@ -179,8 +196,8 @@ export class ReactLoopAgent implements Agent {
     // Captured before the insertion so a reentrant cancel from a splice observer cannot reclassify it.
     const wakingAfterAbort = wakeup && this.phase.kind !== 'idle' && this.phase.abort.signal.aborted
     const resolvedTarget = wakingAfterAbort ? 'next-turn' : target
-    this.inbox.splice(resolvedTarget, Infinity, 0, [message])
-    if (wakeup) this.wakeDriver(wakingAfterAbort)
+    const occurrence = this.inbox.insert(resolvedTarget, message)
+    if (wakeup) this.wakeDriver(wakingAfterAbort, occurrence)
   }
 
   followup(input: UserMessage): void {
@@ -196,11 +213,58 @@ export class ReactLoopAgent implements Agent {
   }
 
   cancel(cause: AgentCancelCause, options: CancelOptions = {}): void {
-    if (!options.keepInbox) {
-      this.inbox.clear()
-      if (this.phase.kind !== 'idle') this.phase.wakeRequested = false
+    const clearInbox = !options.keepInbox
+    // Capture the activity and its pending occurrences before any abort
+    // listener or discard notification can add later work.
+    const activity = this.phase
+    const captured = clearInbox ? this.inbox.snapshotPending() : undefined
+    // Drop only the wakes this cancellation owns, before any callback can latch
+    // a newer one behind them.
+    if (clearInbox && activity.kind !== 'idle') activity.wakes.clear()
+    // The window opens before the abort — the first point that can run a
+    // callback — and closes once both lanes' captured occurrences are gone, so
+    // an idle wake from a callback cannot start a driver that claims them.
+    this.cancelDepth += 1
+    let removed = false
+    try {
+      // Stop the captured activity before the durable clear callbacks run, so
+      // input delivered from them is classified as waking the next turn instead
+      // of joining the cancelled one. Only this captured controller is aborted;
+      // an activity a callback starts is never read or stopped here.
+      if (activity.kind !== 'idle') {
+        // A disposal request is terminal for wake replay even when another
+        // cause aborted the signal first and keeps the recorded turn ending.
+        if (cause.kind === 'disposed') activity.disposed = true
+        activity.abort.abort(cause)
+      }
+      // Remove only the captured occurrences: abort listeners and discard
+      // notifications may already have added input that must stay pending.
+      if (captured !== undefined) {
+        this.inbox.cancelSnapshot(captured)
+        removed = true
+      }
+    } finally {
+      this.cancelDepth -= 1
+      if (this.cancelDepth === 0) this.replayDeferredWakes(removed, cause)
     }
-    if (this.phase.kind !== 'idle') this.phase.abort.abort(cause)
+  }
+
+  /**
+   * Start the driver for an idle wake a cancellation held back.
+   *
+   * Only a waking occurrence that is still pending authorizes the replay:
+   * passive input that merely remained queued must not start a turn, and a
+   * nested cancellation that removed the waking occurrence withdraws it. A
+   * failed removal leaves input this cancellation still owes, so nothing
+   * starts, and a disposed agent starts nothing either.
+   * @param removed - whether both lanes' captured occurrences were removed.
+   * @param cause - the cancellation cause that held the wakes.
+   */
+  private replayDeferredWakes(removed: boolean, cause: AgentCancelCause): void {
+    const wakes = [...this.deferredWakes]
+    this.deferredWakes.clear()
+    if (!removed || cause.kind === 'disposed') return
+    if (wakes.some(occurrence => this.inbox.holdsOccurrence(occurrence))) this.wakeDriver()
   }
 
   runMaintenance<T>(job: (signal: AbortSignal) => Promise<T>): Promise<T> {
@@ -210,7 +274,8 @@ export class ReactLoopAgent implements Agent {
       kind: 'maintenance',
       abort: new AbortController(),
       lastTurn: this.phase.lastTurn,
-      wakeRequested: false,
+      wakes: new Set(),
+      disposed: false,
     }
     this.setPhase(maintenance)
     this.activityDone = done.promise
@@ -219,8 +284,11 @@ export class ReactLoopAgent implements Agent {
         return await job(maintenance.abort.signal)
       } finally {
         this.setPhase({ kind: 'idle', lastTurn: maintenance.lastTurn })
-        const cause = abortedCancelCause(maintenance.abort.signal)
-        if (cause?.kind !== 'disposed' && maintenance.wakeRequested && this.inbox.hasPending) this.wakeDriver()
+        // A failed initialization cancels with `disposed` while keeping the
+        // queue: the input stays pending for a later wake, but this activity's
+        // latch must not dispatch a new turn during rollback.
+        if (!maintenance.disposed
+          && [...maintenance.wakes].some(occurrence => this.inbox.holdsOccurrence(occurrence))) this.wakeDriver()
         done.resolve()
       }
     })()
@@ -229,19 +297,30 @@ export class ReactLoopAgent implements Agent {
   /**
    * Start one driver, or latch its wake behind maintenance or an aborted
    * activity. A wake sent while idle always opens its turn boundary, even
-   * when its message was cleared; only a latched replay is suppressed when
-   * the queue no longer holds the wake.
+   * when its message was cleared; a latched replay instead requires the exact
+   * occurrence the waking send produced to still be pending, so input that
+   * remains after that occurrence was removed authorizes no turn.
    * @param wakeAfterAbort - the {@link send} classification, captured before
    *   the inbox insertion so a reentrant cancel cannot reclassify it.
+   * @param occurrence - the pending occurrence the waking message produced, as
+   *   reported by {@link ReactLoopInbox.insert}.
    */
-  private wakeDriver(wakeAfterAbort = false): void {
+  private wakeDriver(wakeAfterAbort = false, occurrence?: UserMessage): void {
+    if (this.cancelDepth > 0 && this.phase.kind === 'idle') {
+      // A cancellation is still removing the occurrences it captured at entry.
+      // Starting a driver here would let its first claim take one of them, so
+      // the wake waits for the outermost cancellation to finish.
+      if (occurrence !== undefined) this.deferredWakes.add(occurrence)
+      return
+    }
     if (this.phase.kind !== 'idle') {
-      // Maintenance and aborted drivers cannot deliver the wake: latch it for
-      // replay at convergence. Live drivers claim queued work themselves;
-      // disposal never latches, so teardown waits on no model turn.
-      const reason = abortedCancelCause(this.phase.abort.signal)
-      if (reason?.kind !== 'disposed' && (this.phase.kind === 'maintenance' || wakeAfterAbort)) {
-        this.phase.wakeRequested = true
+      // Maintenance and aborted drivers cannot deliver the wake: latch its
+      // exact occurrence for replay at convergence. A send whose insertion is
+      // already gone latches nothing. Live drivers claim queued work
+      // themselves; disposal never latches, so teardown waits on no model turn.
+      if (!this.phase.disposed && (this.phase.kind === 'maintenance' || wakeAfterAbort)
+        && occurrence !== undefined) {
+        this.phase.wakes.add(occurrence)
       }
       return
     }
@@ -252,7 +331,8 @@ export class ReactLoopAgent implements Agent {
       abort: new AbortController(),
       turn: this.phase.lastTurn,
       step: 0,
-      wakeRequested: false,
+      wakes: new Set(),
+      disposed: false,
     })
     this.loopCtx.agents.withInitiator(this, () => this.kick()).then(driver.resolve, driver.reject)
   }
@@ -280,9 +360,11 @@ export class ReactLoopAgent implements Agent {
     } finally {
       /* v8 ignore next -- kick owns a running phase until this driver boundary */
       if (this.phase.kind === 'running') {
-        const { turn, wakeRequested } = this.phase
+        const { turn, wakes, disposed } = this.phase
         this.setPhase({ kind: 'idle', lastTurn: turn })
-        if (wakeRequested && this.inbox.hasPending) this.wakeDriver()
+        // Replay only for a latched wake whose own occurrence is still pending.
+        // Input that outlives a removed wake stays passive until a later wake.
+        if (!disposed && [...wakes].some(occurrence => this.inbox.holdsOccurrence(occurrence))) this.wakeDriver()
       }
     }
   }
@@ -481,7 +563,8 @@ export class ReactLoopAgent implements Agent {
     if (!this.inbox.hasPending) return false
     phase.abort = new AbortController()
     // A fresh controller makes a latch set on the old one stale: the live driver claims the queue itself.
-    phase.wakeRequested = false
+    phase.wakes.clear()
+    phase.disposed = false
     phase.step = 0
     return true
   }

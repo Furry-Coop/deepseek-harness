@@ -214,9 +214,11 @@ declare module './types.ts' {
     readonly ctx: Context
 
     /**
-   * Clear queued and steering work — unless `keepInbox` — and abort the active
-   * turn or between-turn task. The first cause wins for that activity. With no
-   * active activity, cancellation is a no-op and does not arm later work.
+   * Clear the queued and steering input present at entry — unless `keepInbox`
+   * — and abort the activity active at entry. The first cause wins for that
+   * activity. Input delivered by an abort listener or a clear notification
+   * stays pending and wakes the next activity. With no active activity,
+   * cancellation aborts nothing and does not arm later work.
    * @param cause - the stable caller intent carried by the active operation signal.
    * @param options - cancellation options; `keepInbox` preserves pending work.
    */
