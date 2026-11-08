@@ -902,8 +902,11 @@ resolveAgent(sessionId: SessionId): Promise<ApiSessionAgentResult>
 @Remote('search') async search(request: SessionSearchRequest, signal: AbortSignal): Promise<SessionSearchValue>
 
 /**
- * Create one ordinary Session for a new conversation, reusing the named blank Session while it is reusable.
- * @param request - optional blank Session to reuse, location, and Agent preset.
+ * Create one ordinary Session for a new conversation, reusing the named blank
+ * Session while it is reusable. An optional operation context selects the
+ * creation policy that prepares and registers the result.
+ * @param request - optional blank Session to reuse, location, Agent preset,
+ *   and an optional creation-policy operation context.
  * @returns the created or reused Session identity and its preset when configured.
  */
 @Remote('create') create(request: SessionCreateRequest): Promise<SessionCreateValue>

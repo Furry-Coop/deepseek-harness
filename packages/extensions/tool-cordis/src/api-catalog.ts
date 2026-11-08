@@ -2688,8 +2688,8 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: '@Remote(\'create\') create(request: SessionCreateRequest): Promise<SessionCreateValue>',
-        description: 'Create one ordinary Session for a new conversation, reusing the named blank Session while it is reusable.',
-        parameters: [{ name: 'request', description: 'optional blank Session to reuse, location, and Agent preset.' }],
+        description: 'Create one ordinary Session for a new conversation, reusing the named blank Session while it is reusable. An optional operation context selects the creation policy that prepares and registers the result.',
+        parameters: [{ name: 'request', description: 'optional blank Session to reuse, location, Agent preset, and an optional creation-policy operation context.' }],
         returns: 'the created or reused Session identity and its preset when configured.',
       },
       {
@@ -8274,8 +8274,12 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type SessionControlFrame = {\n    readonly type: \'baseline\';\n    readonly value: SessionControlBaseline;\n} | ({\n    readonly type: \'projection\';\n} & SessionProjectionUpdate);',
   },
   {
+    name: 'SessionCreateOperationContext',
+    declaration: 'export interface SessionCreateOperationContext {\n    readonly operationId: SessionOperationId;\n    readonly kind: \'new\' | \'workspace\' | \'restore\';\n    readonly policyId?: string;\n    readonly sourceSessionId?: SessionId;\n    readonly reuseBlank?: false;\n}',
+  },
+  {
     name: 'SessionCreateRequest',
-    declaration: 'export interface SessionCreateRequest {\n    readonly workspaceId?: WorkspaceId;\n    readonly cwd?: string;\n    readonly sessionId?: SessionId;\n    readonly agentPreset?: string;\n}',
+    declaration: 'export interface SessionCreateRequest {\n    readonly workspaceId?: WorkspaceId;\n    readonly cwd?: string;\n    readonly sessionId?: SessionId;\n    readonly agentPreset?: string;\n    readonly operation?: SessionCreateOperationContext;\n}',
   },
   {
     name: 'SessionCreateValue',
@@ -8520,6 +8524,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionOpenWorkspacePathValue',
     declaration: 'export interface SessionOpenWorkspacePathValue {\n    readonly opened: true;\n}',
+  },
+  {
+    name: 'SessionOperationId',
+    declaration: 'export type SessionOperationId = Branded<\'session-operation-id\'>;',
   },
   {
     name: 'SessionPage',

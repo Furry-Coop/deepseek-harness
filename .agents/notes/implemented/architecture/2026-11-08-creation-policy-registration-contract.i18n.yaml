@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-11-08-creation-policy-registration-contract.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-08-creation-policy-registration-contract.md
+/agent-note-keep-creation-policy-coordination-host-internal:
+  en: 1bd0dc473cf579da
+  zh: d00dcce3cb4f910b
+/agent-note-keep-creation-policy-coordination-host-internal/problem:
+  en: fd2e6f06c472de18
+  zh: 66784ae45cf1c962
+/agent-note-keep-creation-policy-coordination-host-internal/decision:
+  en: 6f2541392843f77a
+  zh: 57ba257f9ed1cd42
+/agent-note-keep-creation-policy-coordination-host-internal/alternatives-considered:
+  en: d6ea7e2d099e3819
+  zh: 97e2f2300052529a
+/agent-note-keep-creation-policy-coordination-host-internal/testing:
+  en: 2812bfe8b263df76
+  zh: f76b98ef7f3a5c39
+/agent-note-keep-creation-policy-coordination-host-internal/consequences:
+  en: 7f595d8890910bf1
+  zh: 71dee2c583c6c3ea

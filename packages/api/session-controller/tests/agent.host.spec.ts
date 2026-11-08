@@ -232,6 +232,53 @@ describe('ApiSession Agent lookup and recovery', () => {
 })
 
 describe('ApiSession creation', () => {
+  it('queues a same-identity creation behind the remaining claim of an earlier one', async () => {
+    const { ctx, agents } = await harness()
+    const cwd = mkdtempSync(join(tmpdir(), 'dsh-session-claim-'))
+    tempDirs.push(cwd)
+    providePersistence(ctx, { list: () => Promise.resolve([]), inspect: vi.fn() })
+    const gates: Array<PromiseWithResolvers<undefined>> = []
+    const entered = vi.fn()
+    vi.spyOn(agents, 'composeAgent').mockImplementation(async () => {
+      entered()
+      const gate = Promise.withResolvers<undefined>()
+      gates.push(gate)
+      await gate.promise
+      return { setup: () => {} }
+    })
+    vi.spyOn(ctx.agents, 'create').mockImplementation(async (options) => {
+      const meta = options.meta
+      const session = ctx.sessions.create(options.sessionId, {
+        meta: meta?.cwd === undefined ? {} : { cwd: meta.cwd },
+      })
+      const created = { id: session.id, session, status: 'idle', ctx } as Agent
+      await ctx.agents.register(created)
+      return { agent: created, dispose: () => Promise.resolve() }
+    })
+    const request = {
+      sessionId: SessionId('shared-claim'),
+      cwd,
+      reusable: () => true,
+    }
+    const first = agents.createSession(request)
+    const second = agents.createSession(request)
+    await vi.waitFor(() => { expect(entered).toHaveBeenCalledTimes(1) })
+    gates[0]!.resolve(undefined)
+    // The second operation now owns the claim and waits inside its preset resolution.
+    await vi.waitFor(() => { expect(entered).toHaveBeenCalledTimes(2) })
+    const third = agents.createSession(request)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // The settled first operation must not clear the newer claim, so a later
+    // delivery still queues behind the second one instead of running early.
+    expect(entered).toHaveBeenCalledTimes(2)
+    gates[1]!.resolve(undefined)
+    await vi.waitFor(() => { expect(entered).toHaveBeenCalledTimes(3) })
+    gates[2]!.resolve(undefined)
+    const [one, two, three] = await Promise.all([first, second, third])
+    expect([one.agent.id, two.agent.id, three.agent.id])
+      .toEqual(['shared-claim', 'shared-claim', 'shared-claim'])
+  })
+
   it('rejects a resume that subagent routing adopts before publication', async () => {
     const child = await harness()
     const childMeta = header('resume-child-race')

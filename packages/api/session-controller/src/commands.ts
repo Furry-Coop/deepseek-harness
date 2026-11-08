@@ -32,11 +32,22 @@ import {
   hasApiSessionSubagentOwner,
   type ApiSessionCreated,
 } from './agent.ts'
+import {
+  creationPolicyRuntime,
+  type SessionCreationKnowledge,
+  type SessionCreationOutcome,
+  type SessionCreationParticipant,
+  type SessionCreationPolicy,
+  type SessionCreationPolicyClaim,
+  type SessionCreationPolicyRegistry,
+  type SessionCreationPolicyRuntime,
+} from './creation-policy.ts'
 import type {
   SessionAttachmentRequest,
   SessionAttachmentValue,
   SessionCancelRequest,
   SessionCancelValue,
+  SessionCreateOperationContext,
   SessionCreateRequest,
   SessionCreateValue,
   SessionForkRequest,
@@ -65,6 +76,63 @@ export function hasPromptContent(content: readonly PromptContentCandidate[]): bo
   return content.some(part => part.type !== 'text' || part.text.trim().length > 0)
 }
 
+/** Key one operation identity per policy; two policies may mint the same operation id. */
+function operationKey(operation: SessionCreateOperationContext): string {
+  return `${operation.policyId ?? ''}\u0000${operation.operationId}`
+}
+
+/**
+ * Whether a failed attempt provably created nothing, created a known Session,
+ * or left the result unknown.
+ * @param error - the failure thrown out of the creation attempt.
+ * @returns the creation knowledge carried by the failure code.
+ */
+function creationKnowledgeOf(error: unknown): SessionCreationKnowledge {
+  // The Controller refuses a named preset on a reused blank Session before
+  // creating anything, so this class carries the same knowledge as its mapped
+  // `agent-preset/conflict` Remote failure.
+  if (error instanceof ApiSessionPresetConflict) return 'none'
+  const failure = remoteErrorOf(error)
+  if (failure === undefined) return 'unknown'
+  switch (failure.code) {
+    case 'gateway/bad-request':
+    case 'workspace/not-found':
+    case 'agent-preset/conflict':
+    case 'agent-preset/not-found':
+    case 'agent-preset/invalid':
+    case 'session/policy-unavailable':
+    case 'session/source-not-policy':
+    case 'session/policy-source-unknown':
+    case 'session/policy-conflict':
+    case 'session/policy-begin-failed':
+      return 'none'
+    case 'session/workspace-attach-failed':
+    case 'session/policy-prepare-failed':
+      return 'known'
+    default:
+      return 'unknown'
+  }
+}
+
+/** Readable failure reason for policy settlement diagnostics. */
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * The selected activation ended before its queued operation could enter it.
+ * @param policyId - policy identity that was withdrawn or replaced.
+ * @param operationId - queued operation identity.
+ * @returns the pre-create failure the caller may safely retry under a new operation.
+ */
+function withdrawnPolicy(policyId: string, operationId: string): RemoteError<'session/policy-unavailable'> {
+  return new RemoteError(
+    'session/policy-unavailable',
+    `creation policy "${policyId}" was withdrawn before operation "${operationId}" could start`,
+    { policyId, operationId },
+  )
+}
+
 /**
  * Resolve the omitted-`atSeq` default to the latest completed-turn prefix,
  * including standalone events before the next turn begins.
@@ -84,20 +152,39 @@ function latestCompletedPrefixBoundary(events: readonly SessionEvent[]): Session
 /** Implements Session business commands delegated by the Session Controller Remote service. */
 export class SessionCommandController {
   /**
+   * Operation identities already settled or settling; replaying one returns
+   * its settled promise instead of creating a second Session.
+   */
+  private readonly settledOperations = new Map<string, { readonly promise: Promise<SessionCreateValue>; settled: boolean }>()
+  /** Bound on retained operation results; the oldest settled identity leaves first. */
+  private static readonly SETTLED_OPERATION_LIMIT = 128
+  /** Host-internal coordination over the registered creation policies. */
+  private readonly policies: SessionCreationPolicyRuntime | undefined
+
+  /**
    * @param ctx - Host context carrying Agent, model, attachment, title, and Workspace services.
-   * @param agents - sole owner of create, resume, and Agent composition.
+   * @param agents - sole owner of create, resume, and Session-local model selection.
    * @param defaultCwd - project directory used when create names neither a Workspace nor a cwd.
+   * @param policies - registered creation policies; omission keeps the historical path.
    */
   constructor(
     private readonly ctx: Context,
     private readonly agents: ApiSessionAgentController,
     private readonly defaultCwd: string,
-  ) {}
+    policies?: SessionCreationPolicyRegistry,
+  ) {
+    this.policies = policies === undefined ? undefined : creationPolicyRuntime(policies)
+  }
 
   /**
    * Create one ordinary Session for a new conversation, reusing the named
    * blank Session while it is an unarchived member of the requested Workspace.
-   * @param request - optional blank Session to reuse, location, and Agent preset.
+   *
+   * With a creation-policy registry, every attempt runs in its short serial
+   * scope and an operation context selects the policy that prepares and
+   * registers the result. Replaying one operation identity settles once.
+   * @param request - optional blank Session to reuse, location, Agent preset,
+   *   and an optional creation-policy operation context.
    * @returns the created or reused Session identity and its preset when configured.
    */
   async create(request: SessionCreateRequest): Promise<SessionCreateValue> {
@@ -114,31 +201,341 @@ export class SessionCommandController {
       }
     }
     const cwd = workspace?.path ?? request.cwd ?? this.defaultCwd
+    const policies = this.policies
+    if (policies === undefined) return await this.createNow(request, workspace, cwd, request.sessionId)
+    const operation = request.operation
+    if (operation === undefined) {
+      // The historical path still passes through the policy-compatibility
+      // check: an ordinary intent may reuse only a candidate every policy
+      // leaves unclaimed, and an unreadable claim is never treated as ordinary.
+      return await policies.coordinate(async () => {
+        const candidate = await this.reusableCandidate(request.sessionId, true, undefined, policies)
+        return await this.createNow(request, workspace, cwd, candidate)
+      })
+    }
+    const key = operationKey(operation)
+    const settled = this.settledOperations.get(key)
+    if (settled !== undefined) return await settled.promise
+    // Publish the in-flight identity before the first await: concurrent
+    // deliveries of the same operation must join this attempt, not queue a
+    // second one.
+    const deferred = Promise.withResolvers<SessionCreateValue>()
+    void deferred.promise.catch(() => {})
+    const pending = { promise: deferred.promise, settled: false }
+    this.settledOperations.set(key, pending)
+    this.evictSettledOperations()
+    try {
+      // Capture the answering registration before queueing: a later withdrawal
+      // (even with a same-id replacement) must not run this queued operation.
+      const claim = await this.operationPolicy(operation, policies)
+      const result = await policies.coordinate(
+        () => this.createOperated(request, workspace, cwd, operation, policies, claim),
+      )
+      pending.settled = true
+      deferred.resolve(result)
+      return result
+    } catch (error) {
+      // A proven pre-create refusal may be retried with the same identity;
+      // anything else did (or may have) produced a Session and replays as-is.
+      if (creationKnowledgeOf(error) === 'none') this.settledOperations.delete(key)
+      else pending.settled = true
+      deferred.reject(error)
+      throw error
+    }
+  }
+
+  /** Drop the oldest settled operation results; in-flight identities are never evicted. */
+  private evictSettledOperations(): void {
+    if (this.settledOperations.size <= SessionCommandController.SETTLED_OPERATION_LIMIT) return
+    for (const [key, entry] of this.settledOperations) {
+      if (this.settledOperations.size <= SessionCommandController.SETTLED_OPERATION_LIMIT) return
+      if (entry.settled) this.settledOperations.delete(key)
+    }
+  }
+
+  /** One creation attempt without policy participation. */
+  private async createNow(
+    request: SessionCreateRequest,
+    workspace: Workspace | undefined,
+    cwd: string,
+    candidate: SessionId | undefined,
+  ): Promise<SessionCreateValue> {
     let created: ApiSessionCreated
     try {
       created = await this.agents.createSession({
-        ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
+        ...(candidate === undefined ? {} : { sessionId: candidate }),
         cwd,
         ...(request.agentPreset === undefined ? {} : { agentPreset: request.agentPreset }),
-        reusable: sessionId => !this.ctx.workspaceRegistry.archivedSessionIds.includes(sessionId)
+        reusable: sessionId => candidate === sessionId
+          && !this.ctx.workspaceRegistry.archivedSessionIds.includes(sessionId)
           && (workspace === undefined || workspace.sessionIds.includes(sessionId)),
       })
     } catch (error) {
       this.rejectCreation(error)
     }
     const sessionId = created.agent.id
-    if (workspace !== undefined) {
+    if (workspace !== undefined) await this.attachCreated(sessionId, workspace, undefined)
+    return { sessionId, ...(created.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }) }
+  }
+
+  /** One policy-coordinated creation attempt: identify, prepare, create, register, finish. */
+  private async createOperated(
+    request: SessionCreateRequest,
+    workspace: Workspace | undefined,
+    cwd: string,
+    operation: SessionCreateOperationContext,
+    policies: SessionCreationPolicyRuntime,
+    claim: SessionCreationPolicyClaim | undefined,
+  ): Promise<SessionCreateValue> {
+    if (workspace === undefined) {
+      throw new RemoteError(
+        'gateway/bad-request',
+        'a creation policy operation requires a workspaceId target',
+        {},
+      )
+    }
+    if (operation.operationId === '') {
+      throw new RemoteError('gateway/bad-request', 'operationId must not be empty', {})
+    }
+    // The registration captured before queueing must still be the live one:
+    // a withdrawal during the wait (even replaced by the same id) ends this
+    // operation without entering either activation's handlers.
+    if (claim !== undefined && !policies.isLive(claim)) {
+      throw withdrawnPolicy(claim.policyId, operation.operationId)
+    }
+    const policy = claim?.policy
+    const candidate = await this.reusableCandidate(
+      request.sessionId,
+      operation.reuseBlank !== false,
+      claim,
+      policies,
+    )
+    if (claim !== undefined && !policies.isLive(claim)) {
+      throw withdrawnPolicy(claim.policyId, operation.operationId)
+    }
+    let begun: {
+      readonly policy: SessionCreationPolicy
+      readonly participant: SessionCreationParticipant
+    } | undefined
+    if (policy?.beginOperation !== undefined) {
       try {
-        await workspace.attachSession(sessionId)
+        begun = {
+          policy,
+          participant: await policy.beginOperation({
+            operationId: operation.operationId,
+            kind: operation.kind,
+            workspaceId: workspace.id,
+            ...(operation.sourceSessionId === undefined ? {} : { sourceSessionId: operation.sourceSessionId }),
+            ...(candidate === undefined ? {} : { candidateSessionId: candidate }),
+            reuseBlank: operation.reuseBlank !== false,
+          }),
+        }
       } catch (error) {
         throw new RemoteError(
-          'session/workspace-attach-failed',
-          `session "${sessionId}" was created but could not attach to workspace "${workspace.id}": ${String(error)}`,
-          { sessionId, workspaceId: workspace.id },
+          'session/policy-begin-failed',
+          `creation policy "${policy.id}" refused operation "${operation.operationId}": ${String(error)}`,
+          { policyId: policy.id, operationId: operation.operationId },
         )
       }
     }
+    let created: ApiSessionCreated
+    try {
+      created = await this.agents.createSession({
+        ...(candidate === undefined ? {} : { sessionId: candidate }),
+        cwd,
+        ...(request.agentPreset === undefined ? {} : { agentPreset: request.agentPreset }),
+        // The compatibility decision is already made; the Controller still
+        // applies its own archived and membership rules to the one candidate.
+        reusable: sessionId => candidate === sessionId
+          && !this.ctx.workspaceRegistry.archivedSessionIds.includes(sessionId)
+          && workspace.sessionIds.includes(sessionId),
+      })
+    } catch (error) {
+      await this.finishOperation(begun?.participant, {
+        kind: 'failed',
+        stage: 'create',
+        creation: creationKnowledgeOf(error),
+        message: messageOf(error),
+      })
+      this.rejectCreation(error)
+    }
+    const sessionId = created.agent.id
+    const reused = candidate === sessionId
+    await this.attachCreated(sessionId, workspace, begun?.participant)
+    if (begun !== undefined && begun.participant.prepareSession !== undefined) {
+      try {
+        await begun.participant.prepareSession({ sessionId, workspaceId: workspace.id, reused })
+      } catch (error) {
+        await this.finishOperation(begun.participant, {
+          kind: 'failed',
+          stage: 'prepare',
+          creation: 'known',
+          message: messageOf(error),
+          sessionId,
+          workspaceId: workspace.id,
+        })
+        throw new RemoteError(
+          'session/policy-prepare-failed',
+          `session "${sessionId}" was created but policy "${begun.policy.id}" could not prepare it: ${String(error)}`,
+          {
+            sessionId,
+            workspaceId: workspace.id,
+            operationId: operation.operationId,
+            policyId: begun.policy.id,
+          },
+        )
+      }
+    }
+    await this.finishOperation(begun?.participant, { kind: 'created', sessionId, workspaceId: workspace.id, reused })
     return { sessionId, ...(created.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }) }
+  }
+
+  /** Resolve the policy registration a creation operation continues, or undefined for the ordinary path. */
+  private async operationPolicy(
+    operation: SessionCreateOperationContext,
+    policies: SessionCreationPolicyRuntime,
+  ): Promise<SessionCreationPolicyClaim | undefined> {
+    const explicit = operation.policyId
+    if (explicit !== undefined) {
+      const claim = policies.claim(explicit)
+      if (claim === undefined) {
+        throw new RemoteError(
+          'session/policy-unavailable',
+          `creation policy "${explicit}" is not registered`,
+          { policyId: explicit, operationId: operation.operationId },
+        )
+      }
+      const source = operation.sourceSessionId
+      if (source !== undefined) {
+        // Every policy is asked, not only the selected one: two policies
+        // claiming the same identity is a conflict even when the caller named
+        // one of them.
+        const inspection = await policies.inspect(source)
+        switch (inspection.kind) {
+          case 'owned':
+            if (inspection.policyId !== explicit) {
+              throw new RemoteError(
+                'session/source-not-policy',
+                `session "${source}" is not owned by creation policy "${explicit}"`,
+                { policyId: explicit, sessionId: source, operationId: operation.operationId },
+              )
+            }
+            break
+          case 'conflict':
+            throw new RemoteError(
+              'session/policy-conflict',
+              `several creation policies claim source session "${source}"`,
+              { sessionId: source, operationId: operation.operationId },
+            )
+          case 'unclaimed':
+            throw new RemoteError(
+              'session/source-not-policy',
+              `session "${source}" is not owned by creation policy "${explicit}"`,
+              { policyId: explicit, sessionId: source, operationId: operation.operationId },
+            )
+          case 'unknown':
+            throw new RemoteError(
+              'session/policy-source-unknown',
+              `creation policy ownership of source session "${source}" is ${inspection.kind}`,
+              { sessionId: source, operationId: operation.operationId },
+            )
+        }
+        // The selected registration may have been withdrawn while the
+        // ownership read was pending; a same-id replacement is a different
+        // activation and must not receive this call.
+        if (!policies.isLive(claim)) throw withdrawnPolicy(explicit, operation.operationId)
+      }
+      return claim
+    }
+    const source = operation.sourceSessionId
+    if (source === undefined) return undefined
+    const resolution = await policies.resolveSource(source)
+    switch (resolution.kind) {
+      case 'owned':
+      case 'claimed':
+        if (!policies.isLive(resolution.claim)) {
+          throw new RemoteError(
+            'session/policy-source-unknown',
+            `creation policy ownership of source session "${source}" changed during resolution`,
+            { sessionId: source, operationId: operation.operationId },
+          )
+        }
+        return resolution.claim
+      case 'unclaimed':
+        return undefined
+      case 'unknown':
+      case 'conflict':
+        throw new RemoteError(
+          resolution.kind === 'conflict' ? 'session/policy-conflict' : 'session/policy-source-unknown',
+          `creation policy ownership of source session "${source}" is ${resolution.kind}`,
+          { sessionId: source, operationId: operation.operationId },
+        )
+    }
+  }
+
+  /**
+   * Decide whether the caller's candidate may be reused under this operation.
+   * The aggregate gives one definite claim priority over another policy's
+   * unreadable answer; only when no policy claims does an unreadable answer
+   * make the identity non-reusable, and two definite claims are a conflict.
+   * An ordinary intent therefore needs every policy to answer a definite
+   * non-claim, while a named policy reuses only the candidate it itself owns.
+   * @param sessionId - candidate the caller named, when any.
+   * @param reuseBlank - whether this intent allows reusing a blank Session.
+   * @param claim - selected policy; omission means an ordinary intent.
+   * @param policies - live policy ledger.
+   * @returns the candidate to pass to the Controller, or undefined to create fresh.
+   */
+  private async reusableCandidate(
+    sessionId: SessionId | undefined,
+    reuseBlank: boolean,
+    claim: SessionCreationPolicyClaim | undefined,
+    policies: SessionCreationPolicyRuntime,
+  ): Promise<SessionId | undefined> {
+    if (sessionId === undefined || !reuseBlank) return undefined
+    const inspection = await policies.inspect(sessionId)
+    if (claim === undefined) return inspection.kind === 'unclaimed' ? sessionId : undefined
+    return inspection.kind === 'owned' && inspection.policyId === claim.policyId ? sessionId : undefined
+  }
+
+  /** Attach a created Session to its Workspace and report a partial success with its identity. */
+  private async attachCreated(
+    sessionId: SessionId,
+    workspace: Workspace,
+    participant: SessionCreationParticipant | undefined,
+  ): Promise<void> {
+    try {
+      await workspace.attachSession(sessionId)
+    } catch (error) {
+      await this.finishOperation(participant, {
+        kind: 'failed',
+        stage: 'create',
+        creation: 'known',
+        message: messageOf(error),
+        sessionId,
+        workspaceId: workspace.id,
+      })
+      throw new RemoteError(
+        'session/workspace-attach-failed',
+        `session "${sessionId}" was created but could not attach to workspace "${workspace.id}": ${String(error)}`,
+        { sessionId, workspaceId: workspace.id },
+      )
+    }
+  }
+
+  /** Deliver one outcome to the participant; policy settlement failures stay diagnostics. */
+  private async finishOperation(
+    participant: SessionCreationParticipant | undefined,
+    outcome: SessionCreationOutcome,
+  ): Promise<void> {
+    if (participant?.finishOperation === undefined) return
+    try {
+      await participant.finishOperation(outcome)
+    } catch (error) {
+      this.ctx.logger.warn(
+        `session-controller: creation policy did not settle ${outcome.kind} operation: ${String(error)}`,
+      )
+    }
   }
 
   /**

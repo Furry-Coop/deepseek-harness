@@ -194,7 +194,27 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'session/writer-held': { readonly sessionId: SessionId }
     'session/agent-busy': { readonly reason: string }
     'session/invalid-time-zone': { readonly value: string }
-    'session/workspace-attach-failed': { readonly sessionId: SessionId; readonly workspaceId: string }
+    'session/workspace-attach-failed': {
+      readonly sessionId: SessionId
+      readonly workspaceId: string
+      /** Present when the failure is a partial success with a known Session. */
+      readonly creation?: 'known'
+    }
+    'session/policy-unavailable': { readonly policyId: string; readonly operationId: string }
+    'session/source-not-policy': {
+      readonly policyId: string
+      readonly sessionId: SessionId
+      readonly operationId: string
+    }
+    'session/policy-source-unknown': { readonly sessionId: SessionId; readonly operationId: string }
+    'session/policy-conflict': { readonly sessionId: SessionId; readonly operationId: string }
+    'session/policy-begin-failed': { readonly policyId: string; readonly operationId: string }
+    'session/policy-prepare-failed': {
+      readonly sessionId: SessionId
+      readonly workspaceId: string
+      readonly operationId: string
+      readonly policyId?: string
+    }
     'agent-preset/conflict': {
       readonly sessionId: SessionId
       readonly requestedPreset: string
@@ -262,6 +282,20 @@ export interface SessionSearchValue {
   readonly hasMore: boolean
 }
 
+/** One caller's creation-policy context for this create-or-reuse attempt. */
+export interface SessionCreateOperationContext {
+  /** Caller-minted identity of this one operation; replaying it settles once. */
+  readonly operationId: SessionOperationId
+  /** Native action that started the operation. */
+  readonly kind: 'new' | 'workspace' | 'restore'
+  /** Registered policy that owns the resulting Session. */
+  readonly policyId?: string
+  /** Session whose Workspace selection continues into this operation. */
+  readonly sourceSessionId?: SessionId
+  /** False refuses reuse of an existing blank Session for this operation. */
+  readonly reuseBlank?: false
+}
+
 /** Request for a Session for a new conversation. */
 export interface SessionCreateRequest {
   /** Workspace the Session joins; exclusive with `cwd`. */
@@ -272,6 +306,11 @@ export interface SessionCreateRequest {
   readonly sessionId?: SessionId
   /** Preset the Session runs, replacing a reused Session's recorded preset; the configured default when omitted. */
   readonly agentPreset?: string
+  /**
+   * Optional creation policy context. Omission keeps the historical behavior:
+   * no registered policy prepares or registers the resulting Session.
+   */
+  readonly operation?: SessionCreateOperationContext
 }
 
 /** Session creation response value. */
@@ -387,6 +426,9 @@ export interface SessionOpenWorkspacePathValue {
 
 /** Client-minted prompt identity used to reconcile optimistic and durable messages. */
 export type SessionRequestId = Branded<'session-request-id'>
+
+/** Caller-minted identity of one Session-creation operation, stable across replays. */
+export type SessionOperationId = Branded<'session-operation-id'>
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {

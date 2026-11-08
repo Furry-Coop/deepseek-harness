@@ -1,5 +1,6 @@
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { Context } from '@deepseek-ai/cordis'
+import { brandString } from '@deepseek-ai/dsh-brand'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness } from '@deepseek-ai/dsh-agent-loop-testkit'
@@ -8,14 +9,27 @@ import type TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import SessionStore, { SESSION_FORMAT_VERSION, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
+import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import SessionController from '../src/index.ts'
 import type { ApiSessionAgentController } from '../src/agent.ts'
+import type { SessionOperationId } from '../src/types.ts'
 import { createSessionTestController, testSessionPersistence } from './test-remote.ts'
 
 const defaults = {
   defaultModelSelection: () => ({ provider: 'fixture', model: 'fixture-model' }),
   cwd: '/tmp',
+}
+
+/** Test operation identity carrying its cross-boundary brand. */
+const operationId = (value: string): SessionOperationId => brandString<SessionOperationId>(value)
+
+/** Workspace fixture: only the members the Controller reads from the registry double. */
+const workspace = {
+  id: 'workspace-1' as WorkspaceId,
+  path: '/workspace',
+  sessionIds: [] as readonly SessionId[],
+  attachSession: () => Promise.resolve(undefined),
 }
 
 describe('SessionController facade', () => {
@@ -301,5 +315,66 @@ describe('SessionController facade', () => {
     release.resolve(undefined)
     await disposal
     await expect(waiting).resolves.toMatchObject({ done: true })
+  })
+
+  it('registers creation policies for the controller lifetime', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(AgentRegistry)
+    const controller = await createSessionTestController(ctx, defaults)
+    ctx.provide('workspaceRegistry', {
+      get: (id: string) => id === workspace.id ? workspace : undefined,
+      list: () => [workspace],
+      archivedSessionIds: [],
+    } as never)
+
+    const fiber = await ctx.plugin({
+      name: 'test:creation-policy',
+      apply: (inner: Context) => {
+        inner.effect(
+          () => controller.creationPolicies.register({
+            id: '@test/creation-policy',
+            inspectSession: () => 'unclaimed',
+          }),
+          'test: creation policy',
+        )
+      },
+    })
+
+    // A live policy operation still needs a Workspace target.
+    await expect(controller.create({
+      operation: {
+        operationId: operationId('op-no-workspace'),
+        kind: 'new',
+        policyId: '@test/creation-policy',
+      },
+    })).rejects.toMatchObject({
+      code: 'gateway/bad-request',
+      message: 'a creation policy operation requires a workspaceId target',
+    })
+    // The target is present but the operation identity is empty.
+    await expect(controller.create({
+      workspaceId: workspace.id,
+      operation: {
+        operationId: operationId(''),
+        kind: 'new',
+        policyId: '@test/creation-policy',
+      },
+    })).rejects.toMatchObject({
+      code: 'gateway/bad-request',
+      message: 'operationId must not be empty',
+    })
+
+    // The policy is gone with the fiber that registered it.
+    await fiber.dispose()
+    await expect(controller.create({
+      workspaceId: workspace.id,
+      operation: {
+        operationId: operationId('op-withdrawn'),
+        kind: 'new',
+        policyId: '@test/creation-policy',
+      },
+    })).rejects.toMatchObject({ code: 'session/policy-unavailable' })
+    await ctx.fiber.dispose()
   })
 })

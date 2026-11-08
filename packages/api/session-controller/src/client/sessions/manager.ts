@@ -7,6 +7,7 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import type {
   SessionControlBaseline,
   SessionControlFrame,
+  SessionCreateOperationContext,
   SessionProjectionHints,
   SessionRenameValue,
   SessionSummary,
@@ -507,7 +508,9 @@ export class SessionManager {
    * Contract session.create; on success merge into summaries immediately (no
    * wait for the next refresh). A created session is blank by definition
    * (entity birth precedes the first message).
-   * @param opts - target workspace or working directory, an optional blank Session to reuse, and an optional Agent preset.
+   * @param opts - target workspace or working directory, an optional blank
+   *   Session to reuse, an optional Agent preset, and an optional
+   *   creation-policy operation context forwarded to the Host.
    * @returns the create result, naming the Session the Host created or reused.
   */
   async create(
@@ -516,11 +519,13 @@ export class SessionManager {
       cwd?: string
       sessionId?: SessionId
       agentPreset?: string
+      operation?: SessionCreateOperationContext
     } = {},
   ): Promise<RemoteResult<{ sessionId: SessionId }>> {
     const shared = {
       ...(opts.sessionId === undefined ? {} : { sessionId: opts.sessionId }),
       ...(opts.agentPreset === undefined ? {} : { agentPreset: opts.agentPreset }),
+      ...(opts.operation === undefined ? {} : { operation: opts.operation }),
     }
     const payload = opts.workspaceId !== undefined
       ? { workspaceId: opts.workspaceId, ...shared }
@@ -883,5 +888,10 @@ function applyMutation(summaries: readonly SessionSummary[], mutation: SessionLi
 
 /** Temporary source-plane bridge while the Host contract and client project build independently. */
 function workspaceAttachSessionId(error: RemoteFailure): SessionId | undefined {
-  return error.code === 'session/workspace-attach-failed' ? error.details.sessionId : undefined
+  // Both failures publish a real Session before the Workspace link or the
+  // policy preparation fails, so the row appears while the caller keeps the
+  // known identity.
+  return error.code === 'session/workspace-attach-failed' || error.code === 'session/policy-prepare-failed'
+    ? error.details.sessionId
+    : undefined
 }
