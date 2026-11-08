@@ -2,9 +2,10 @@
 /**
  * The New Session action group through the RC1 shell, the real slot renderer,
  * and the host action Factory: no contribution, one, several, withdrawal, the
- * last standard row's radius, repeated clicks, failed reports, and the row's
- * own lifetime. Proves the shell structure and the standard row behavior, not
- * only the registration count.
+ * last standard row's radius, repeated clicks, failed reports, the row's own
+ * lifetime, and the zero-width Desktop column that renders no contributed row.
+ * Proves the shell structure and the standard row behavior, not only the
+ * registration count.
  */
 import { StrictMode, createElement, type ReactNode } from 'react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
@@ -21,13 +22,22 @@ import { en } from '../src/client/locales.ts'
 
 afterEach(cleanup)
 
+/** Owner share the layout hands the sidebar at one render site. */
+interface SidebarOwner {
+  readonly collapsed: boolean
+  readonly width: number
+  readonly drawer: boolean
+}
+
 /**
  * Boot the package over the slot test runtime with the shell and the
  * frame-wide overlay rendered, so rows and their failure notice run through
- * the production registration path.
+ * the production registration path. The auto frame keeps the owner share
+ * addressable, so a test can collapse or reopen the column in place.
+ * @param sidebar - owner share for the initial render site.
  * @returns the runtime, the shared Workspace action spy, and the shell view.
  */
-async function bench() {
+async function bench(sidebar: SidebarOwner = { collapsed: false, width: 300, drawer: false }) {
   const runtime = await SlotTestRuntime.create()
   const startSession = vi.fn()
   runtime.ctx.provide('shortcuts', { catalog: createSnapshotStore([]) } as never)
@@ -38,18 +48,14 @@ async function bench() {
   locale.register('common', { zh: commonZh, en: commonEn })
   runtime.ctx.provide('locale', locale)
   runtime.slots.installLocale(locale)
-  await runtime.root.declare({
+  await runtime.declare({
     'sidebar': { kind: 'single', scope: 'root' },
     'shell.overlay': { kind: 'list', scope: 'root' },
-  }, ({ renderSlot }) => (
-    <>
-      {renderSlot('sidebar', { collapsed: false, width: 300, drawer: false })}
-      {renderSlot('shell.overlay', {})}
-    </>
-  ))
+  })
   await runtime.mount({ inject: [...inject], apply })
-  const view = runtime.renderRoot()
-  return { runtime, startSession, view }
+  runtime.renderSlot('shell.overlay', {})
+  const slot = runtime.renderSlot('sidebar', sidebar)
+  return { runtime, startSession, slot, view: slot.view }
 }
 
 /**
@@ -94,6 +100,19 @@ function actions(): HTMLElement | null {
 /** Rows inside the group's accessible container. */
 function groupRows(): HTMLElement[] {
   return [...document.querySelectorAll<HTMLElement>('[role="group"] button')]
+}
+
+/** Focusable controls in document order — the sequence Tab walks. */
+function tabStops(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]')]
+    .filter(element => !element.hasAttribute('disabled')
+      && element.getAttribute('tabindex') !== '-1'
+      && element.closest('[inert]') === null)
+}
+
+/** Accessible names of the focusable controls. */
+function tabStopNames(): (string | null)[] {
+  return tabStops().map(element => element.getAttribute('aria-label') ?? element.textContent)
 }
 
 describe('New Session action group', () => {
@@ -219,6 +238,109 @@ describe('New Session action group', () => {
     gate.reject(new Error('late failure after release'))
     await disposal
     expect(document.querySelector('[role="alert"]')).toBeNull()
+  })
+})
+
+describe('contributed rows in a hidden Desktop column', () => {
+  afterEach(() => {
+    document.documentElement.removeAttribute('data-windows-titlebar')
+    delete document.documentElement.dataset.platform
+  })
+
+  it('keeps only the Windows caption button when the column collapses to zero width', async () => {
+    document.documentElement.setAttribute('data-windows-titlebar', '')
+    const { runtime, view } = await bench({ collapsed: true, width: 0, drawer: false })
+    await addAction(runtime, 'nodes', 'Nodes session', 20, () => {})
+    await act(async () => {})
+
+    const native = view.getAllByRole('button', { name: 'New session' })
+    expect(native).toHaveLength(1)
+    // The native caption button keeps its own layout: the grouped outline
+    // must not take over its compact titlebar radius.
+    expect(native[0]!.parentElement?.className).toMatch(/newSessionGroup/)
+    expect(native[0]!.parentElement?.className).not.toMatch(/grouped/)
+    expect(actions()).toBeNull()
+    expect(document.querySelector('[role="group"]')).toBeNull()
+    expect(tabStopNames()).not.toContain('Nodes session')
+    await runtime.dispose()
+  })
+
+  it('keeps contributed rows out of the zero-width macOS column', async () => {
+    document.documentElement.dataset.platform = 'darwin'
+    const { runtime } = await bench({ collapsed: true, width: 0, drawer: false })
+    await addAction(runtime, 'nodes', 'Nodes session', 20, () => {})
+    await act(async () => {})
+
+    expect(actions()).toBeNull()
+    expect(document.querySelector('[role="group"]')).toBeNull()
+    expect(tabStopNames()).not.toContain('Nodes session')
+    await runtime.dispose()
+  })
+
+  it('drops the macOS rows only once the collapse settles at zero width', async () => {
+    document.documentElement.dataset.platform = 'darwin'
+    const { runtime, slot } = await bench({ collapsed: false, width: 280, drawer: false })
+    await addAction(runtime, 'nodes', 'Nodes session', 20, () => {})
+    await act(async () => {})
+    vi.useFakeTimers()
+    try {
+      slot.update({ collapsed: true, width: 0, drawer: false })
+      // AppFrame reports the zero-width track immediately, but the frozen wide
+      // content keeps fading for 150ms; the rows leave together with it.
+      expect(actions()).not.toBeNull()
+      act(() => { vi.advanceTimersByTime(150) })
+      expect(actions()).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+    await runtime.dispose()
+  })
+
+  it('keeps contributed rows reachable in the 56px rail', async () => {
+    const invoked = vi.fn()
+    const { runtime, view } = await bench({ collapsed: true, width: 56, drawer: false })
+    await addAction(runtime, 'nodes', 'Nodes session', 20, invoked)
+    await act(async () => {})
+
+    const row = view.getByRole('button', { name: 'Nodes session' })
+    expect(row.closest('[role="group"]')?.parentElement?.className).toMatch(/grouped/)
+    expect(tabStopNames()).toContain('Nodes session')
+    row.focus()
+    expect(document.activeElement).toBe(row)
+    row.click()
+    await act(async () => {})
+    expect(invoked).toHaveBeenCalledOnce()
+    await runtime.dispose()
+  })
+
+  it('keeps contributed rows reachable in an open drawer', async () => {
+    const { runtime, view } = await bench({ collapsed: false, width: 300, drawer: true })
+    await addAction(runtime, 'nodes', 'Nodes session', 20, () => {})
+    await act(async () => {})
+
+    expect(view.getByRole('button', { name: 'Nodes session' })).toBeTruthy()
+    expect(tabStopNames()).toContain('Nodes session')
+    await runtime.dispose()
+  })
+
+  it('restores the same contribution when the hidden column reopens', async () => {
+    document.documentElement.setAttribute('data-windows-titlebar', '')
+    const invoked = vi.fn()
+    const { runtime, slot } = await bench({ collapsed: false, width: 300, drawer: false })
+    await addAction(runtime, 'nodes', 'Nodes session', 20, invoked)
+    await act(async () => {})
+    expect(actions()).not.toBeNull()
+
+    slot.update({ collapsed: true, width: 0, drawer: false })
+    expect(actions()).toBeNull()
+
+    slot.update({ collapsed: false, width: 300, drawer: false })
+    const row = screen.getByRole('button', { name: 'Nodes session' })
+    expect(tabStopNames()).toContain('Nodes session')
+    row.click()
+    await act(async () => {})
+    expect(invoked).toHaveBeenCalledOnce()
+    await runtime.dispose()
   })
 })
 

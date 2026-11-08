@@ -59,7 +59,11 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * in ascending `order` and flush against it as one rounded button group.
      * Declared by this package's 'sidebar' entry; the whole group, native
      * button included, renders only while the global access snapshot allows
-     * `session/create`. The shell keeps the native upper button, the outer
+     * `session/create`. A fully hidden zero-width Desktop column renders no
+     * contributed row either: a row left inside the clipped column would stay
+     * keyboard-reachable without being visible, and the grouped outline would
+     * override a native caption button's own geometry. The shell keeps the
+     * native upper button, the outer
      * outline, the divider, and the group's accessible name; an entry supplies
      * its localized label, optional disabled state, and business callback
      * through the host's `sidebar.new-session.action` Factory, which renders the
@@ -241,8 +245,9 @@ export type SidebarRootInjected = {
     /**
      * Whether any plugin contributes a `sidebar.session.new.action` entry. The
      * shell renders the grouped outline and the action container only while
-     * true, so a deployment without contributions keeps the native single
-     * button and its full outline.
+     * true and the column is not fully hidden at zero width, so a deployment
+     * without contributions keeps the native single button and its full
+     * outline.
      */
     newSessionActions: ObservableSnapshot<boolean>
   }

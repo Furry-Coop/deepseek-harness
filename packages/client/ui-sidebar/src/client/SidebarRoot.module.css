@@ -638,7 +638,9 @@
 }
 
 /* Collapsed rail: the actions stay separate icon buttons under the native one,
-   keeping the same order and their full rounded hover target. */
+   keeping the same order and their full rounded hover target. A fully hidden
+   zero-width Desktop column adds no `grouped` class (SidebarRoot), so it keeps
+   the native caption button's own geometry. */
 .collapsed .newSessionGroup {
   align-self: flex-start;
   margin: 0 0 12px;

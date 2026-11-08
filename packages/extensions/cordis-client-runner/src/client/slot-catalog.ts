@@ -4816,7 +4816,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     kind: 'list',
     scope: 'root',
     summary: 'Additional New Session actions directly under the shell\'s native button, in ascending `order` and flush against it as one rounded button group.',
-    doc: 'Additional New Session actions directly under the shell\'s native button,\nin ascending `order` and flush against it as one rounded button group.\nDeclared by this package\'s \'sidebar\' entry; the whole group, native\nbutton included, renders only while the global access snapshot allows\n`session/create`. The shell keeps the native upper button, the outer\noutline, the divider, and the group\'s accessible name; an entry supplies\nits localized label, optional disabled state, and business callback\nthrough the host\'s `sidebar.new-session.action` Factory, which renders the\nstandard row with its button semantics, pending guard, rejection report,\nand optional local icon seat. Removing every entry restores the native\nsingle button with its full outline.',
+    doc: 'Additional New Session actions directly under the shell\'s native button,\nin ascending `order` and flush against it as one rounded button group.\nDeclared by this package\'s \'sidebar\' entry; the whole group, native\nbutton included, renders only while the global access snapshot allows\n`session/create`. A fully hidden zero-width Desktop column renders no\ncontributed row either: a row left inside the clipped column would stay\nkeyboard-reachable without being visible, and the grouped outline would\noverride a native caption button\'s own geometry. The shell keeps the\nnative upper button, the outer\noutline, the divider, and the group\'s accessible name; an entry supplies\nits localized label, optional disabled state, and business callback\nthrough the host\'s `sidebar.new-session.action` Factory, which renders the\nstandard row with its button semantics, pending guard, rejection report,\nand optional local icon seat. Removing every entry restores the native\nsingle button with its full outline.',
     registerOptions: [
       {
         name: 'id',
@@ -4860,7 +4860,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     occupants: [],
     replaceRisk: 'none',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'sidebar.session.new.action\', () => ctx.slots.register(\n      { name: \'sidebar.session.new.action\', id: \'my-entry\', order: 100, label: \'My entry\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/client/ui-sidebar/src/client/contract/slots.ts:70',
+    source: 'packages/client/ui-sidebar/src/client/contract/slots.ts:74',
   },
   {
     key: 'sidebar.session.row.badge',

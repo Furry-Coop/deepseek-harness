@@ -168,6 +168,13 @@ export function SidebarRoot({
   }, [collapsed, drawer])
   const windowsTitlebar = document.documentElement.hasAttribute('data-windows-titlebar')
   const wide = drawer || (windowsTitlebar ? !collapsed : !collapsed || !settled)
+  // Windows captions and the macOS leading seat collapse this column to zero
+  // width instead of the 56px rail (AppFrame), so only the fixed native New
+  // Session button survives there. Contribution rows left in the clipped
+  // column would stay keyboard-reachable without being visible, and the
+  // grouped outline would override the native caption button's own geometry.
+  const hidden = !wide && width === 0
+  const grouped = hasNewSessionActions && !hidden
   // The Windows titlebar hosts the New Session controls while the sidebar is collapsed.
   const openNewSession = (): void => {
     trackEntryClick({ menu_name: 'new_session', position: windowsTitlebar && collapsed ? 'titlebar' : 'sidebar' })
@@ -360,7 +367,7 @@ export function SidebarRoot({
           whole group, native button included, stays gated on `session/create` so a contribution
           cannot leak a New Session entry the access snapshot refuses. */}
       {canStartSession && (
-        <div className={clsx(css.newSessionGroup, hasNewSessionActions && css.grouped)}>
+        <div className={clsx(css.newSessionGroup, grouped && css.grouped)}>
           <Tooltip label={t('session.new.label')} shortcutKeys={newShortcut?.keys} delayMs={500} side={captionTooltipSide} disabled={wide}>
             <button
               type="button"
@@ -380,7 +387,7 @@ export function SidebarRoot({
               </span>}
             </button>
           </Tooltip>
-          {hasNewSessionActions && (
+          {grouped && (
             <div className={css.newSessionActions} role="group" aria-label={t('session.new.group')}>
               {renderSlot('sidebar.session.new.action', { wide })}
             </div>
