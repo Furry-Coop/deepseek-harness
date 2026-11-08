@@ -4744,7 +4744,7 @@ export const EVENT_API: readonly EventApiEntry[] = [
     mode: 'emit',
     signature: '\'agent/inbox/claimed\'(this: Scoped<Agent>, payload: { agent: Agent; message: UserMessage; turn: number }): void',
     summary: 'One message left the inbox inside its open turn.',
-    description: 'One message left the inbox inside its open turn. If the proposed step is rejected, the claimed message ends here: it is neither discarded nor re-emitted as a user/message, and the turn closes without a step.',
+    description: 'One message left the inbox inside its open turn. If the proposed step is rejected without `preserveClaimed`, the claimed message ends here: it is neither discarded nor re-emitted as a user/message, and the turn closes without a step. A rejecting listener that sets `preserveClaimed` returns the exact claimed batch to the front of the pending-step boundary in original order; a cancelled turn still drops it.',
     parameters: [{ name: 'payload', description: '.turn - the owning turn. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.' }],
   },
   {
@@ -4768,7 +4768,7 @@ export const EVENT_API: readonly EventApiEntry[] = [
     mode: 'waterfall',
     signature: '\'agent/pre-step\'(this: Scoped<Agent>, payload: { agent: Agent; messages: UserMessage[]; turn: number; step: number; signal: AbortSignal; modelSelection: Readonly<ModelSelection> }, next: () => Promise<PreStepDecision>): Promise<PreStepDecision>',
     summary: 'Reject a proposed step or replace the messages that enter it.',
-    description: 'Reject a proposed step or replace the messages that enter it. Calling `next()` preserves the current messages.',
+    description: 'Reject a proposed step or replace the messages that enter it. Calling `next()` preserves the current messages. A rejecting decision may set `preserveClaimed` to park the exact claimed batch at the front of its pending-step boundary for a later wake; the turn still closes blocked without re-running the driver. A cancelled turn drops the batch, while never-claimed pending input follows the cancellation\'s own keep-inbox policy.',
     parameters: [{ name: 'payload', description: '.modelSelection - captured step selection, retained across retries; omitted effort uses adapter defaults. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.' }],
   },
   {
@@ -7585,7 +7585,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'PreStepDecision',
-    declaration: 'export type PreStepDecision = {\n    kind: \'reject\';\n} | {\n    kind: \'enter\';\n    messages: UserMessage[];\n    startsRequestSeries?: true;\n};',
+    declaration: 'export type PreStepDecision = {\n    kind: \'reject\';\n    preserveClaimed?: true;\n} | {\n    kind: \'enter\';\n    messages: UserMessage[];\n    startsRequestSeries?: true;\n};',
   },
   {
     name: 'PreToolDecision',

@@ -18,6 +18,7 @@ import { SessionAlreadyExistsError, type SessionHandle } from '@deepseek-ai/dsh-
 import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import { inboxProjectionDefinition } from '../src/inbox.ts'
 import { MockAdapter, textResponse } from './mock-adapter.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
@@ -1041,6 +1042,70 @@ describe('the session-persistence Agent Note: AgentLoop factory create/resume', 
     expect(flat).toContain('background job 42 finished')
     await ctx2.fiber.dispose()
     await ctx1.fiber.dispose()
+  })
+
+  it('a parked pre-step claim is durably restored and claimed only by the next wake', async () => {
+    const adapter = new MockAdapter([textResponse('resumed')])
+    const { ctx } = await persistentHarness(adapter)
+    const sessionId = SessionId('preserve-claimed-jsonl')
+    const blocked = createUserMessage({ content: [{ type: 'text', text: 'blocked prompt' }], source: { kind: 'user' } })
+    const staged = createUserMessage({ content: [{ type: 'text', text: 'staged steering' }], source: { kind: 'user' } })
+    const pending = createUserMessage({ content: [{ type: 'text', text: 'later wake' }], source: { kind: 'user' } })
+    const handle = await ctx.agents.create({
+      sessionId,
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })
+    const agent = handle.agent
+    let blockedOnce = false
+    ctx.on('agent/pre-step', async ({ agent: subject }, next) => {
+      if (blockedOnce) return next()
+      blockedOnce = true
+      // Steering arrives while the turn already owns the blocked prompt.
+      subject.steer(staged)
+      return { kind: 'reject', preserveClaimed: true }
+    })
+
+    const idle = waitForIdle(ctx, agent)
+    agent.followup(blocked)
+    await idle
+    await ctx.sessions.flush(agent.session)
+
+    // The rejected turn dispatched nothing, and the writer stored the restore
+    // as one insertion ahead of the steering staged during pre-step.
+    expect(adapter.requests).toEqual([])
+    expect(agent.inbox.nextStep.map(message => message.id)).toEqual([blocked.id, staged.id])
+    const stored = await readStoredEvents(ctx, sessionId)
+    expect(stored.some(event => event.type === 'user/message'
+      || event.type === 'step/start' || event.type.startsWith('assistant/'))).toBe(false)
+    const restore = stored.filter(event => event.type === 'agent/inbox/spliced'
+      && event.data.inserted.some(message => message.id === blocked.id)).at(-1)
+    expect(restore?.type === 'agent/inbox/spliced' && restore.data.target).toBe('next-step')
+    expect(restore?.type === 'agent/inbox/spliced' && restore.data.inserted.map(message => message.id))
+      .toEqual([blocked.id])
+    const folded = stored.reduce(
+      (state, event) => inboxProjectionDefinition.apply(state, event),
+      inboxProjectionDefinition.init(),
+    )
+    expect(folded['next-step'].map(message => message.id)).toEqual([blocked.id, staged.id])
+    expect(folded['next-turn']).toEqual([])
+
+    // The next real wake claims the parked batch first and records it in order.
+    const resumed = waitForIdle(ctx, agent)
+    agent.followup(pending)
+    await resumed
+    await ctx.sessions.flush(agent.session)
+    expect(adapter.requests).toHaveLength(1)
+    const texts = (adapter.requests[0]?.messages ?? []).flatMap(message =>
+      message.content.flatMap(block => block.type === 'text' ? [block.text] : []))
+    expect(texts.filter(text => text === 'blocked prompt')).toHaveLength(1)
+    expect(texts.indexOf('blocked prompt')).toBeLessThan(texts.indexOf('staged steering'))
+    expect(texts.indexOf('staged steering')).toBeLessThan(texts.indexOf('later wake'))
+    const recorded = await readStoredEvents(ctx, sessionId)
+    expect(recorded.filter(event => event.type === 'user/message')
+      .map(event => event.type === 'user/message' ? event.data.id : ''))
+      .toEqual([blocked.id, staged.id, pending.id])
+    await handle.dispose()
+    await ctx.fiber.dispose()
   })
 
   it.each(['resume', 'fork'] as const)('%s continues persisted history after a live scheduler failure', async (mode) => {

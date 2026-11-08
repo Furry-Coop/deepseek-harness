@@ -389,12 +389,23 @@ pre-step 决策使用与持久 user-role 输入相同、带标识的 `UserMessag
 
 `agent/pre-step` 接收一个 payload，携带独占的已领取批次（`messages`）、拟进入步骤的坐标（`turn`、`step`）与当前轮次的取消 `signal`。首次提案在已打开的轮次内、任何步骤开始前运行；工具 continuation 可以在步骤之间提交空的已领取批次：
 
-它返回 `PreStepDecision`。reject 不会打开步骤。enter 提供在 `step/start` 后追加的完整消息批次；最终决策省略的已领取消息保持已删除，而领取后插入的输入仍留待后续处理：
+它返回 `PreStepDecision`。reject 不会打开步骤。enter 提供在 `step/start` 后追加的完整消息批次；最终决策省略的已领取消息保持已删除，而领取后插入的输入仍留待后续处理。reject 可设置 `preserveClaimed`，把完整已领取批次按原顺序放回待处理步骤边界之前；该轮仍以 blocked 关闭并等待下一次唤醒输入，取消的轮次会丢弃该批次；未被领取的待处理输入按取消自身的 keep-inbox 策略处理：
 
 ```ts type-equiv
 /** Whether and with which messages the loop enters a proposed step. */
 type PreStepDecision =
-  | { kind: 'reject' }
+  | {
+    kind: 'reject'
+    /**
+     * Return the messages claimed for this step to the front of the pending-step
+     * boundary in their original order instead of consuming them. A later turn
+     * claim reads them before the turn prompt and before input staged during
+     * pre-step. The turn still closes blocked and the driver does not
+     * immediately re-run; the parked batch waits for the next waking input. A
+     * cancellation that aborts the turn takes precedence and drops it instead.
+     */
+    preserveClaimed?: true
+  }
   | {
     kind: 'enter'
     messages: UserMessage[]
@@ -986,13 +997,16 @@ Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/s
 
 #### `agent/inbox/claimed` — emit
 
-One message left the inbox inside its open turn. If the proposed step is rejected, the claimed message ends here: it is neither discarded nor re-emitted as a user/message, and the turn closes without a step.
+One message left the inbox inside its open turn. If the proposed step is rejected without `preserveClaimed`, the claimed message ends here: it is neither discarded nor re-emitted as a user/message, and the turn closes without a step. A rejecting listener that sets `preserveClaimed` returns the exact claimed batch to the front of the pending-step boundary in original order; a cancelled turn still drops it.
 
 ```ts cordis-catalog
 /**
  * One message left the inbox inside its open turn. If the proposed step
- * is rejected, the claimed message ends here: it is neither discarded nor
- * re-emitted as a user/message, and the turn closes without a step.
+ * is rejected without `preserveClaimed`, the claimed message ends here: it
+ * is neither discarded nor re-emitted as a user/message, and the turn
+ * closes without a step. A rejecting listener that sets `preserveClaimed`
+ * returns the exact claimed batch to the front of the pending-step boundary
+ * in original order; a cancelled turn still drops it.
  * @param payload.agent - the agent whose inbox changed.
  * @param payload.message - the claimed message.
  * @param payload.turn - the owning turn.
@@ -1052,12 +1066,17 @@ Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/s
 
 #### `agent/pre-step` — waterfall
 
-Reject a proposed step or replace the messages that enter it. Calling `next()` preserves the current messages.
+Reject a proposed step or replace the messages that enter it. Calling `next()` preserves the current messages. A rejecting decision may set `preserveClaimed` to park the exact claimed batch at the front of its pending-step boundary for a later wake; the turn still closes blocked without re-running the driver. A cancelled turn drops the batch, while never-claimed pending input follows the cancellation's own keep-inbox policy.
 
 ```ts cordis-catalog
 /**
  * Reject a proposed step or replace the messages that enter it. Calling
- * `next()` preserves the current messages.
+ * `next()` preserves the current messages. A rejecting decision may set
+ * `preserveClaimed` to park the exact claimed batch at the front of its
+ * pending-step boundary for a later wake; the turn still closes blocked
+ * without re-running the driver. A cancelled turn drops the batch, while
+ * never-claimed pending input follows the cancellation's own keep-inbox
+ * policy.
  * @param payload.agent - the agent proposing the step.
  * @param payload.messages - messages removed from the inbox for this step.
  * @param payload.turn - the turn that will own the step.

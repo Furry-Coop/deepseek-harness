@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-10-29-pre-step-claimed-batch-preservation.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-10-29-pre-step-claimed-batch-preservation.md
+/agent-note-preserve-the-claimed-pre-step-batch-across-a-blocking-reject:
+  en: 86851f19fe1e20f7
+  zh: 04c1a84f22ccb457
+/agent-note-preserve-the-claimed-pre-step-batch-across-a-blocking-reject/problem:
+  en: 7f86093dd592452d
+  zh: 04899871c73d98a0
+/agent-note-preserve-the-claimed-pre-step-batch-across-a-blocking-reject/decision:
+  en: a1fe8f093d244a4b
+  zh: 12e2f0ff4d67e541
+/agent-note-preserve-the-claimed-pre-step-batch-across-a-blocking-reject/alternatives-considered:
+  en: e3e72f64b975f92d
+  zh: 207571905ca39093
+/agent-note-preserve-the-claimed-pre-step-batch-across-a-blocking-reject/testing:
+  en: 2ee51f592fa0f550
+  zh: 25d909aebf2e9257
+/agent-note-preserve-the-claimed-pre-step-batch-across-a-blocking-reject/consequences:
+  en: 09c91c7bd41fc1b6
+  zh: 158ecb5f464d734b

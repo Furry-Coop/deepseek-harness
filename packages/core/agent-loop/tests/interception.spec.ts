@@ -20,6 +20,7 @@ import AgentRegistry, {
 
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import { inboxProjectionDefinition } from '../src/inbox.ts'
 import { MockAdapter, textResponse, toolCallResponse } from './mock-adapter.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
@@ -438,6 +439,280 @@ describe('agent/pre-step', () => {
     expect(request).toContain('earlier steering')
     expect(request).toContain('later prompt')
     expect(request).not.toContain('blocked prompt')
+  })
+
+  it('preserveClaimed parks the exact blocked batch ahead of steering staged during pre-step', async () => {
+    const adapter = new MockAdapter([textResponse('resumed')])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('preserve-claimed-order'), { provider: 'mock', model: 'mock' })
+    const entered = Promise.withResolvers<undefined>()
+    const decision = Promise.withResolvers<PreStepDecision>()
+    const disposeBlock = ctx.on('agent/pre-step', async () => {
+      entered.resolve(undefined)
+      return decision.promise
+    })
+
+    const blockedIdle = waitForIdle(ctx, agent)
+    send(agent, 'blocked prompt')
+    await entered.promise
+    agent.steer(createUserMessage({
+      content: [{ type: 'text', text: 'staged steering' }],
+      source: { kind: 'user' },
+    }))
+    decision.resolve({ kind: 'reject', preserveClaimed: true })
+    await blockedIdle
+
+    expect(agent.inbox.nextStep.map(message => message.content[0]))
+      .toEqual([
+        { type: 'text', text: 'blocked prompt' },
+        { type: 'text', text: 'staged steering' },
+      ])
+    expect(agent.inbox.nextTurn).toEqual([])
+    expect(adapter.requests).toEqual([])
+    expect(events(agent).filter(event => event.type === 'turn/start')).toHaveLength(1)
+    expect(events(agent).find(event => event.type === 'turn/end')?.data.reason).toEqual({ kind: 'blocked' })
+    expect(events(agent).some(event => event.type === 'user/message' || event.type === 'step/start')).toBe(false)
+
+    disposeBlock()
+    const resumed = waitForIdle(ctx, agent)
+    send(agent, 'wake')
+    await resumed
+    const texts = (adapter.requests[0]?.messages ?? []).flatMap(message =>
+      message.content.flatMap(block => block.type === 'text' ? [block.text] : []))
+    expect(texts.indexOf('blocked prompt')).toBeGreaterThanOrEqual(0)
+    expect(texts.indexOf('blocked prompt')).toBeLessThan(texts.indexOf('staged steering'))
+    expect(texts.indexOf('staged steering')).toBeLessThan(texts.indexOf('wake'))
+  })
+
+  it('preserveClaimed does not duplicate a claim the gate already returned to the queue', async () => {
+    const adapter = new MockAdapter([textResponse('resumed')])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('preserve-claimed-returned'), {
+      provider: 'mock', model: 'mock',
+    })
+    let returned = false
+    let claimedId: string | undefined
+    ctx.on('agent/pre-step', async ({ messages }, next) => {
+      if (returned) return next()
+      returned = true
+      claimedId = messages[0]!.id
+      // A gate that returns the blocked prompt to the queue before rejecting
+      // leaves the same occurrence pending, so preservation must not append it
+      // a second time.
+      agent.inbox.append('next-step', messages[0]!)
+      return { kind: 'reject', preserveClaimed: true }
+    })
+
+    const idle = waitForIdle(ctx, agent)
+    send(agent, 'returned prompt')
+    await idle
+
+    expect(returned).toBe(true)
+    expect(adapter.requests).toEqual([])
+    expect(events(agent).find(event => event.type === 'turn/end')?.data.reason).toEqual({ kind: 'blocked' })
+    expect(agent.inbox.nextStep.map(message => message.id)).toEqual([claimedId])
+    expect(agent.inbox.nextTurn).toEqual([])
+    // One durable insert from the original enqueue and one from the gate: the
+    // host restored nothing on top of an occurrence that was already pending.
+    expect(events(agent).filter(event => event.type === 'agent/inbox/spliced'
+      && event.data.inserted.some(message => message.id === claimedId))).toHaveLength(2)
+
+    const resumed = waitForIdle(ctx, agent)
+    send(agent, 'wake')
+    await resumed
+    const texts = (adapter.requests[0]?.messages ?? []).flatMap(message =>
+      message.content.flatMap(block => block.type === 'text' ? [block.text] : []))
+    expect(texts.filter(text => text === 'returned prompt')).toHaveLength(1)
+    expect(events(agent).filter(event => event.type === 'user/message'
+      && event.data.id === claimedId)).toHaveLength(1)
+  })
+
+  it('preserveClaimed restores the exact claim after a real listener rewrites the payload', async () => {
+    const adapter = new MockAdapter([textResponse('resumed')])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('preserve-claimed-copy'), { provider: 'mock', model: 'mock' })
+    const first = createUserMessage({ content: [{ type: 'text', text: 'staged one' }], source: { kind: 'test' } })
+    const second = createUserMessage({ content: [{ type: 'text', text: 'staged two' }], source: { kind: 'test' } })
+    const waking = createUserMessage({ content: [{ type: 'text', text: 'waking prompt' }], source: { kind: 'user' } })
+    const replacement = createUserMessage({
+      content: [{ type: 'text', text: 'rewritten by listener' }], source: { kind: 'test' },
+    })
+    agent.inject(first)
+    agent.inject(second)
+    let blocked = false
+    ctx.on('agent/pre-step', async ({ messages }, next): Promise<PreStepDecision> => {
+      if (blocked) return next()
+      blocked = true
+      // The payload carries the exact claim in queue order, and every message
+      // stays frozen. Rewriting the array must not rewrite the host's snapshot.
+      expect(messages.map(message => message.id)).toEqual([first.id, second.id, waking.id])
+      for (const message of messages) expect(Object.isFrozen(message)).toBe(true)
+      messages.reverse()
+      messages.push(replacement)
+      return { kind: 'reject', preserveClaimed: true }
+    })
+
+    const idle = waitForIdle(ctx, agent)
+    agent.followup(waking)
+    await idle
+
+    const log = events(agent)
+    expect(adapter.requests).toEqual([])
+    expect(log.filter(event => event.type === 'turn/start' || event.type === 'turn/end')
+      .map(event => event.type)).toEqual(['turn/start', 'turn/end'])
+    expect(log.find(event => event.type === 'turn/end')?.data.reason).toEqual({ kind: 'blocked' })
+    // The parked batch waits for a real wake: no step, no recorded user turn,
+    // and no model request happens at rejection time.
+    expect(log.some(event => event.type === 'user/message'
+      || event.type === 'step/start' || event.type.startsWith('assistant/'))).toBe(false)
+    expect(agent.inbox.nextStep.map(message => message.id)).toEqual([first.id, second.id, waking.id])
+    expect(agent.inbox.nextTurn).toEqual([])
+    expect(agent.inbox.nextStep.some(message => message.id === replacement.id)).toBe(false)
+    // The durable inbox projection reconstructs the same claim from the log.
+    const folded = log.reduce(
+      (state, event) => inboxProjectionDefinition.apply(state, event),
+      inboxProjectionDefinition.init(),
+    )
+    expect(folded['next-step'].map(message => message.id)).toEqual([first.id, second.id, waking.id])
+    expect(folded['next-turn']).toEqual([])
+    const restore = log.filter(event => event.type === 'agent/inbox/spliced'
+      && event.data.inserted.some(message => message.id === first.id)).at(-1)
+    expect(restore?.type === 'agent/inbox/spliced' && restore.data.target).toBe('next-step')
+    expect(restore?.type === 'agent/inbox/spliced' && restore.data.inserted.map(message => message.id))
+      .toEqual([first.id, second.id, waking.id])
+
+    // A later real wake claims the parked batch first and only then the new prompt.
+    const resumed = waitForIdle(ctx, agent)
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'later wake' }], source: { kind: 'user' } }))
+    await resumed
+    expect(adapter.requests).toHaveLength(1)
+    const requestTexts = (adapter.requests[0]?.messages ?? []).flatMap(message =>
+      message.content.flatMap(block => block.type === 'text' ? [block.text] : []))
+    expect(requestTexts.indexOf('staged one')).toBeGreaterThanOrEqual(0)
+    expect(requestTexts.indexOf('staged one')).toBeLessThan(requestTexts.indexOf('staged two'))
+    expect(requestTexts.indexOf('staged two')).toBeLessThan(requestTexts.indexOf('waking prompt'))
+    expect(requestTexts.indexOf('waking prompt')).toBeLessThan(requestTexts.indexOf('later wake'))
+    expect(requestTexts).not.toContain('rewritten by listener')
+    const recordedUserIds = events(agent)
+      .filter(event => event.type === 'user/message')
+      .map(event => event.type === 'user/message' ? event.data.id : '')
+    expect(recordedUserIds.slice(0, 4)).toEqual([first.id, second.id, waking.id, expect.any(String)])
+  })
+
+  it('a synchronous inserted observer that cancels during restore does not leave resurrected input', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('preserve-claimed-atomic'), { provider: 'mock', model: 'mock' })
+    const injected = [
+      createUserMessage({ content: [{ type: 'text', text: 'cancelled one' }], source: { kind: 'test' } }),
+      createUserMessage({ content: [{ type: 'text', text: 'cancelled two' }], source: { kind: 'test' } }),
+    ]
+    for (const message of injected) agent.inject(message)
+    let restoring = false
+    const disposeInserted = ctx.on('agent/inbox/inserted', () => {
+      if (restoring) agent.cancel({ kind: 'user' })
+    })
+    ctx.on('agent/pre-step', async (): Promise<PreStepDecision> => {
+      restoring = true
+      return { kind: 'reject', preserveClaimed: true }
+    })
+
+    const idle = waitForIdle(ctx, agent)
+    send(agent, 'cancelled during restore')
+    await idle
+    disposeInserted()
+
+    expect(agent.inbox.nextStep).toEqual([])
+    expect(agent.inbox.nextTurn).toEqual([])
+    expect(adapter.requests).toEqual([])
+    // The whole restored batch was committed by one splice, so the synchronous
+    // cancel cleared it instead of leaving a later one-by-one insertion behind.
+    const restored = events(agent).filter(event => event.type === 'agent/inbox/spliced'
+      && event.data.inserted.some(message => message.id === injected[0]!.id)
+      && event.data.inserted.length > 1).at(-1)
+    expect(restored?.type === 'agent/inbox/spliced' && restored.data.inserted.map(message => message.id))
+      .toEqual([...injected.map(message => message.id), expect.any(String)])
+  })
+
+  it('a reject with preserveClaimed does not resurrect a batch after a clearing cancel', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('preserve-claimed-clear-cancel'), {
+      provider: 'mock', model: 'mock',
+    })
+    const entered = Promise.withResolvers<undefined>()
+    const decision = Promise.withResolvers<PreStepDecision>()
+    ctx.on('agent/pre-step', async () => {
+      entered.resolve(undefined)
+      return decision.promise
+    })
+
+    const blockedIdle = waitForIdle(ctx, agent)
+    send(agent, 'cancelled prompt')
+    await entered.promise
+    agent.cancel({ kind: 'user' })
+    decision.resolve({ kind: 'reject', preserveClaimed: true })
+    await blockedIdle
+
+    expect(agent.inbox.nextStep).toEqual([])
+    expect(agent.inbox.nextTurn).toEqual([])
+    expect(adapter.requests).toEqual([])
+    expect(events(agent).some(event => event.type === 'user/message')).toBe(false)
+  })
+
+  it('an owner disposal during pre-step drops the claim instead of restoring it', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    const handle = await ctx.agents.create({
+      sessionId: SessionId('preserve-claimed-disposed'),
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })
+    const agent = handle.agent
+    const entered = Promise.withResolvers<undefined>()
+    const aborted = Promise.withResolvers<undefined>()
+    const decision = Promise.withResolvers<PreStepDecision>()
+    ctx.on('agent/pre-step', async ({ signal }) => {
+      signal.addEventListener('abort', () => { aborted.resolve(undefined) }, { once: true })
+      entered.resolve(undefined)
+      return decision.promise
+    })
+
+    send(agent, 'owner-released prompt')
+    await entered.promise
+    const disposal = handle.dispose()
+    await aborted.promise
+    decision.resolve({ kind: 'reject', preserveClaimed: true })
+    await disposal
+
+    expect(agent.inbox.nextStep).toEqual([])
+    expect(agent.inbox.nextTurn).toEqual([])
+    expect(adapter.requests).toEqual([])
+    expect(events(agent).some(event => event.type === 'user/message')).toBe(false)
+    expect(events(agent).findLast(event => event.type === 'turn/end')?.data.reason)
+      .toEqual({ kind: 'aborted', reason: { kind: 'disposed' } })
+  })
+
+  it('keepInbox cancellation consumes a pre-step claim instead of resurrecting it', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('keep-inbox-claim'), { provider: 'mock', model: 'mock' })
+    const entered = Promise.withResolvers<undefined>()
+    const decision = Promise.withResolvers<PreStepDecision>()
+    ctx.on('agent/pre-step', async () => {
+      entered.resolve(undefined)
+      return decision.promise
+    })
+
+    const blockedIdle = waitForIdle(ctx, agent)
+    send(agent, 'kept prompt')
+    await entered.promise
+    agent.cancel({ kind: 'user' }, { keepInbox: true })
+    decision.resolve({ kind: 'enter', messages: [] })
+    await blockedIdle
+
+    expect(agent.inbox.nextStep).toEqual([])
+    expect(agent.inbox.nextTurn).toEqual([])
+    expect(adapter.requests).toEqual([])
   })
 
   it('preserves context-only injection staged after pre-step began', async () => {
