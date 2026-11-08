@@ -1826,6 +1826,10 @@ describe('startSession operation lifecycle', () => {
       // proves neither that nothing was created nor that the caller may retry.
       { error: () => new RemoteError('agent-preset/not-found', 'missing', { agentPreset: 'gone', available: [] }), stage: 'create', creation: 'unknown', sessionId: undefined },
       { error: () => new RemoteError('agent-preset/invalid', 'invalid', { agentPreset: 'gone', reason: 'mount failed' }), stage: 'create', creation: 'unknown', sessionId: undefined },
+      // The Host's stage record proves these two ended before a factory call,
+      // so the caller may treat the preset refusal as nothing created.
+      { error: () => presetRefusal('agent-preset/not-found', true), stage: 'create', creation: 'none', sessionId: undefined },
+      { error: () => presetRefusal('agent-preset/invalid', true), stage: 'create', creation: 'none', sessionId: undefined },
     ] as const
     for (const { error, stage, creation, sessionId } of cases) {
       const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState() })

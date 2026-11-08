@@ -995,6 +995,12 @@ function creationFailureOutcome(error: unknown, workspaceId: WorkspaceId): Extra
   if (failure === undefined) {
     return { kind: 'failed', stage: 'create', message, creation: 'unknown', ...target }
   }
+  // The Host's stage record, not the code, decides whether a preset refusal
+  // ended before anything could be created; the same code without it may have
+  // persisted a Session and stays unknown below.
+  if (confirmedPreCreatePresetRefusal(error)) {
+    return { kind: 'failed', stage: 'create', message, creation: 'none', ...target }
+  }
   switch (failure.code) {
     case 'session/workspace-attach-failed':
       return {
@@ -1024,8 +1030,9 @@ function creationFailureOutcome(error: unknown, workspaceId: WorkspaceId): Extra
     case 'workspace/not-found':
       return { kind: 'failed', stage: 'create', message, creation: 'none', ...target }
     default:
-      // A preset failure can arrive after the Session was persisted, so it
-      // proves neither creation nor its absence.
+      // A preset failure can arrive after the Session was persisted, so one
+      // that carries no pre-create marker proves neither creation nor its
+      // absence; the same holds for every transport failure.
       return { kind: 'failed', stage: 'create', message, creation: 'unknown', ...target }
   }
 }
