@@ -530,6 +530,148 @@
   }
 }
 
+/* New Session group: the native capsule plus optional plugin actions share one
+   outline and one outer radius, flush with no gap; the hairline seam is the
+   first action row's top border. The group carries the capsule's outer box, so
+   a deployment with no contribution renders exactly the same single button.
+   The factory renders each occurrence without a layout wrapper, so the rows
+   are siblings and only the last standard row takes the bottom radius. */
+.newSessionGroup {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  margin: 0 calc(var(--dsh-sidebar-paint-inset) + 1px) 10px;
+}
+
+.newSessionGroup > .newSession {
+  margin: 0;
+}
+
+.newSessionGroup.grouped > .newSession {
+  border-radius: var(--dsw-radius-md) var(--dsw-radius-md) 0 0;
+}
+
+/* The action container takes no space until an entry occupies the slot. */
+.newSessionActions {
+  display: none;
+  flex-direction: column;
+}
+
+.newSessionGroup.grouped > .newSessionActions {
+  display: flex;
+}
+
+/* One standard row on the native capsule's geometry and surface. */
+.newSessionAction {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dsh-sidebar-label-gap);
+  height: 38px;
+  padding: 8px var(--dsh-sidebar-row-padding);
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: 0;
+  background: var(--dsw-alias-button-elevated-fill);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .newSessionAction:hover {
+    background-color: var(--dsw-alias-button-floating-hover);
+  }
+}
+
+.newSessionAction:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+.newSessionAction:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.newSessionActionIcon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.newSessionActionLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.newSessionGroup.grouped > .newSessionActions .newSessionAction:last-of-type {
+  border-radius: 0 0 var(--dsw-radius-md) var(--dsw-radius-md);
+}
+
+/* macOS: the same white wash keeps a contributed row in the glass instead of
+   reading as a themed slab on the vibrancy sidebar. */
+:global([data-platform='darwin']) :where(.root:not([role='dialog'])) .newSessionAction {
+  background: rgb(255 255 255 / 0.55);
+}
+
+@media (hover: hover) {
+  :global([data-platform='darwin']) :where(.root:not([role='dialog'])) .newSessionAction:hover {
+    background: rgb(255 255 255 / 0.3);
+  }
+}
+
+:global([data-platform='darwin']) :global([data-ds-dark-theme]) :where(.root:not([role='dialog'])) .newSessionAction {
+  background: rgb(255 255 255 / 0.15);
+}
+
+@media (hover: hover) {
+  :global([data-platform='darwin']) :global([data-ds-dark-theme]) :where(.root:not([role='dialog'])) .newSessionAction:hover {
+    background: rgb(255 255 255 / 0.2);
+  }
+}
+
+/* Collapsed rail: the actions stay separate icon buttons under the native one,
+   keeping the same order and their full rounded hover target. */
+.collapsed .newSessionGroup {
+  align-self: flex-start;
+  margin: 0 0 12px;
+}
+
+.collapsed .newSessionGroup.grouped > .newSession {
+  border-radius: var(--dsw-radius-md);
+}
+
+.collapsed .newSessionGroup.grouped > .newSessionActions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.collapsed .newSessionGroup.grouped > .newSessionActions .newSessionAction {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  gap: 0;
+  border: none;
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+}
+
+@media (hover: hover) {
+  .collapsed .newSessionGroup.grouped > .newSessionActions .newSessionAction:hover {
+    background-color: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
 .panelList {
   flex: none;
   display: flex;

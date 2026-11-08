@@ -21,8 +21,11 @@ afterEach(async () => {
   }
 })
 
-function SidebarFrame({ renderSlot }: PropsRenderSlots<'sidebar'>) {
-  return renderSlot('sidebar', { collapsed: false, width: 300, drawer: false })
+function SidebarFrame({ renderSlot }: PropsRenderSlots<'sidebar' | 'shell.overlay'>) {
+  return <>
+    {renderSlot('sidebar', { collapsed: false, width: 300, drawer: false })}
+    {renderSlot('shell.overlay', {})}
+  </>
 }
 
 async function bench(declare = true) {
@@ -46,6 +49,7 @@ async function bench(declare = true) {
         'sidebar': { kind: 'single', scope: 'root' },
         'main': { kind: 'keyed', scope: 'root' },
         'shell.leading': { kind: 'single', scope: 'root' },
+        'shell.overlay': { kind: 'list', scope: 'root' },
       } },
       SidebarFrame,
     )
@@ -72,6 +76,7 @@ describe('ui-sidebar apply', () => {
     expect(b.slots.spec('sidebar.settings')).toEqual({ kind: 'single', scope: 'root' })
     expect(b.slots.spec('sidebar.footer.action')).toEqual({ kind: 'list', scope: 'root' })
     expect(b.slots.spec('sidebar.panellist')).toEqual({ kind: 'list', scope: 'root' })
+    expect(b.slots.spec('sidebar.session.new.action')).toEqual({ kind: 'list', scope: 'root' })
     // Copy rides the standard locale seat, not the inject face.
     expect(b.slots.entries('sidebar')[0]!.locale).toBe('sidebar')
     // The window-chrome occupant reuses the shell's inject face and locale.
@@ -85,6 +90,7 @@ describe('ui-sidebar apply', () => {
     expect(injected.hooks.panels.getSnapshot()).toEqual([])
     expect(injected.hooks.entryPins.getSnapshot()).toEqual([])
     expect(injected.hooks.entryActions.getSnapshot()).toBe(false)
+    expect(injected.hooks.newSessionActions.getSnapshot()).toBe(false)
     expect(b.slots.entries('main')).toEqual([])
     // Both arms delegate to the Workspace UI's shared New Session action.
     injected.startSession('workspace' as never)
@@ -128,7 +134,10 @@ describe('ui-sidebar apply', () => {
     expect(b.slots.spec('sidebar.panellist')).toBeUndefined()
     const declareSidebar = () => b.slots.register({
       name: 'root',
-      children: { sidebar: { kind: 'single', scope: 'root' } },
+      children: {
+        sidebar: { kind: 'single', scope: 'root' },
+        'shell.overlay': { kind: 'list', scope: 'root' },
+      },
     }, SidebarFrame)
     const disposeRoot = declareSidebar()
     expect(b.slots.entries('sidebar')).toHaveLength(1)
@@ -175,6 +184,36 @@ describe('ui-sidebar apply', () => {
     }
   })
 
+  it('registers the standard action row and the failure notice that outlives it', async () => {
+    const b = await bench()
+    const sidebar = b.ctx.plugin({ inject: [...inject], apply })
+    await sidebar.await()
+    try {
+      expect(b.slots.snapshot('factory:sidebar.new-session.action')).toHaveLength(1)
+      const overlay = b.slots.entries('shell.overlay')
+      expect(overlay.map(entry => entry.options.id)).toEqual(['sidebar.new-session-action-failure'])
+      expect(overlay[0]!.locale).toBe('sidebar')
+
+      // Occupancy drives the grouped outline; it follows the list's registrations.
+      const injected = (b.slots.entries('sidebar')[0]!.inject as () => SidebarRootInjected)()
+      expect(injected.hooks.newSessionActions.getSnapshot()).toBe(false)
+      const action = b.ctx.plugin({
+        inject: ['slots'],
+        apply(actionCtx: Context) {
+          actionCtx.slots.register({ name: 'sidebar.session.new.action', id: 'nodes', inject: () => ({}) }, () => null)
+        },
+      })
+      await action.await()
+      expect(injected.hooks.newSessionActions.getSnapshot()).toBe(true)
+      await action.dispose()
+      expect(injected.hooks.newSessionActions.getSnapshot()).toBe(false)
+    } finally {
+      await sidebar.dispose()
+    }
+    expect(b.slots.snapshot('factory:sidebar.new-session.action')).toEqual([])
+    expect(b.slots.entries('shell.overlay')).toEqual([])
+  })
+
   it('removes the entry and child declaration on teardown', async () => {
     const b = await bench()
     const fiber = b.ctx.plugin({ inject: [...inject], apply })
@@ -187,6 +226,7 @@ describe('ui-sidebar apply', () => {
     expect(b.slots.spec('sidebar.workspaces')).toBeUndefined()
     expect(b.slots.spec('sidebar.footer.action')).toBeUndefined()
     expect(b.slots.spec('sidebar.panellist')).toBeUndefined()
+    expect(b.slots.spec('sidebar.session.new.action')).toBeUndefined()
     expect(b.slots.entries('main')).toHaveLength(0)
   })
 })

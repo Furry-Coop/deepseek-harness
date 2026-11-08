@@ -13,11 +13,17 @@ import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type { SidebarPanelMetadata, SidebarRootInjected } from './contract/slots.ts'
 import { createPanelPins } from './panel-pins.ts'
 import { HeaderLeadingControls } from './HeaderLeadingControls.tsx'
+import {
+  NewSessionActionFailure,
+  NewSessionActionRow,
+  type NewSessionActionFailureState,
+} from './NewSessionAction.tsx'
 import { SidebarRoot } from './SidebarRoot.tsx'
 import { en, ja, es, fr, de, ru, pt, zh, type SidebarKey } from './locales.ts'
 
 export type {
   SidebarBrandMarkOwnerProps, SidebarBrandNameOwnerProps, SidebarFooterActionOwnerProps,
+  SidebarNewSessionActionOwnerProps, SidebarNewSessionActionProps,
   SidebarPanelActionEntry, SidebarPanelActionsOwnerProps, SidebarPanelIconOwnerProps, SidebarPanelMetadata,
   SidebarRootComponentProps, SidebarRootInjected, SidebarSectionOwnerProps, SidebarSettingsOwnerProps,
 } from './contract/slots.ts'
@@ -67,6 +73,39 @@ export function apply(ctx: ClientContext): void {
     getSnapshot: () => ctx.slots.entriesOfSlot('sidebar.panellist.actions').length > 0,
     subscribe: (listener: () => void) => ctx.slots.subscribe('sidebar.panellist.actions', listener),
   }
+  // Occupancy of the additional New Session actions: the shell only switches
+  // to the grouped outline and mounts the action container while at least one
+  // entry exists, so an unoccupied slot leaves the native button untouched.
+  const newSessionActions = {
+    getSnapshot: () => ctx.slots.entriesOfSlot('sidebar.session.new.action').length > 0,
+    subscribe: (listener: () => void) => ctx.slots.subscribe('sidebar.session.new.action', listener),
+  }
+
+  // One shell-owned transient failure notice serves every action row; it
+  // lives in the frame-wide overlay so withdrawing a contribution cannot
+  // remove a notice already shown.
+  const actionFailure = createSnapshotStore<NewSessionActionFailureState | null>(null)
+  let actionFailureSeq = 0
+  const reportActionFailure = (detail: string): void => {
+    actionFailureSeq += 1
+    actionFailure.set({ seq: actionFailureSeq, detail })
+  }
+  ctx.effect(() => ctx.slots.registerFactory({
+    name: 'sidebar.new-session.action',
+    scope: 'root',
+    locale: NS,
+    inject: () => ({ reportFailure: reportActionFailure }),
+    slots: { icon: { scope: 'root' } },
+  }, NewSessionActionRow), 'ui-sidebar: new-session action row')
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay',
+    id: 'sidebar.new-session-action-failure',
+    locale: NS,
+    inject: () => ({
+      hooks: { actionFailure },
+      clearActionFailure: () => { actionFailure.set(null) },
+    }),
+  }, NewSessionActionFailure))
 
   const injectProps = (): SidebarRootInjected => ({
     // The shell's New Session button rides the Workspace UI's shared action
@@ -76,7 +115,7 @@ export function apply(ctx: ClientContext): void {
     selectPanel: (id) => { ctx.layout.selectPanel(id) },
     setPinned: panelPins.setPinned,
     trackEntryClick: (attributes) => { ctx.get('productAnalytics')?.track('sidebar_menu_click', attributes) },
-    hooks: { panels, shortcuts: ctx.shortcuts.catalog, entryPins: panelPins.unpinned, entryActions },
+    hooks: { panels, shortcuts: ctx.shortcuts.catalog, entryPins: panelPins.unpinned, entryActions, newSessionActions },
   })
   ctx.slots.inject('sidebar', () => ctx.slots.register({
     name: 'sidebar',
@@ -87,6 +126,7 @@ export function apply(ctx: ClientContext): void {
       'sidebar.toggle.badge': { kind: 'single', scope: 'root' },
       'sidebar.panellist': { kind: 'list', scope: 'root' },
       'sidebar.panellist.actions': { kind: 'list', scope: 'root' },
+      'sidebar.session.new.action': { kind: 'list', scope: 'root' },
       'sidebar.workspaces': { kind: 'single', scope: 'root' },
       'sidebar.settings': { kind: 'single', scope: 'root' },
       'sidebar.footer.action': { kind: 'list', scope: 'root' },

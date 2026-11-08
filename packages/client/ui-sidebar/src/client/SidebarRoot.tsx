@@ -141,6 +141,7 @@ export function SidebarRoot({
   usePanels,
   useEntryPins,
   useEntryActions,
+  useNewSessionActions,
   useShortcuts,
   usePanelInfo,
   t,
@@ -150,6 +151,7 @@ export function SidebarRoot({
   const unpinned = useEntryPins(ids => ids)
   const activePanelId = usePanelInfo(info => info.activePanelId)
   const hasEntryActions = useEntryActions(registered => registered)
+  const hasNewSessionActions = useNewSessionActions(occupied => occupied)
   const shortcut = useShortcuts(rows => rows.find(row => row.id === 'sidebar.left.toggle'))
   const newShortcut = useShortcuts(rows => rows.find(row => row.id === 'session.new'))
   // A page whose access snapshot excludes starting a Session offers no New Session affordance.
@@ -353,27 +355,37 @@ export function SidebarRoot({
         {!darwinDesktop && toggle}
       </div>
 
-      {/* The label fades before the hover/focus shortcut, including on translucent backgrounds. */}
+      {/* The label fades before the hover/focus shortcut, including on translucent backgrounds.
+          Additional plugin actions sit flush under the native capsule inside one outline; the
+          whole group, native button included, stays gated on `session/create` so a contribution
+          cannot leak a New Session entry the access snapshot refuses. */}
       {canStartSession && (
-        <Tooltip label={t('session.new.label')} shortcutKeys={newShortcut?.keys} delayMs={500} side={captionTooltipSide} disabled={wide}>
-          <button
-            type="button"
-            className={css.newSession}
-            aria-label={t('session.new.label')}
-            aria-keyshortcuts={newShortcut?.aria}
-            onClick={openNewSession}
-          >
-            <span className={css.newSessionLabelMask}><span className={css.newSessionContent}>
-              {wide
-                ? <IconNewChatOutlineMedium size={14} />
-                : <IconNewChatOutlineRegular size={windowsTitlebar ? 16 : 18} />}
-              {wide && <span className={clsx(css.newSessionLabel, css.wide)}>{t('session.new')}</span>}
-            </span></span>
-            {wide && newShortcut !== undefined && newShortcut.keys.length > 0 && <span className={css.newSessionShortcut} aria-hidden="true">
-              <ShortcutKeys keys={newShortcut.keys} />
-            </span>}
-          </button>
-        </Tooltip>
+        <div className={clsx(css.newSessionGroup, hasNewSessionActions && css.grouped)}>
+          <Tooltip label={t('session.new.label')} shortcutKeys={newShortcut?.keys} delayMs={500} side={captionTooltipSide} disabled={wide}>
+            <button
+              type="button"
+              className={css.newSession}
+              aria-label={t('session.new.label')}
+              aria-keyshortcuts={newShortcut?.aria}
+              onClick={openNewSession}
+            >
+              <span className={css.newSessionLabelMask}><span className={css.newSessionContent}>
+                {wide
+                  ? <IconNewChatOutlineMedium size={14} />
+                  : <IconNewChatOutlineRegular size={windowsTitlebar ? 16 : 18} />}
+                {wide && <span className={clsx(css.newSessionLabel, css.wide)}>{t('session.new')}</span>}
+              </span></span>
+              {wide && newShortcut !== undefined && newShortcut.keys.length > 0 && <span className={css.newSessionShortcut} aria-hidden="true">
+                <ShortcutKeys keys={newShortcut.keys} />
+              </span>}
+            </button>
+          </Tooltip>
+          {hasNewSessionActions && (
+            <div className={css.newSessionActions} role="group" aria-label={t('session.new.group')}>
+              {renderSlot('sidebar.session.new.action', { wide })}
+            </div>
+          )}
+        </div>
       )}
 
       {panels.length > 0 && (

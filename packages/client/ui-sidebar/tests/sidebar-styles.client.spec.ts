@@ -93,4 +93,47 @@ describe('SidebarRoot.module.css', () => {
     expect(declarations('.fallbackBrandName')?.get('font-size')).toBe('17px')
     expect(declarations('.fallbackBrandName')?.get('white-space')).toBe('nowrap')
   })
+
+  it('joins the native capsule and contributed actions into one outline', () => {
+    // The group carries the capsule's outer box so a deployment without
+    // contributions renders the same single button.
+    expect(declarations('.newSessionGroup')?.get('display')).toBe('flex')
+    expect(declarations('.newSessionGroup')?.get('flex-direction')).toBe('column')
+    expect(declarations('.newSessionGroup')?.get('margin')).toBe(
+      '0 calc(var(--dsh-sidebar-paint-inset) + 1px) 10px',
+    )
+    expect(declarations('.newSessionGroup > .newSession')?.get('margin')).toBe('0')
+    expect(declarations('.newSessionGroup.grouped > .newSession')?.get('border-radius')).toBe(
+      'var(--dsw-radius-md) var(--dsw-radius-md) 0 0',
+    )
+    // The container itself is absent from layout until an entry occupies it.
+    expect(declarations('.newSessionActions')?.get('display')).toBe('none')
+    expect(declarations('.newSessionGroup.grouped > .newSessionActions')?.get('display')).toBe('flex')
+    expect(declarations('.newSessionGroup.grouped > .newSessionActions .newSessionAction:last-of-type')?.get('border-radius'))
+      .toBe('0 0 var(--dsw-radius-md) var(--dsw-radius-md)')
+  })
+
+  it('gives a contributed row the native capsule geometry and surface', () => {
+    const action = declarations('.newSessionAction')
+    expect(action?.get('height')).toBe('38px')
+    expect(action?.get('padding')).toBe('8px var(--dsh-sidebar-row-padding)')
+    expect(action?.get('border')).toBe('0.5px solid var(--dsw-alias-border-l3)')
+    expect(action?.get('border-radius')).toBe('0')
+    expect(action?.get('background')).toBe('var(--dsw-alias-button-elevated-fill)')
+    expect(action?.get('color')).toBe('var(--dsw-alias-label-primary)')
+    expect(declarations('.newSessionAction:focus-visible')?.get('outline-offset')).toBe('-2px')
+  })
+
+  it('keeps contributed rail actions as separate rounded icon buttons', () => {
+    expect(declarations('.collapsed .newSessionGroup')?.get('margin')).toBe('0 0 12px')
+    expect(declarations('.collapsed .newSessionGroup')?.get('align-self')).toBe('flex-start')
+    expect(declarations('.collapsed .newSessionGroup.grouped > .newSession')?.get('border-radius'))
+      .toBe('var(--dsw-radius-md)')
+    expect(declarations('.collapsed .newSessionGroup.grouped > .newSessionActions')?.get('gap')).toBe('4px')
+    const railAction = declarations('.collapsed .newSessionGroup.grouped > .newSessionActions .newSessionAction')
+    expect(railAction?.get('width')).toBe('36px')
+    expect(railAction?.get('height')).toBe('36px')
+    expect(railAction?.get('border')).toBe('none')
+    expect(railAction?.get('background')).toBe('transparent')
+  })
 })
