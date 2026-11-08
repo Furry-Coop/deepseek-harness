@@ -86,11 +86,16 @@ async function bench(renderQuote = false) {
     opened(id)
   }
   const openSession = vi.fn((id: SessionId) => { replaceMain(id) })
+  const openWorkspace = vi.fn(async (
+    _workspaceId: WorkspaceId,
+    beforeOpen: (id: SessionId) => void,
+    _options?: { readonly sourceSessionId?: SessionId },
+  ) => {
+    const id = await connectWorkspace()
+    replaceMain(id, beforeOpen)
+  })
   runtime.ctx.provide('uiWorkspace', {
-    openWorkspace: async (_workspaceId: WorkspaceId, beforeOpen: (id: SessionId) => void) => {
-      const id = await connectWorkspace()
-      replaceMain(id, beforeOpen)
-    },
+    openWorkspace,
     openSession,
   } as never)
   const sessionFake = sessionFakeFor()
@@ -156,7 +161,7 @@ async function bench(renderQuote = false) {
     conversationApi(id).injected.hooks.conversationViews
   return {
     runtime, feature, slots: runtime.slots, entryOf, conversationApi, headerApi, residentApi, composerApi,
-    inputApi, viewSource, sessionFake, connectWorkspace, rootUpload, uploads, rootReference, references, opened,
+    inputApi, viewSource, sessionFake, connectWorkspace, openWorkspace, rootUpload, uploads, rootReference, references, opened,
   }
 }
 
@@ -553,6 +558,9 @@ describe('Conversation inject API', () => {
     await resident.selectWorkspace('workspace-1' as WorkspaceId)
     expect(b.opened).toHaveBeenCalledWith(ROOT)
     expect(state.getSnapshot().draft).toBe('carry me')
+    // The real workspace switch names the open Session as the source, so the
+    // Host can keep its creation mode instead of starting an ordinary blank.
+    expect(b.openWorkspace).toHaveBeenLastCalledWith('workspace-1', expect.any(Function), { sourceSessionId: ROOT })
 
     const other = 'other-1' as SessionId
     const targetUpload = vi.fn(() => Promise.resolve({
@@ -620,6 +628,8 @@ describe('Conversation inject API', () => {
     b.connectWorkspace.mockResolvedValueOnce(ROOT)
     await b.residentApi(undefined).selectWorkspace('workspace-0' as WorkspaceId)
     expect(b.opened).toHaveBeenCalledWith(ROOT)
+    // Without an open Session there is no source to continue.
+    expect(b.openWorkspace).toHaveBeenLastCalledWith('workspace-0', expect.any(Function), {})
 
     const opens = b.opened.mock.calls.length
     b.connectWorkspace.mockRejectedValueOnce(new Error('offline'))

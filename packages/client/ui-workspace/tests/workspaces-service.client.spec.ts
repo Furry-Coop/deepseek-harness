@@ -14,6 +14,8 @@ import type { ClientRemote, DirectoryListing } from '@deepseek-ai/dsh-api-remote
 import { RemoteError } from '@deepseek-ai/dsh-client-test-runtime'
 import type { RemoteResult } from '@deepseek-ai/dsh-api-remotes/client'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
+import { brandString } from '@deepseek-ai/dsh-brand'
+import type { SessionOperationId } from '@deepseek-ai/dsh-api-session-controller/types'
 import { LayoutController } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
@@ -26,6 +28,7 @@ import { UNGROUPED_KEY } from '../src/client/tree.ts'
 
 const sid = (id: string): SessionId => SessionId(id)
 const wid = (id: string): WorkspaceId => id as WorkspaceId
+const opId = (id: string): SessionOperationId => brandString<SessionOperationId>(id)
 
 const contexts: Context[] = []
 
@@ -1566,5 +1569,554 @@ describe('UiWorkspaceService', () => {
     await expect(b.uiWorkspace.createDirectory('/home/u', 'new')).rejects.toMatchObject({
       rpcError: { code: 'directory-picker/exists' },
     })
+  })
+})
+
+describe('startSession operation lifecycle', () => {
+  it('ends a wait with no Workspace on caller cancellation, and the next pick is ordinary', async () => {
+    const b = bench({ workspaces: workspaceState([]), sessions: sessionState() })
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    const caller = new AbortController()
+    b.uiWorkspace.startSession(undefined, {
+      operation: {
+        operationId: opId('op-1'),
+        policyId: '@nodes/dsh-plugin:conversation',
+        signal: caller.signal,
+        onFinished: finished,
+      },
+    })
+    expect(b.sessions.create).not.toHaveBeenCalled()
+    caller.abort()
+    await vi.waitFor(() => {
+      expect(finished).toHaveBeenCalledWith({ kind: 'cancelled', reason: 'caller' })
+    })
+
+    // The cancelled wait must not be continued by the Workspace that follows.
+    b.workspaces.list.set(workspaceState([workspace('a')]))
+    b.sessions.create.mockResolvedValueOnce(sid('created'))
+    await b.uiWorkspace.openWorkspace(wid('a'))
+    expect(b.sessions.create).toHaveBeenCalledOnce()
+    expect(b.sessions.create.mock.calls[0]![0]).not.toHaveProperty('operation')
+  })
+
+  it('ends a wait when the user leaves the New Session page', async () => {
+    const b = bench({ workspaces: workspaceState([]), sessions: sessionState() })
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(undefined, {
+      operation: { operationId: opId('op-1'), policyId: 'p', onFinished: finished },
+    })
+    b.uiWorkspace.openSession(sid('other'))
+    await vi.waitFor(() => {
+      expect(finished).toHaveBeenCalledWith({ kind: 'cancelled', reason: 'superseded' })
+    })
+    expect(b.sessions.create).not.toHaveBeenCalled()
+  })
+
+  it('prepares the actual Session before opening and reports one outcome', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState() })
+    b.sessions.create.mockResolvedValueOnce(sid('created'))
+    const prepare = vi.fn(async (_prepared: unknown) => {})
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(wid('a'), {
+      operation: { operationId: opId('op-1'), policyId: 'p', prepareSession: prepare, onFinished: finished },
+    })
+    await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+    expect(prepare).toHaveBeenCalledWith({ sessionId: sid('created'), workspaceId: wid('a') })
+    expect(finished).toHaveBeenCalledWith({
+      kind: 'session',
+      sessionId: sid('created'),
+      workspaceId: wid('a'),
+      navigation: 'opened',
+    })
+    expect(b.sessions.retain).toHaveBeenCalledWith(sid('created'), { source: 'mainView' })
+  })
+
+  it('contains an asynchronous outcome-handler rejection without changing the result', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState() })
+    b.sessions.create.mockResolvedValueOnce(sid('created'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const finished = vi.fn(async (_outcome: unknown) => { throw new Error('handler failed') })
+    b.uiWorkspace.startSession(wid('a'), {
+      operation: { operationId: opId('op-1'), policyId: 'p', onFinished: finished },
+    })
+    await vi.waitFor(() => {
+      expect(warn).toHaveBeenCalledWith('new session outcome handler failed:', expect.any(Error))
+    })
+    expect(finished).toHaveBeenCalledOnce()
+    expect(b.sessions.retain).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a created Session known when the caller ends before preparation', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState() })
+    // Let the startup selection finish first so the held create belongs to
+    // this New Session call.
+    await vi.waitFor(() => { expect(b.sessions.create).toHaveBeenCalledOnce() })
+    const created = Promise.withResolvers<SessionId>()
+    b.sessions.create.mockReturnValueOnce(created.promise)
+    const caller = new AbortController()
+    const prepare = vi.fn()
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(wid('a'), {
+      operation: {
+        operationId: opId('op-1'),
+        policyId: 'p',
+        signal: caller.signal,
+        prepareSession: prepare,
+        onFinished: finished,
+      },
+    })
+    await vi.waitFor(() => { expect(b.sessions.create).toHaveBeenCalledTimes(2) })
+    caller.abort()
+    created.resolve(sid('known'))
+    await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+    expect(prepare).not.toHaveBeenCalled()
+    expect(finished).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'failed',
+      stage: 'extension',
+      creation: 'known',
+      sessionId: sid('known'),
+    }))
+    expect(b.sessions.retain).not.toHaveBeenCalled()
+  })
+
+  it('reports a pre-create refusal as no Session', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState() })
+    const refusal = new SessionCreateError(
+      new RemoteError('workspace/not-found', 'gone', { workspaceId: wid('a') }),
+      undefined,
+    )
+    b.sessions.create.mockRejectedValueOnce(refusal)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(wid('a'), {
+      operation: { operationId: opId('op-1'), policyId: 'p', onFinished: finished },
+    })
+    await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+    expect(finished).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'failed',
+      stage: 'create',
+      creation: 'none',
+    }))
+    expect(warn).toHaveBeenCalledWith('new session failed:', refusal)
+  })
+
+  it('maps each creation failure to its stage and creation knowledge', async () => {
+    const known = { sessionId: sid('known'), workspaceId: wid('a') }
+    const cases = [
+      { error: () => new RemoteError('session/workspace-attach-failed', 'failed', known), stage: 'create', creation: 'known', sessionId: sid('known') },
+      { error: () => new RemoteError('session/policy-prepare-failed', 'failed', { ...known, operationId: 'op-1' }), stage: 'prepare', creation: 'known', sessionId: sid('known') },
+      { error: () => new RemoteError('session/policy-unavailable', 'failed', { policyId: 'p', operationId: 'op-1' }), stage: 'policy', creation: 'none', sessionId: undefined },
+      { error: () => new RemoteError('session/source-not-policy', 'failed', { policyId: 'p', sessionId: sid('source'), operationId: 'op-1' }), stage: 'policy', creation: 'none', sessionId: undefined },
+      { error: () => new RemoteError('session/policy-source-unknown', 'failed', { sessionId: sid('source'), operationId: 'op-1' }), stage: 'policy', creation: 'none', sessionId: undefined },
+      { error: () => new RemoteError('session/policy-conflict', 'failed', { sessionId: sid('source'), operationId: 'op-1' }), stage: 'policy', creation: 'none', sessionId: undefined },
+      { error: () => new RemoteError('session/policy-begin-failed', 'failed', { policyId: 'p', operationId: 'op-1' }), stage: 'policy', creation: 'none', sessionId: undefined },
+      { error: () => new RemoteError('gateway/bad-request', 'failed', {}), stage: 'create', creation: 'none', sessionId: undefined },
+      { error: () => new RemoteError('session/not-found', 'failed', { sessionId: sid('missing') }), stage: 'create', creation: 'unknown', sessionId: undefined },
+      // The Factory persists before it mounts the preset, so a preset failure
+      // proves neither that nothing was created nor that the caller may retry.
+      { error: () => new RemoteError('agent-preset/not-found', 'missing', { agentPreset: 'gone', available: [] }), stage: 'create', creation: 'unknown', sessionId: undefined },
+      { error: () => new RemoteError('agent-preset/invalid', 'invalid', { agentPreset: 'gone', reason: 'mount failed' }), stage: 'create', creation: 'unknown', sessionId: undefined },
+    ] as const
+    for (const { error, stage, creation, sessionId } of cases) {
+      const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState() })
+      b.sessions.create.mockRejectedValueOnce(new SessionCreateError(error(), undefined))
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const finished = vi.fn(async (_outcome: unknown) => {})
+      b.uiWorkspace.startSession(wid('a'), {
+        operation: { operationId: opId('op-1'), policyId: 'p', onFinished: finished },
+      })
+      await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+      expect(finished).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'failed',
+        stage,
+        creation,
+        ...(sessionId === undefined ? {} : { sessionId }),
+      }))
+      // An ambiguous failure never repeats the creation by itself.
+      expect(b.sessions.create.mock.calls.filter(([options]) => options?.operation !== undefined)).toHaveLength(1)
+      expect(b.sessions.retain).not.toHaveBeenCalled()
+    }
+  })
+
+  it('refuses a draft that needs a Workspace before creating anything', async () => {
+    const b = bench({ workspaces: workspaceState([]), sessions: sessionState() })
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(undefined, {
+      prompt: 'draft needing a workspace',
+      operation: { operationId: opId('op-1'), policyId: 'p', onFinished: finished },
+    })
+    await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+    expect(finished).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'failed',
+      stage: 'workspace',
+      creation: 'none',
+    }))
+    expect(b.sessions.create).not.toHaveBeenCalled()
+  })
+
+  it('forwards the explicit-new flag and preset to the native creation', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState() })
+    b.sessions.create.mockResolvedValueOnce(sid('created'))
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(wid('a'), {
+      agentPreset: 'ptc',
+      operation: { operationId: opId('op-1'), policyId: 'p', reuseBlank: false, onFinished: finished },
+    })
+    await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+    const request = b.sessions.create.mock.calls.at(-1)?.[0] as Record<string, unknown>
+    expect(request.agentPreset).toBe('ptc')
+    expect(request).not.toHaveProperty('sessionId')
+    expect(request.operation).toMatchObject({
+      operationId: opId('op-1'),
+      policyId: 'p',
+      kind: 'new',
+      reuseBlank: false,
+    })
+  })
+
+  it('reports an already-released caller without creating anything', async () => {
+    const b = bench({ workspaces: workspaceState([]), sessions: sessionState() })
+    const caller = new AbortController()
+    caller.abort()
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(wid('a'), {
+      operation: { signal: caller.signal, onFinished: finished },
+    })
+    await vi.waitFor(() => {
+      expect(finished).toHaveBeenCalledWith({ kind: 'cancelled', reason: 'caller' })
+    })
+    expect(b.sessions.create).not.toHaveBeenCalled()
+  })
+
+  it('continues a waiting call through the native Workspace pick', async () => {
+    const b = bench({ workspaces: workspaceState([]), sessions: sessionState() })
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(undefined, {
+      operation: { operationId: opId('op-1'), policyId: 'p', onFinished: finished },
+    })
+    b.workspaces.list.set(workspaceState([workspace('a')]))
+    b.sessions.create.mockResolvedValueOnce(sid('created'))
+    await b.uiWorkspace.openWorkspace(wid('a'))
+    await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+    expect(finished).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'session',
+      sessionId: sid('created'),
+      navigation: 'opened',
+    }))
+    expect(b.sessions.create.mock.calls.at(-1)?.[0]).toMatchObject({
+      operation: { operationId: opId('op-1'), kind: 'workspace' },
+    })
+  })
+
+  it('keeps the source Session identity in the Workspace creation policy', async () => {
+    persistSelection({ sessionId: sid('kept') })
+    const b = bench({
+      workspaces: workspaceState([workspace('a')]),
+      sessions: sessionState([summary('kept')]),
+    })
+    b.sessions.create.mockResolvedValueOnce(sid('created'))
+
+    await b.uiWorkspace.openWorkspace(wid('a'), undefined, { sourceSessionId: sid('source') })
+
+    const request = b.sessions.create.mock.calls.at(-1)?.[0]
+    expect(request?.operation).toMatchObject({ kind: 'workspace', sourceSessionId: sid('source') })
+    expect(request?.operation?.operationId).toEqual(expect.any(String))
+    expect(request?.operation).not.toHaveProperty('policyId')
+  })
+
+  it('keeps an ordinary New Session out of the policy of the open Session', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState([], 'pending') })
+    b.sessions.create.mockResolvedValue(sid('created'))
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(wid('a'), {
+      operation: { operationId: opId('op-1'), policyId: 'p', onFinished: finished },
+    })
+    await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+
+    // The sidebar button, shortcut, and group New Session pass no operation.
+    b.uiWorkspace.startSession(wid('a'))
+
+    await vi.waitFor(() => { expect(b.sessions.create).toHaveBeenCalledTimes(2) })
+    expect(b.sessions.create.mock.calls.at(-1)?.[0]).not.toHaveProperty('operation')
+  })
+
+  it('keeps each operation on its own Workspace connection', async () => {
+    const first = Promise.withResolvers<SessionId>()
+    const second = Promise.withResolvers<SessionId>()
+    const b = bench({
+      sessions: sessionState([summary('blank', { blank: true, cwd: '/w/a' })], 'pending'),
+      workspaces: workspaceState([workspace('a', [sid('blank')])]),
+      configureSessions: (sessions) => {
+        sessions.create.mockImplementation(options =>
+          options?.operation?.operationId === opId('one') ? first.promise : second.promise)
+      },
+    })
+    const one = vi.fn(async (_outcome: unknown) => {})
+    const two = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(wid('a'), { operation: { operationId: opId('one'), onFinished: one } })
+    b.uiWorkspace.startSession(wid('a'), { operation: { operationId: opId('two'), onFinished: two } })
+    expect(b.sessions.create).toHaveBeenCalledTimes(2)
+
+    first.resolve(sid('blank'))
+    second.resolve(sid('blank'))
+    await vi.waitFor(() => {
+      expect(one).toHaveBeenCalledWith(expect.objectContaining({ kind: 'session', sessionId: sid('blank') }))
+      expect(two).toHaveBeenCalledWith(expect.objectContaining({ kind: 'session', sessionId: sid('blank') }))
+    })
+  })
+
+  it('reports one caller cancellation when a new navigation releases the caller first', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]) })
+    const caller = new AbortController()
+    b.layout.beginNavigation().addEventListener('abort', () => { caller.abort() }, { once: true })
+    const finished = vi.fn(async (_outcome: unknown) => {})
+
+    b.uiWorkspace.startSession(wid('a'), { operation: { signal: caller.signal, onFinished: finished } })
+
+    await vi.waitFor(() => {
+      expect(finished).toHaveBeenCalledExactlyOnceWith({ kind: 'cancelled', reason: 'caller' })
+    })
+    expect(b.sessions.create).not.toHaveBeenCalled()
+  })
+
+  it('reports an unknown creation failure after navigation leaves without a notice', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState([], 'pending') })
+    const created = Promise.withResolvers<SessionId>()
+    b.sessions.create.mockReturnValueOnce(created.promise)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const finished = vi.fn(async (_outcome: unknown) => {})
+
+    b.uiWorkspace.startSession(wid('a'), { operation: { operationId: opId('op-1'), onFinished: finished } })
+    b.layout.selectPanel('other-panel' as MainPanelId)
+    const failure = new Error('transport lost')
+    created.reject(failure)
+
+    await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+    expect(finished).toHaveBeenCalledWith({
+      kind: 'failed',
+      stage: 'create',
+      message: 'transport lost',
+      creation: 'unknown',
+      workspaceId: wid('a'),
+    })
+    expect(b.notify).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledWith('new session failed:', failure)
+  })
+
+  it('reports a non-Error preparation refusal after navigation leaves without a notice', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState([], 'pending') })
+    b.sessions.create.mockResolvedValueOnce(sid('created'))
+    const prepared = Promise.withResolvers<undefined>()
+    const finished = vi.fn(async (_outcome: unknown) => {})
+
+    b.uiWorkspace.startSession(wid('a'), {
+      operation: {
+        operationId: opId('op-1'),
+        prepareSession: () => prepared.promise,
+        onFinished: finished,
+      },
+    })
+    await vi.waitFor(() => { expect(b.sessions.create).toHaveBeenCalledOnce() })
+    b.layout.selectPanel('other-panel' as MainPanelId)
+    prepared.reject('prepare refused')
+
+    await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+    expect(finished).toHaveBeenCalledWith({
+      kind: 'failed',
+      stage: 'extension',
+      message: 'prepare refused',
+      creation: 'known',
+      sessionId: sid('created'),
+      workspaceId: wid('a'),
+    })
+    expect(b.notify).not.toHaveBeenCalled()
+    expect(b.sessions.retain).not.toHaveBeenCalled()
+  })
+
+  it('reports a non-Error opening failure after a Workspace pick continues a waiting call', async () => {
+    const b = bench({ workspaces: workspaceState([], [], 'pending'), sessions: sessionState([], 'pending') })
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(undefined, {
+      operation: { operationId: opId('op-1'), onFinished: finished },
+    })
+    b.workspaces.list.set(workspaceState([workspace('a')]))
+
+    await expect(b.uiWorkspace.openWorkspace(wid('a'), () => { throw 'open refused' }))
+      .rejects.toBe('open refused')
+
+    expect(finished).toHaveBeenCalledWith({
+      kind: 'failed',
+      stage: 'open',
+      message: 'open refused',
+      creation: 'known',
+      sessionId: sid('created-a'),
+      workspaceId: wid('a'),
+    })
+  })
+
+  it('keeps the outer waiting call when a nested New Session caller ends', async () => {
+    const b = bench({ workspaces: workspaceState([], [], 'pending'), sessions: sessionState([], 'pending') })
+    const outerFinished = vi.fn(async (_outcome: unknown) => {})
+    const innerCaller = new AbortController()
+    // The wait a previous navigation would abort installs the nested call's lease;
+    // the outer New Session then aborts that lease while entering its own wait.
+    b.layout.beginNavigation().addEventListener('abort', () => {
+      const prefetched = b.layout.beginNavigation()
+      prefetched.addEventListener('abort', () => {
+        b.uiWorkspace.startSession(undefined, {
+          operation: {
+            operationId: opId('inner'),
+            policyId: 'policy-b',
+            signal: innerCaller.signal,
+            onFinished: vi.fn(async (_outcome: unknown) => {}),
+          },
+        })
+      }, { once: true })
+    }, { once: true })
+
+    b.uiWorkspace.startSession(undefined, {
+      operation: { operationId: opId('outer'), policyId: 'policy-a', onFinished: outerFinished },
+    })
+    innerCaller.abort()
+    expect(outerFinished).not.toHaveBeenCalled()
+
+    b.workspaces.list.set(workspaceState([workspace('a')]))
+    b.sessions.create.mockResolvedValueOnce(sid('created'))
+    await b.uiWorkspace.openWorkspace(wid('a'))
+
+    expect(b.sessions.create.mock.calls.at(-1)?.[0]).toMatchObject({
+      operation: { kind: 'workspace', policyId: 'policy-a' },
+    })
+    await vi.waitFor(() => {
+      expect(outerFinished).toHaveBeenCalledWith({
+        kind: 'session',
+        sessionId: sid('created'),
+        workspaceId: wid('a'),
+        navigation: 'opened',
+      })
+    })
+  })
+
+  it('ends a waiting call when the New Session page navigation is cancelled', async () => {
+    const b = bench({ workspaces: workspaceState(), sessions: sessionState() })
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(undefined, {
+      operation: { operationId: opId('op-1'), onFinished: finished },
+    })
+
+    b.layout.selectPanel('other-panel' as MainPanelId)
+
+    await vi.waitFor(() => {
+      expect(finished).toHaveBeenCalledExactlyOnceWith({ kind: 'cancelled', reason: 'superseded' })
+    })
+    expect(b.sessions.create).not.toHaveBeenCalled()
+  })
+
+  it('reports a rejected preparation with the known Session and a notice', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState() })
+    b.sessions.create.mockResolvedValueOnce(sid('created'))
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(wid('a'), {
+      operation: {
+        operationId: opId('op-1'),
+        policyId: 'p',
+        onFinished: finished,
+        prepareSession: () => { throw new Error('prepare refused') },
+      },
+    })
+    await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+    expect(finished).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'failed',
+      stage: 'extension',
+      creation: 'known',
+      sessionId: sid('created'),
+    }))
+    expect(b.notify).toHaveBeenCalledWith({ kind: 'createFailed', message: 'prepare refused' })
+  })
+
+  it('reports superseded navigation after preparation without opening', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState() })
+    b.sessions.create.mockResolvedValueOnce(sid('created'))
+    const caller = new AbortController()
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(wid('a'), {
+      operation: {
+        operationId: opId('op-1'),
+        policyId: 'p',
+        signal: caller.signal,
+        onFinished: finished,
+        prepareSession: () => { caller.abort() },
+      },
+    })
+    await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+    expect(finished).toHaveBeenCalledWith({
+      kind: 'session',
+      sessionId: sid('created'),
+      workspaceId: wid('a'),
+      navigation: 'superseded',
+    })
+    expect(b.sessions.retain).not.toHaveBeenCalled()
+  })
+
+  it('reports an opening failure after the Session exists', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState() })
+    b.sessions.create.mockResolvedValueOnce(sid('created'))
+    b.sessions.binding.mockReturnValueOnce(undefined)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(wid('a'), {
+      prompt: 'draft needing preparation',
+      operation: { operationId: opId('op-1'), policyId: 'p', onFinished: finished },
+    })
+    await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+    expect(finished).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'failed',
+      stage: 'open',
+      creation: 'known',
+      sessionId: sid('created'),
+    }))
+  })
+
+  it('mints an operation identity when the caller omits one', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState() })
+    b.sessions.create.mockResolvedValueOnce(sid('created'))
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    b.uiWorkspace.startSession(wid('a'), { operation: { onFinished: finished } })
+    await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+    const request = b.sessions.create.mock.calls.at(-1)?.[0] as {
+      operation?: { operationId?: string; policyId?: string }
+    }
+    expect(request.operation?.operationId).toEqual(expect.any(String))
+    expect(request.operation?.operationId).not.toBe('')
+    expect(request.operation?.policyId).toBeUndefined()
+  })
+
+  it('delivers one outcome for a reused operation object', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState() })
+    b.sessions.create.mockResolvedValue(sid('created'))
+    const finished = vi.fn(async (_outcome: unknown) => {})
+    const operation = { operationId: opId('op-1'), policyId: 'p', onFinished: finished }
+    b.uiWorkspace.startSession(wid('a'), { operation })
+    await vi.waitFor(() => { expect(finished).toHaveBeenCalledOnce() })
+    b.uiWorkspace.startSession(wid('a'), { operation })
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0) })
+    expect(finished).toHaveBeenCalledOnce()
+  })
+
+  it('contains a synchronous outcome-handler throw and still opens', async () => {
+    const b = bench({ workspaces: workspaceState([workspace('a')]), sessions: sessionState() })
+    b.sessions.create.mockResolvedValueOnce(sid('created'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    b.uiWorkspace.startSession(wid('a'), {
+      operation: {
+        operationId: opId('op-1'),
+        policyId: 'p',
+        onFinished: () => { throw new Error('sync handler') },
+      },
+    })
+    await vi.waitFor(() => {
+      expect(warn).toHaveBeenCalledWith('new session outcome handler failed:', expect.any(Error))
+    })
+    expect(b.sessions.retain).toHaveBeenCalledOnce()
   })
 })

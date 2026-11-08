@@ -1,6 +1,7 @@
 /** Workspace archive and directory UI capability. */
 
 import { Service, type Context } from '@deepseek-ai/cordis'
+import { brandString } from '@deepseek-ai/dsh-brand'
 import type { AccessEffect, RemoteEndpoint } from '@deepseek-ai/dsh-api-remote-access/client'
 import type { ClientRemote, DirectoryListing, RemoteFailure } from '@deepseek-ai/dsh-api-remotes/client'
 import type {
@@ -11,6 +12,7 @@ import type {
   SessionTarget,
   SessionListState,
 } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionOperationId } from '@deepseek-ai/dsh-api-session-controller/types'
 // Type-only: pulls the `agentPreset` Session projection value into this program.
 import type {} from '@deepseek-ai/dsh-agent-preset-registry/types'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
@@ -21,6 +23,7 @@ import type {
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { DraftInitializationOptions } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import type { RowToast } from './contract/slots.ts'
 import { pinOrderAccounts, pinOrderSource } from './pin-order.ts'
 import type { WorkspaceViewStoreActions } from './stores.ts'
@@ -34,6 +37,112 @@ interface MainSelection {
 export interface StartSessionOptions extends DraftInitializationOptions {
   /** Agent preset the Session runs; the Host default when omitted. */
   readonly agentPreset?: string
+  /**
+   * Per-call participation and outcome delivery for this explicit New Session.
+   * The method still returns `void`; the Host's actual result arrives here.
+   */
+  readonly operation?: StartSessionOperation
+}
+
+/**
+ * Options for one Workspace connection that continues an open Session.
+ *
+ * Carrying `sourceSessionId` explicitly keeps the source's creation mode; the
+ * native New Session button and other plain creations omit it and stay
+ * ordinary.
+ */
+export interface OpenWorkspaceOptions extends Pick<StartSessionOptions, 'agentPreset'> {
+  /** Open Session whose Workspace pick this continues. */
+  readonly sourceSessionId?: SessionId
+}
+
+/** Stage of one `startSession` call a failure belongs to. */
+export type StartSessionStage = 'workspace' | 'create' | 'policy' | 'prepare' | 'open' | 'extension'
+
+/** What the caller learns once the Host has registered the actual Session. */
+export interface StartSessionPreparation {
+  /** Actual Session identity the Host created or reused. */
+  readonly sessionId: SessionId
+  /** Workspace that Session joined. */
+  readonly workspaceId: WorkspaceId
+}
+
+/**
+ * Final outcome of one `startSession` call, delivered once to `onFinished`
+ * after the native flow settles. It reports this call's facts only; a plugin's
+ * own business result stays with the plugin.
+ */
+export type StartSessionOutcome =
+  | {
+    readonly kind: 'session'
+    readonly sessionId: SessionId
+    readonly workspaceId: WorkspaceId
+    /** `opened` when this call still owned navigation when the Session arrived. */
+    readonly navigation: 'opened' | 'superseded'
+  }
+  | {
+    readonly kind: 'cancelled'
+    /** `caller` when the caller's signal ended, `superseded` when the flow was left. */
+    readonly reason: 'caller' | 'superseded'
+  }
+  | {
+    readonly kind: 'failed'
+    readonly stage: StartSessionStage
+    readonly message: string
+    /** Whether this call produced a Session. */
+    readonly creation: 'none' | 'known' | 'unknown'
+    /** Actual identity, present exactly when `creation` is `known`. */
+    readonly sessionId?: SessionId
+    readonly workspaceId?: WorkspaceId
+  }
+
+/**
+ * Per-call lifecycle of one explicit New Session. These values stay on the
+ * Client and never enter the Host creation request; only the opaque policy and
+ * operation identities cross the wire.
+ */
+export interface StartSessionOperation {
+  /** Registered Host creation policy that owns the resulting Session. */
+  readonly policyId?: string
+  /** Caller-minted identity of this one operation; replayed deliveries settle once. */
+  readonly operationId?: SessionOperationId
+  /** Explicitly refuse reuse of an existing blank Session for this call. */
+  readonly reuseBlank?: false
+  /** Caller lifetime; ending it withdraws the wait and any automatic opening. */
+  readonly signal?: AbortSignal
+  /**
+   * Confirm this call's actual result before the automatic opening. A throw
+   * keeps the known Session, cancels the opening, and reports `extension`.
+   * The Host has already registered the Session before this runs.
+   */
+  readonly prepareSession?: (preparation: StartSessionPreparation) => void | Promise<void>
+  /** Receive this call's final outcome exactly once; synchronous throws and asynchronous rejections are contained. */
+  readonly onFinished?: (outcome: StartSessionOutcome) => void | Promise<void>
+}
+
+/** Native actions this Client forwards in one Host creation request. */
+interface StartSessionCreateOperation {
+  readonly operationId: SessionOperationId
+  readonly kind: 'new' | 'workspace'
+  readonly policyId?: string
+  readonly sourceSessionId?: SessionId
+  readonly reuseBlank?: false
+}
+
+/** One New Session flow's reusable options: preset, reuse policy, and operation context. */
+interface CreationRequestOptions {
+  readonly agentPreset?: string
+  readonly operation?: StartSessionCreateOperation
+  readonly reuseBlank?: boolean
+}
+
+/** A New Session call waiting on the native New Session page for a Workspace. */
+interface PendingStartSession {
+  readonly operation: StartSessionOperation
+  /** Navigation lease created when the page was entered. */
+  readonly navigation: AbortSignal
+  /** Removes the abort listeners that discharge this wait. */
+  readonly detach: () => void
 }
 
 /** Workspace archive and directory operations consumed by Client UI domains. */
@@ -44,11 +153,14 @@ export interface UiWorkspace {
    */
   openSession(target: SessionTarget): void
   /**
-   * Connect a Workspace and open its Session unless a later navigation supersedes it.
+   * Connect a Workspace and open its Session unless a later navigation supersedes it,
+   * continuing the named source Session's creation-policy identity into the
+   * Workspace the operator picked.
    * @param workspaceId - target Workspace.
    * @param beforeOpen - optional synchronous preparation for the selected Session,
    * skipped after supersession; a throw aborts the open and releases the retained reference.
-   * @param options - choices for the Session the connection creates or reuses.
+   * @param options - choices for the Session the connection creates or reuses,
+   * plus the source Session whose Workspace selection this continues.
    * @returns completion; a superseded request may create a Session but does not open it.
    * @throws on failure; a refused creation is also shown through the Workspace
    * notice unless a later navigation or disposal superseded the request.
@@ -56,7 +168,7 @@ export interface UiWorkspace {
   openWorkspace(
     workspaceId: WorkspaceId,
     beforeOpen?: (sessionId: SessionId) => void,
-    options?: Pick<StartSessionOptions, 'agentPreset'>,
+    options?: OpenWorkspaceOptions,
   ): Promise<void>
   /**
    * Fork a Session without changing the current selection.
@@ -83,10 +195,14 @@ export interface UiWorkspace {
   /**
    * Open the Workspace blank `connectWorkspace` resolves, so New Session returns to that blank's
    * unsent draft. A creation the Host refuses is shown through the Workspace notice and leaves the
-   * selection as it was.
+   * selection as it was. With `options.operation`, the call reports its actual
+   * outcome through the supplied callbacks instead of returning it: no target
+   * Workspace keeps the call waiting on the native New Session page until a
+   * Workspace is picked or a later navigation ends the wait.
    * @param workspaceId - explicit target; absent inherits the current or most recent Workspace.
    * @param options - initial content, the blank's preset, and `whenDraftExists`, which decides
-   * whether existing text or attachments are kept, replaced, or followed by the prompt.
+   * whether existing text or attachments are kept, replaced, or followed by the prompt;
+   * `operation` adds this call's policy, lifetime, preparation, and final-outcome callbacks.
    */
   startSession(workspaceId?: WorkspaceId, options?: StartSessionOptions): void
   /**
@@ -164,8 +280,12 @@ export class DirectoryBrowseError extends Error {
 
 /** Implements Workspace archive and directory UI operations. */
 class UiWorkspaceService extends Service implements UiWorkspace {
-  /** The latest in-flight connection per Workspace; a request joins it only when both name the same preset. */
-  private readonly connecting = new Map<WorkspaceId, {
+  /**
+   * The latest in-flight connection per Workspace and operation identity; a
+   * request joins it only when both name the same preset (ordinary calls share
+   * only the Workspace key).
+   */
+  private readonly connecting = new Map<string, {
     readonly agentPreset: string | undefined
     readonly attempt: Promise<SessionId>
   }>()
@@ -175,6 +295,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   )
   private mainReference: SessionReference | undefined
   private restorationNavigation: AbortSignal | undefined
+  /** A New Session call waiting on the blank page for its Workspace. */
+  private pending: PendingStartSession | undefined
+  /** Calls whose final outcome was already delivered. */
+  private readonly finishedOperations = new WeakSet<StartSessionOperation>()
 
   /**
    * @param ctx - Client root Context.
@@ -198,6 +322,11 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       return () => {
         stop()
         this.lifetime.abort()
+        // The waiting caller is this Client module, which is releasing too:
+        // drop the wait without entering its callbacks.
+        const pending = this.pending
+        this.pending = undefined
+        pending?.detach()
         const reference = this.mainReference
         this.mainReference = undefined
         reference?.release()
@@ -210,42 +339,50 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   }
 
   /**
-   * @param reuse - preset for the reused or created blank.
+   * @param reuse - preset, reuse policy, and operation context for the reused
+   *   or created blank; absent creates a fresh Session.
    */
   private async connectBlank(
     workspaceId: WorkspaceId,
-    reuse: Pick<StartSessionOptions, 'agentPreset'>,
+    reuse: CreationRequestOptions | undefined,
   ): Promise<SessionId> {
     const workspace = this.workspaces.list.getSnapshot().items
       .find(item => item.workspaceId === workspaceId)
     if (workspace === undefined) {
       throw new Error(`uiWorkspace.connectWorkspace: unknown workspace ${workspaceId}`)
     }
-    const inflight = this.connecting.get(workspaceId)
+    if (reuse === undefined) return this.sessions.create({ workspaceId })
+    // An operation with its own identity never joins another operation's
+    // attempt; a repeated delivery of the same one does.
+    const key = creationKey(workspaceId, reuse)
+    const inflight = this.connecting.get(key)
     if (inflight !== undefined && inflight.agentPreset === reuse.agentPreset) return inflight.attempt
 
     const attempt = this.createInWorkspace(workspace, reuse).finally(() => {
-      if (this.connecting.get(workspaceId)?.attempt === attempt) this.connecting.delete(workspaceId)
+      if (this.connecting.get(key)?.attempt === attempt) this.connecting.delete(key)
     })
-    this.connecting.set(workspaceId, { agentPreset: reuse.agentPreset, attempt })
+    this.connecting.set(key, { agentPreset: reuse.agentPreset, attempt })
     return attempt
   }
 
   /** Name the first reusable member blank; a requested preset also skips blanks listing another preset. */
-  private createInWorkspace(workspace: WorkspaceView, options: Pick<StartSessionOptions, 'agentPreset'>): Promise<SessionId> {
+  private createInWorkspace(workspace: WorkspaceView, options: CreationRequestOptions): Promise<SessionId> {
     const archived = this.workspaces.list.getSnapshot().archivedSessionIds
     const sessions = this.sessions.list.getSnapshot()
-    const blank = sessions.ids.find((id) => {
-      const summary = sessions.byId[id]
-      const listed = summary?.projectionValues?.agentPreset
-      return summary !== undefined && summary.blank && summary.cwd === workspace.path
-        && workspace.sessionIds.includes(id) && !archived.includes(id)
-        && (options.agentPreset === undefined || typeof listed !== 'string' || listed === options.agentPreset)
-    })
+    const blank = options.reuseBlank === false
+      ? undefined
+      : sessions.ids.find((id) => {
+        const summary = sessions.byId[id]
+        const listed = summary?.projectionValues?.agentPreset
+        return summary !== undefined && summary.blank && summary.cwd === workspace.path
+          && workspace.sessionIds.includes(id) && !archived.includes(id)
+          && (options.agentPreset === undefined || typeof listed !== 'string' || listed === options.agentPreset)
+      })
     return this.createNamed({
       workspaceId: workspace.workspaceId,
       ...(blank === undefined ? {} : { sessionId: blank }),
       ...(options.agentPreset === undefined ? {} : { agentPreset: options.agentPreset }),
+      ...(options.operation === undefined ? {} : { operation: options.operation }),
     })
   }
 
@@ -258,6 +395,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     readonly workspaceId: WorkspaceId
     readonly sessionId?: SessionId
     readonly agentPreset?: string
+    readonly operation?: StartSessionCreateOperation
   }): Promise<SessionId> {
     const sessionId = await this.sessions.create(request)
     const named = request.sessionId
@@ -291,34 +429,207 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   }
 
   openSession(target: SessionTarget): void {
+    // Opening another Session leaves the New Session page: a call still
+    // waiting for a Workspace ends without creating anything.
+    this.supersedePending()
     this.replaceMain(target, this.lifetime.signal, 'reveal')
   }
 
+  /**
+   * Connect a Workspace and open its Session, continuing an explicitly named
+   * source Session's creation-policy identity into the picked Workspace.
+   * @param workspaceId - target Workspace.
+   * @param beforeOpen - optional synchronous preparation for the selected Session.
+   * @param options - choices for the Session the connection creates or reuses,
+   * plus the source Session that this pick continues.
+   * @returns completion; a superseded request may create a Session but does not open it.
+   */
   openWorkspace(
     workspaceId: WorkspaceId,
     beforeOpen?: (sessionId: SessionId) => void,
-    options: Pick<StartSessionOptions, 'agentPreset'> = {},
+    options: OpenWorkspaceOptions = {},
   ): Promise<void> {
-    return this.openWorkspaceSession(workspaceId, beforeOpen, options)
+    const { sourceSessionId, ...reuse } = options
+    // The source identity is explicit: the Host resolves its mode and
+    // registers the new blank under the same policy. The native New Session
+    // button does not pass a source, so it stays ordinary even while a
+    // policy-owned Session is open.
+    return this.openWorkspaceSession(workspaceId, beforeOpen, {
+      ...reuse,
+      ...(sourceSessionId === undefined ? {} : {
+        operation: {
+          operationId: newOperationId(),
+          kind: 'workspace' as const,
+          sourceSessionId,
+        },
+      }),
+    })
   }
 
+  /**
+   * Create or reuse the Workspace's blank Session and open it.
+   *
+   * A New Session call that entered the blank page without a Workspace is
+   * continued by the native Workspace pick that lands here: it keeps its
+   * navigation lease, policy, and callbacks instead of becoming an ordinary
+   * creation. Its callbacks receive the actual result, and a superseded
+   * navigation only withdraws the automatic opening.
+   */
   private async openWorkspaceSession(
     workspaceId: WorkspaceId,
     beforeOpen: ((sessionId: SessionId) => void) | undefined,
-    reuse: Pick<StartSessionOptions, 'agentPreset'>,
+    reuse: CreationRequestOptions | undefined,
+    operation?: StartSessionOperation,
   ): Promise<void> {
-    const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal])
+    const pending = operation === undefined ? this.takePending() : undefined
+    const active = operation ?? pending?.operation
+    const navigation = pending?.navigation
+      ?? AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal])
+    if (active === undefined) {
+      let sessionId: SessionId
+      try {
+        sessionId = await this.connectBlank(workspaceId, reuse)
+      } catch (error: unknown) {
+        // Reported here, not in connectWorkspace: startup restoration calls that
+        // directly and stays console-only.
+        if (!navigation.aborted) this.notify({ kind: 'createFailed', message: creationFailureMessage(error) })
+        throw error
+      }
+      if (navigation.aborted) return
+      this.replaceMain(sessionId, navigation, 'reveal', beforeOpen)
+      return
+    }
+
+    if (callerReleased(active)) {
+      this.deliver(active, { kind: 'cancelled', reason: 'caller' })
+      return
+    }
+    const creation = {
+      ...reuse,
+      operation: operationContext(active, pending === undefined ? 'new' : 'workspace'),
+    }
     let sessionId: SessionId
     try {
-      sessionId = await this.connectBlank(workspaceId, reuse)
+      sessionId = await this.connectBlank(workspaceId, creation)
     } catch (error: unknown) {
-      // Reported here, not in connectWorkspace: startup restoration calls that
-      // directly and stays console-only.
-      if (!navigation.aborted) this.notify({ kind: 'createFailed', message: creationFailureMessage(error) })
+      const outcome = creationFailureOutcome(error, workspaceId)
+      this.deliver(active, outcome)
+      if (!navigation.aborted) this.notify({ kind: 'createFailed', message: outcome.message })
       throw error
     }
-    if (navigation.aborted) return
-    this.replaceMain(sessionId, navigation, 'reveal', beforeOpen)
+
+    if (callerReleased(active)) {
+      // Created, but the caller released before preparation could start: the
+      // actual identity is still reported, and nothing opens on its own.
+      this.deliver(active, {
+        kind: 'failed',
+        stage: 'extension',
+        message: this.ctx.locale.bind('workspace')('draft.callerReleased'),
+        creation: 'known',
+        sessionId,
+        workspaceId,
+      })
+      return
+    }
+    if (active.prepareSession !== undefined) {
+      try {
+        await active.prepareSession({ sessionId, workspaceId })
+      } catch (error: unknown) {
+        this.deliver(active, {
+          kind: 'failed',
+          stage: 'extension',
+          message: error instanceof Error ? error.message : String(error),
+          creation: 'known',
+          sessionId,
+          workspaceId,
+        })
+        if (!navigation.aborted) this.notify({ kind: 'createFailed', message: creationFailureMessage(error) })
+        return
+      }
+    }
+
+    if (navigation.aborted || callerReleased(active)) {
+      this.deliver(active, { kind: 'session', sessionId, workspaceId, navigation: 'superseded' })
+      return
+    }
+    try {
+      this.replaceMain(sessionId, navigation, 'reveal', beforeOpen)
+    } catch (error: unknown) {
+      this.deliver(active, {
+        kind: 'failed',
+        stage: 'open',
+        message: error instanceof Error ? error.message : String(error),
+        creation: 'known',
+        sessionId,
+        workspaceId,
+      })
+      throw error
+    }
+    this.deliver(active, { kind: 'session', sessionId, workspaceId, navigation: 'opened' })
+  }
+
+  /**
+   * Deliver one outcome to its caller exactly once.
+   *
+   * A callback may be async even though the operation's result is already
+   * settled: its rejection is contained as diagnostics and never re-runs the
+   * creation or replaces the delivered outcome.
+   * @param operation - the call's lifecycle.
+   * @param outcome - final outcome to report.
+   */
+  private deliver(operation: StartSessionOperation, outcome: StartSessionOutcome): void {
+    if (this.finishedOperations.has(operation)) return
+    this.finishedOperations.add(operation)
+    try {
+      const settled = operation.onFinished?.(outcome)
+      if (settled !== undefined) {
+        void Promise.resolve(settled).catch((error: unknown) => {
+          console.warn('new session outcome handler failed:', error)
+        })
+      }
+    } catch (error: unknown) {
+      console.warn('new session outcome handler failed:', error)
+    }
+  }
+
+  /** Keep a New Session call waiting on the native New Session page. */
+  private retainPending(operation: StartSessionOperation): void {
+    const navigation = this.ctx.layout.beginNavigation()
+    const settle = (outcome: StartSessionOutcome): void => {
+      // A nested New Session can install its own wait before this one's caller
+      // aborts; only the current owner may clear it.
+      if (this.pending?.operation !== operation) return
+      this.pending = undefined
+      detach()
+      this.deliver(operation, outcome)
+    }
+    const onNavigation = (): void => { settle({ kind: 'cancelled', reason: 'superseded' }) }
+    const onCaller = (): void => { settle({ kind: 'cancelled', reason: 'caller' }) }
+    function detach(): void {
+      navigation.removeEventListener('abort', onNavigation)
+      operation.signal?.removeEventListener('abort', onCaller)
+    }
+    this.pending = { operation, navigation, detach }
+    navigation.addEventListener('abort', onNavigation, { once: true })
+    operation.signal?.addEventListener('abort', onCaller, { once: true })
+  }
+
+  /** End a call still waiting for a Workspace because another flow started. */
+  private supersedePending(): void {
+    const pending = this.pending
+    if (pending === undefined) return
+    this.pending = undefined
+    pending.detach()
+    this.deliver(pending.operation, { kind: 'cancelled', reason: 'superseded' })
+  }
+
+  /** Adopt the waiting call, if any, into the Workspace pick that continues it. */
+  private takePending(): PendingStartSession | undefined {
+    const pending = this.pending
+    if (pending === undefined) return undefined
+    this.pending = undefined
+    pending.detach()
+    return pending
   }
 
   async forkSession(
@@ -335,7 +646,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   }
 
   startSession(workspaceId?: WorkspaceId, options?: StartSessionOptions): void {
-    const { agentPreset, ...draft } = options ?? {}
+    const { agentPreset, operation, ...draft } = options ?? {}
     const draftOptions = options === undefined ? undefined : draft
     const initializeDraft = draftOptions !== undefined && (draftOptions.prompt !== undefined
       || (draftOptions.whenDraftExists ?? (draftOptions.clearPreviousDraft === true ? 'replace' : 'keep')) === 'replace')
@@ -349,6 +660,47 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       ? recentWorkspace(workspace.items, sessions.byId)
       : undefined
     const target = workspaceId ?? currentWorkspaceId ?? recent
+    const prepareBeforeOpen = initializeDraft
+      ? (id: SessionId): void => {
+        const binding = this.sessions.binding(id)
+        if (binding === undefined) this.draftPreparationFailed()
+        this.prepareDraft(binding, draftOptions)
+      }
+      : undefined
+
+    // Any explicit New Session request ends a previous call that is still
+    // waiting on the blank page for a Workspace.
+    this.supersedePending()
+
+    if (operation !== undefined) {
+      if (callerReleased(operation)) {
+        this.deliver(operation, { kind: 'cancelled', reason: 'caller' })
+        return
+      }
+      if (target === undefined) {
+        if (initializeDraft) {
+          const message = this.ctx.locale.bind('workspace')('draft.workspaceRequired')
+          this.notify({ kind: 'createFailed', message })
+          this.deliver(operation, { kind: 'failed', stage: 'workspace', message, creation: 'none' })
+          return
+        }
+        // No target yet: the native New Session page owns the choice, so this
+        // call stays alive until that page produces a Workspace or its
+        // navigation ends.
+        this.clearMain()
+        this.retainPending(operation)
+        return
+      }
+      const opening = this.openWorkspaceSession(target, prepareBeforeOpen, {
+        ...(agentPreset === undefined ? {} : { agentPreset }),
+        ...(operation.reuseBlank === false ? { reuseBlank: false } : {}),
+      }, operation)
+      void opening.catch(
+        (reason: unknown) => { console.warn('new session failed:', reason) },
+      )
+      return
+    }
+
     if (target === undefined) {
       if (initializeDraft) {
         this.notify({ kind: 'createFailed', message: this.ctx.locale.bind('workspace')('draft.workspaceRequired') })
@@ -357,11 +709,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       this.clearMain()
       return
     }
-    const opening = this.openWorkspace(target, initializeDraft ? (id) => {
-      const binding = this.sessions.binding(id)
-      if (binding === undefined) this.draftPreparationFailed()
-      this.prepareDraft(binding, draftOptions)
-    } : undefined, agentPreset === undefined ? {} : { agentPreset })
+    const opening = this.openWorkspace(target, prepareBeforeOpen, agentPreset === undefined ? {} : { agentPreset })
     void opening.catch(
       (reason: unknown) => { console.warn('new session failed:', reason) },
     )
@@ -571,6 +919,83 @@ function creationFailureMessage(error: unknown): string {
   const refused = sessionCreateErrorOf(error)
   if (refused !== undefined) return `${refused.rpcError.code}: ${refused.rpcError.message}`
   return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Map a creation failure onto this call's outcome, keeping the actual Session
+ * when the failure proves one exists.
+ * @param error - the failed creation attempt.
+ * @param workspaceId - the Workspace this call targeted.
+ * @returns a failure outcome carrying creation knowledge and stage.
+ */
+function creationFailureOutcome(error: unknown, workspaceId: WorkspaceId): Extract<StartSessionOutcome, { kind: 'failed' }> {
+  const message = creationFailureMessage(error)
+  const failure = sessionCreateErrorOf(error)?.rpcError
+  const target = { workspaceId }
+  if (failure === undefined) {
+    return { kind: 'failed', stage: 'create', message, creation: 'unknown', ...target }
+  }
+  switch (failure.code) {
+    case 'session/workspace-attach-failed':
+      return {
+        kind: 'failed',
+        stage: 'create',
+        message,
+        creation: 'known',
+        sessionId: failure.details.sessionId,
+        ...target,
+      }
+    case 'session/policy-prepare-failed':
+      return {
+        kind: 'failed',
+        stage: 'prepare',
+        message,
+        creation: 'known',
+        sessionId: failure.details.sessionId,
+        ...target,
+      }
+    case 'session/policy-unavailable':
+    case 'session/source-not-policy':
+    case 'session/policy-source-unknown':
+    case 'session/policy-conflict':
+    case 'session/policy-begin-failed':
+      return { kind: 'failed', stage: 'policy', message, creation: 'none', ...target }
+    case 'gateway/bad-request':
+    case 'workspace/not-found':
+      return { kind: 'failed', stage: 'create', message, creation: 'none', ...target }
+    default:
+      // A preset failure can arrive after the Session was persisted, so it
+      // proves neither creation nor its absence.
+      return { kind: 'failed', stage: 'create', message, creation: 'unknown', ...target }
+  }
+}
+
+/** Whether this call's caller lifetime already ended. */
+function callerReleased(operation: StartSessionOperation): boolean {
+  return operation.signal?.aborted === true
+}
+
+/** Host request fields for one call's policy operation. */
+function operationContext(
+  operation: StartSessionOperation,
+  kind: StartSessionCreateOperation['kind'],
+): StartSessionCreateOperation {
+  return {
+    operationId: operation.operationId ?? newOperationId(),
+    kind,
+    ...(operation.policyId === undefined ? {} : { policyId: operation.policyId }),
+    ...(operation.reuseBlank === false ? { reuseBlank: false } : {}),
+  }
+}
+
+/** One caller-minted operation identity. */
+function newOperationId(): SessionOperationId {
+  return brandString<SessionOperationId>(randomUUID())
+}
+
+/** In-flight key: ordinary calls share per Workspace, operations share per identity. */
+function creationKey(workspaceId: WorkspaceId, reuse: CreationRequestOptions): string {
+  return `${workspaceId}\u0000${reuse.operation?.operationId ?? 'native'}`
 }
 
 /** Stable tie-breaking follows Host Workspace order. */
