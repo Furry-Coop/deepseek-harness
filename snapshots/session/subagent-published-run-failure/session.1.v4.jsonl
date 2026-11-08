@@ -3,3 +3,4 @@
 {"type":"sandbox/mode","data":{"mode":"danger-full-access","source":"delegation"}}
 {"type":"approval/policy","data":{"policy":"never","source":"delegation"}}
 {"type":"permission/preset","data":{"preset":"danger-full-access"}}
+{"type":"agent/inbox/spliced","data":{"target":"next-step","start":0,"inserted":[],"outcome":"canceled","cause":"user","entrySeq":4}}

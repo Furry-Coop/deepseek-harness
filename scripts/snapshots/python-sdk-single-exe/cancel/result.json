@@ -1,0 +1,41 @@
+{
+  "sessionId": "{{session}}",
+  "finalResponse": "CANCEL_TURN_BEFORE_ABORT",
+  "finishReason": "aborted",
+  "eventTypes": [
+    "agent/inbox/spliced",
+    "turn/start",
+    "agent/inbox/spliced",
+    "step/start",
+    "system/message",
+    "user/message",
+    "user/message",
+    "request/header",
+    "request/context",
+    "session/title",
+    "session-log-deepseek/delivery-accepted",
+    "assistant/message",
+    "step/end",
+    "agent/inbox/spliced",
+    "turn/end"
+  ],
+  "notificationMethods": [
+    "session.event",
+    "session.status",
+    "session.event",
+    "session.event",
+    "session.event",
+    "session.event",
+    "session.event",
+    "session.event",
+    "session.event",
+    "session.event",
+    "session.event",
+    "session.event",
+    "session.event",
+    "session.event",
+    "session.event",
+    "session.event",
+    "session.status"
+  ]
+}

@@ -1,0 +1,7 @@
+version: 1
+scenario: sdk-cancel
+profile: sdk
+composition: default
+recording: authored
+header:
+  class: default

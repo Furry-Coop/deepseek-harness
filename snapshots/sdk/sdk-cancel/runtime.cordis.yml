@@ -1,0 +1,5 @@
+# Cancel the root session's first turn after it was answered, through a plugin
+# instead of a protocol RPC the SDK does not define.
+- insert:
+    - id: snapshot-cancel-on-turn-stopping
+      name: ./cancel-on-turn-stopping.mjs

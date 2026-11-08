@@ -213,6 +213,9 @@ const SDK_ASSERTIONS: Readonly<Record<string, SdkAssertions>> = {
   'ptc-cancel': {
     patches: [fileURLToPath(new URL('./ptc-cancel/runtime.cordis.yml', import.meta.url))],
   },
+  'sdk-cancel': {
+    patches: [fileURLToPath(new URL('./sdk-cancel/runtime.cordis.yml', import.meta.url))],
+  },
   'ptc-turn': {
     patches: [fileURLToPath(new URL('./ptc-turn/runtime.cordis.yml', import.meta.url))],
     expectedFinalResponse: 'CODE_ONE+CODE_TWO',
@@ -1204,6 +1207,52 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
       )
       reconcileCatalogCreationTimes(ordered.map(log => log.content), 'validate')
       const actualContext = contextOf(ordered, cwd)
+      if (scenario.name === 'sdk-cancel') {
+        const parent = ordered[0]
+        if (parent === undefined) throw new Error('sdk-cancel has no primary session log')
+        const events = records(parent.content)
+        const intents = events.filter(event => event.type === 'agent/inbox/spliced'
+          && (event.data as JsonObject).outcome === 'canceled'
+          && (event.data as JsonObject).cause === 'user')
+        expect(intents, 'sdk-cancel: exactly one durable cancellation intent').toHaveLength(1)
+        const intent = intents[0]!
+        const data = intent.data as JsonObject
+        expect(data).toMatchObject({ target: 'next-step', start: 0, inserted: [], outcome: 'canceled', cause: 'user' })
+        expect(data.removedCount, 'sdk-cancel: an empty queue removes nothing').toBeUndefined()
+        expect(data.entrySeq, 'sdk-cancel: the half-open entry cut is this record sequence').toBe(intent.seq)
+        const intentIndex = events.indexOf(intent)
+        expect(events[intentIndex - 1], 'sdk-cancel: the entry cut follows the answered step').toMatchObject({
+          type: 'step/end', data: { turn: 1, step: 1 },
+        })
+        expect(events[intentIndex + 1], 'sdk-cancel: the intent precedes its aborted turn/end').toMatchObject({
+          type: 'turn/end',
+          data: {
+            turn: 1,
+            reason: { kind: 'aborted', reason: { kind: 'hook', reason: 'snapshot cancellation' } },
+          },
+        })
+        const finalResult = results.at(-1)
+        if (finalResult === undefined) throw new Error('sdk-cancel has no run result')
+        const notified = finalResult.events.filter(event => event.type === 'agent/inbox/spliced'
+          && (event.data as JsonObject).outcome === 'canceled')
+        expect(notified, 'sdk-cancel: the SDK publishes the cancellation intent').toHaveLength(1)
+        expect(notified[0]).toEqual(intent)
+        const notifiedEnd = finalResult.events.find(event => event.type === 'turn/end')
+        expect(notifiedEnd, 'sdk-cancel: the SDK publishes the aborted ending').toMatchObject({
+          data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'hook', reason: 'snapshot cancellation' } } },
+        })
+        expect(finalResult.events.indexOf(notified[0]!),
+          'sdk-cancel: the notified intent precedes the notified aborted ending')
+          .toBeLessThan(finalResult.events.indexOf(notifiedEnd!))
+        const firstSeq = finalResult.events[0]?.seq
+        const observedStart = events.findIndex(event => event.seq === firstSeq)
+        expect(observedStart, 'sdk-cancel: the SDK subscription starts at a durable row').toBeGreaterThanOrEqual(0)
+        expect(finalResult.events, 'sdk-cancel: SDK session.event equals the durable V4 log')
+          .toEqual(events.slice(observedStart))
+        expect(finalResult.finalResponse, 'sdk-cancel: the answered response survives the abort')
+          .toBe('CANCEL_TURN_BEFORE_ABORT')
+      }
+
       if (scenario.name === 'command-attachments') {
         const parent = ordered[0]
         if (parent === undefined) throw new Error('command attachments have no persisted Session')

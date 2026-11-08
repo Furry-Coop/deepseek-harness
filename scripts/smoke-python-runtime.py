@@ -120,6 +120,13 @@ RECOVERY_CONTINUE_PROMPT = "Continue after the scheduler failure without repeati
 RECOVERY_TEXT = "SCHEDULER_RECOVERY_OK"
 RECOVERY_SESSION_ID = "scheduler-recovery"
 RECOVERY_CALL_IDS = ("scheduler-complete", "scheduler-fail", "scheduler-unstarted")
+CANCEL_PROMPT = "Cancel this turn at its first turn-stopping boundary."
+CANCEL_TEXT = "CANCEL_TURN_BEFORE_ABORT"
+CANCEL_SESSION_ID = "sdk-cancel"
+CANCEL_SNAPSHOT_DIRECTORY = (
+    Path(__file__).resolve().parent / "snapshots" / "python-sdk-single-exe" / "cancel"
+)
+CANCEL_SNAPSHOT_FILENAMES = ("result.json", "session.v4.jsonl")
 SNAPSHOT_WORKFLOW_SCRIPT = (
     "phase('Delegate')\n"
     f"const reply = await agent('{SNAPSHOT_WORKFLOW_CHILD_PROMPT}', {{ label: 'workflow-child' }})\n"
@@ -476,12 +483,15 @@ def completion_chunks(body: dict[str, object]) -> list[dict[str, object]]:
         PROFILE_PLUGIN_PROMPT,
         AUTHORING_PROMPT,
         DYNAMIC_TOOLS_PROMPT,
+        CANCEL_PROMPT,
         "check missing plugin package manager",
     }
     prompt = next(
         (candidate for candidate in user_prompts if candidate in scenario_prompts),
         message_text(latest.get("content")),
     )
+    if prompt == CANCEL_PROMPT:
+        return text_chunks(CANCEL_TEXT)
     if prompt.startswith(PLUGIN_INSTALL_PROMPT):
         assert_advertised_tool(body, "plugin_manager")
         target, _ = json.JSONDecoder().raw_decode(prompt.removeprefix(PLUGIN_INSTALL_PROMPT))
@@ -852,7 +862,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--scenario",
-        choices=("all", "sdk-default", "sdk-custom", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-fs-search", "sdk-spawn-node", "sdk-mcp", "sdk-snapshot", "sdk-recovery", "sdk-restart", "sdk-profile-plugin", "sdk-plugin-manager", "sdk-office", "sdk-authoring", "sdk-live", "runner", "direct"),
+        choices=("all", "sdk-default", "sdk-custom", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-fs-search", "sdk-spawn-node", "sdk-mcp", "sdk-snapshot", "sdk-recovery", "sdk-cancel", "sdk-restart", "sdk-profile-plugin", "sdk-plugin-manager", "sdk-office", "sdk-authoring", "sdk-live", "runner", "direct"),
         default="all",
     )
     parser.add_argument("--exe", type=Path)
@@ -871,10 +881,10 @@ def main() -> None:
         parser.error("--scenario sdk-profile-plugin requires --installed-wheel")
     if args.installed_wheel:
         args.exe = assert_installed_wheel_environment()
-    if args.scenario in {"all", "sdk-custom", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-fs-search", "sdk-spawn-node", "sdk-snapshot", "sdk-recovery", "sdk-restart", "sdk-office", "sdk-authoring", "sdk-plugin-manager", "runner", "direct"} and args.exe is None:
-        parser.error("--exe is required for custom, minimal, dynamic-tools, fs-search, spawn-node, snapshot, recovery, restart, office, runner, and direct scenarios")
-    if args.update_snapshots and args.scenario not in {"all", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-snapshot", "sdk-recovery", "sdk-restart", "sdk-authoring"}:
-        parser.error("--update-snapshots requires --scenario sdk-minimal, sdk-minimal-in-history, sdk-dynamic-tools, sdk-snapshot, sdk-recovery, sdk-restart, sdk-authoring, or all")
+    if args.scenario in {"all", "sdk-custom", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-fs-search", "sdk-spawn-node", "sdk-snapshot", "sdk-recovery", "sdk-cancel", "sdk-restart", "sdk-office", "sdk-authoring", "sdk-plugin-manager", "runner", "direct"} and args.exe is None:
+        parser.error("--exe is required for custom, minimal, dynamic-tools, fs-search, spawn-node, snapshot, recovery, cancel, restart, office, runner, and direct scenarios")
+    if args.update_snapshots and args.scenario not in {"all", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-snapshot", "sdk-recovery", "sdk-cancel", "sdk-restart", "sdk-authoring"}:
+        parser.error("--update-snapshots requires --scenario sdk-minimal, sdk-minimal-in-history, sdk-dynamic-tools, sdk-snapshot, sdk-recovery, sdk-cancel, sdk-restart, sdk-authoring, or all")
     if args.exe is not None and not args.exe.is_file():
         parser.error(f"runtime executable does not exist: {args.exe}")
 
@@ -935,6 +945,9 @@ def main() -> None:
         if args.scenario in {"all", "sdk-snapshot", "sdk-recovery"}:
             assert args.exe is not None
             smoke_sdk_scheduler_recovery(model.url, args.exe.resolve(), args.update_snapshots)
+        if args.scenario in {"all", "sdk-cancel"}:
+            assert args.exe is not None
+            smoke_sdk_cancel(model.url, args.exe.resolve(), args.update_snapshots)
         if args.scenario in {"all", "sdk-restart"}:
             assert args.exe is not None
             smoke_sdk_restart_snapshot(model.url, args.exe.resolve(), args.update_snapshots)
@@ -2095,6 +2108,139 @@ def smoke_sdk_scheduler_recovery(base_url: str, executable: Path, update_snapsho
         }
         compare_snapshot_files(
             files, update_snapshots, RECOVERY_SNAPSHOT_DIRECTORY, RECOVERY_SNAPSHOT_FILENAMES,
+        )
+
+
+def smoke_sdk_cancel(base_url: str, executable: Path, update_snapshots: bool) -> None:
+    """Cancel one answered turn through the packaged runtime and pin its persisted projection."""
+    from deepseek_harness import DeepSeekHarness
+
+    first_request = len(MockModelHandler.requests)
+    with tempfile.TemporaryDirectory(prefix="dsh-sdk-cancel-") as temporary:
+        root = Path(temporary).resolve()
+        dsh_home = root / "home"
+        user_home = root / "user-home"
+        user_home.mkdir()
+        sessions = dsh_home / "sessions"
+        base_patch = write_profile_patch(root, "base.patch.yml", sessions, [])
+        cancel_patch = write_profile_patch(root, "cancel.patch.yml", sessions, [
+            {"id": "session-title-llm", "disabled": True},
+            # The legacy TypeScript cancel composition disables this clock context;
+            # its sampled wall time would make the committed projection nondeterministic.
+            {"id": "time-context", "disabled": True},
+            {"insert": [{
+                "id": "snapshot-cancel-on-turn-stopping",
+                "name": (
+                    Path(__file__).resolve().parent.parent
+                    / "snapshots/sdk/sdk-cancel/cancel-on-turn-stopping.mjs"
+                ).as_uri(),
+            }]},
+        ])
+        with DeepSeekHarness(
+            provider="deepseek-official", model="smoke-model", cwd=str(root),
+            dsh_bin=str(executable), dsh_home=str(dsh_home),
+            patches=(str(base_patch), str(cancel_patch)),
+            env={
+                "DSH_PERMISSION_MODE": "danger-full-access", "DSH_TELEMETRY_DISABLED": "1",
+                # Keep instruction discovery inside the scenario: an inherited
+                # $DSH_AGENTS_HOME/AGENTS.md would add a durable baseline message.
+                "HOME": str(user_home), "USERPROFILE": str(user_home),
+                "DSH_AGENTS_HOME": str(user_home / ".agents"),
+            },
+            api_key="sk-keyless-smoke", base_url=base_url, request_timeout_seconds=60,
+        ) as harness:
+            result = harness.run(CANCEL_PROMPT, session_id=CANCEL_SESSION_ID)
+
+        requests = MockModelHandler.requests[first_request:]
+        if len(requests) != 1:
+            raise AssertionError(f"sdk cancel expected one answered request: {requests}")
+        if result.finish_reason != "aborted":
+            raise AssertionError(f"sdk cancel changed the turn outcome: {result.finish_reason}")
+        if result.final_response != CANCEL_TEXT:
+            raise AssertionError(f"sdk cancel lost the answered response: {result.final_response!r}")
+
+        logs = read_session_logs(sessions)
+        if set(logs) != {CANCEL_SESSION_ID}:
+            raise AssertionError(f"sdk cancel created unexpected durable sessions: {sorted(logs)}")
+        records = logs[CANCEL_SESSION_ID]
+        intents = [
+            record for record in records
+            if record.get("type") == "agent/inbox/spliced"
+            and isinstance(record.get("data"), dict)
+            and record["data"].get("outcome") == "canceled"
+            and record["data"].get("cause") == "user"
+        ]
+        if len(intents) != 1:
+            raise AssertionError(f"sdk cancel expected exactly one durable intent: {intents}")
+        intent = intents[0]
+        data = intent["data"]
+        if (data.get("target"), data.get("start"), data.get("inserted"), data.get("cause")) != (
+            "next-step", 0, [], "user",
+        ):
+            raise AssertionError(f"sdk cancel intent is not an empty user cancellation: {intent}")
+        if "removedCount" in data:
+            raise AssertionError(f"sdk cancel removed queued input: {intent}")
+        if data.get("entrySeq") != intent.get("seq"):
+            raise AssertionError(f"sdk cancel intent did not record its half-open entry cut: {intent}")
+        position = records.index(intent)
+        if position == 0 or records[position - 1].get("type") != "step/end":
+            raise AssertionError("sdk cancel entry cut does not follow the answered step")
+        ending = records[position + 1] if position + 1 < len(records) else None
+        if ending is None or ending.get("type") != "turn/end":
+            raise AssertionError("sdk cancel intent does not precede its turn end")
+        if ending.get("data", {}).get("reason") != {
+            "kind": "aborted",
+            "reason": {"kind": "hook", "reason": "snapshot cancellation"},
+        }:
+            raise AssertionError(f"sdk cancel recorded an unexpected turn ending: {ending}")
+        if not result.events:
+            raise AssertionError("sdk cancel collected no SDK session events")
+        notified = [
+            event for event in result.events
+            if event.get("type") == "agent/inbox/spliced"
+            and isinstance(event.get("data"), dict)
+            and event["data"].get("outcome") == "canceled"
+        ]
+        if notified != [intent]:
+            raise AssertionError("sdk cancel SDK notification differs from the durable intent")
+        notified_end = next((event for event in result.events if event.get("type") == "turn/end"), None)
+        if notified_end is None or notified_end.get("data", {}).get("reason") != {
+            "kind": "aborted",
+            "reason": {"kind": "hook", "reason": "snapshot cancellation"},
+        }:
+            raise AssertionError("sdk cancel SDK notification lost the aborted ending")
+        if result.events.index(notified[0]) >= result.events.index(notified_end):
+            raise AssertionError("sdk cancel notified the intent after its aborted ending")
+        first_seq = result.events[0].get("seq")
+        observed_start = next(
+            (index for index, record in enumerate(records) if record.get("seq") == first_seq),
+            None,
+        )
+        if observed_start is None or records[observed_start:] != result.events:
+            raise AssertionError("sdk cancel SDK notifications differ from the persisted V4 log")
+
+        replacements = [
+            *snapshot_directory_replacements(root, "{{cwd}}"),
+            (CANCEL_SESSION_ID, "{{session}}"),
+        ]
+        result_value = {
+            "sessionId": result.session_id,
+            "finalResponse": result.final_response,
+            "finishReason": result.finish_reason,
+            "eventTypes": [event.get("type") for event in result.events],
+            "notificationMethods": [notification.method for notification in result.notifications],
+        }
+        normalized_records = project_session_snapshot([
+            normalize_snapshot_value(record, replacements) for record in records
+        ])
+        content = render_jsonl(normalized_records)
+        files = {
+            "result.json": json.dumps(normalize_snapshot_value(result_value, replacements), indent=2) + "\n",
+            snapshot_session_filename(0, session_header_version(content, "sdk cancel")): content,
+        }
+        compare_snapshot_files(
+            files, update_snapshots, CANCEL_SNAPSHOT_DIRECTORY, CANCEL_SNAPSHOT_FILENAMES,
+            native_writer_output=True,
         )
 
 
