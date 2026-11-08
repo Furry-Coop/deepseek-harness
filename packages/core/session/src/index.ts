@@ -417,6 +417,18 @@ function invokeContainedSessionObservers(
   }
 }
 
+/** One control append waiting for the open publication, with its completion notification. */
+interface ControlWrite {
+  /** Composes the typed append this publication deferred. */
+  write(): void
+  /**
+   * Synchronous completion of this write: commit, failure, or refusal. The
+   * consumer uses it to release the ownership that covers the write and its
+   * synchronous observers.
+   */
+  settled?: (() => void) | undefined
+}
+
 /** All mutable lifecycle state for one exact store entry. */
 interface SessionEntry {
   readonly id: SessionId
@@ -425,12 +437,115 @@ interface SessionEntry {
   readonly emitCtx: Context
   announcement: 'pending' | 'dispatching' | 'complete' | 'failed'
   appending: boolean
+  /**
+   * The one control append waiting for the open publication to finish. A single
+   * slot bounds the deferral; a second request for the same publication is refused.
+   */
+  controlWrite?: ControlWrite | undefined
+  draining: boolean
   detachRequested: boolean
   detach(): void
 }
 
 /** Store-owned Sessions retain a null entry while unentered; absent keys are independent. */
 const attachments = new WeakMap<Session, SessionEntry | null>()
+
+/**
+ * Run the control append queued during one publication, before store detach.
+ *
+ * A nested append published from the control write clears `controlWrite` before
+ * it runs, so a write queued by that nested publication joins the tail of this
+ * drain instead of recursing. A throwing write is contained and logged, because
+ * the publication it repairs already committed and detach must still happen.
+ * The write's completion notification runs whether it committed or failed, so a
+ * consumer that holds ownership across the write releases it synchronously here.
+ * @param entry - the store entry whose publication just finished.
+ */
+function drainControlWrite(entry: SessionEntry): void {
+  if (entry.draining) return
+  entry.draining = true
+  try {
+    while (entry.controlWrite !== undefined) {
+      const record = entry.controlWrite
+      entry.controlWrite = undefined
+      try {
+        record.write()
+      } catch (error: unknown) {
+        entry.emitCtx.logger.warn(`session "${entry.id}": post-publication control write threw: ${String(error)}`)
+      } finally {
+        try {
+          record.settled?.()
+        } catch (error: unknown) {
+          entry.emitCtx.logger.warn(`session "${entry.id}": post-publication control settle threw: ${String(error)}`)
+        }
+      }
+    }
+  } finally {
+    entry.draining = false
+  }
+}
+
+/** Event types a control write may carry: surface events need metadata a deferred append cannot hold. */
+type ControlRecordType = Exclude<SessionEventType, SurfaceEventType>
+
+/**
+ * Commit one control record after the publication that owns the session, before
+ * store detach.
+ *
+ * A `session/event` observer cannot append reentrantly: the log rejects it to
+ * keep publication atomic. The agent loop's inbox is that observer when it
+ * records a user cancellation of an empty queue; it uses this host-internal
+ * operation to commit the record synchronously after the outermost publication
+ * finishes and before a deferred detach. When no publication is open the record
+ * is appended immediately, and an append failure reaches the caller.
+ *
+ * Ownership follows the store entry: an independent Session appends directly,
+ * while a detached, unentered, or not-yet-announced store Session gets no
+ * deferred write and the append itself refuses with the store's own error.
+ * The deferral is deliberately one typed append, not a callback queue: the
+ * store mints the write from the arguments, holds at most one per publication,
+ * and refuses a second request. Appends made after the publication returns
+ * follow the control record; the record is therefore an ordering fact for later
+ * input, not an ordering fence for the publication that queued it. Only the
+ * agent-loop inbox may call this function; `verify-control-write-callers`
+ * rejects any other production caller.
+ * @param session - session whose log receives the control record.
+ * @param type - event type of the control record; a surface event is rejected
+ *   at compile time because it needs surface metadata a deferred append cannot carry.
+ * @param data - record payload; the deferred append validates it like any other.
+ * @param settled - completion of this one write. The store calls it exactly once
+ *   and synchronously: after the record commits or fails, or before a refused
+ *   request throws. A consumer uses it to release ownership covering the write
+ *   and its synchronous observers; a deferred call therefore stays owned until
+ *   the publication drain runs the record.
+ * @throws when a control record is already waiting for this publication, or when
+ *   the immediate append is refused.
+ */
+export function appendAfterPublication<T extends ControlRecordType>(
+  session: Session,
+  type: T,
+  data: SessionEventMap[T],
+  settled?: () => void,
+): void {
+  const entry = attachments.get(session)
+  if (entry == null || (!entry.appending && !entry.draining)) {
+    try {
+      session.append<ControlRecordType>(type, data)
+    } finally {
+      settled?.()
+    }
+    return
+  }
+  if (entry.controlWrite !== undefined) {
+    // Refuse before the caller relies on a record that will never be written.
+    settled?.()
+    throw new Error(`session "${entry.id}" already has a control record waiting for this publication`)
+  }
+  entry.controlWrite = {
+    write: () => { session.append<ControlRecordType>(type, data) },
+    settled,
+  }
+}
 
 /**
  * Grammar of a {@link PluginRecordType}: `plugin:` followed by
@@ -906,7 +1021,12 @@ export class Session {
     } finally {
       if (entry !== undefined) {
         entry.appending = false
-        if (entry.detachRequested && entry.announcement !== 'dispatching') entry.detach()
+        // Commit the one control record this publication deferred before detach.
+        drainControlWrite(entry)
+        // A nested commit inside that drain must not detach while the outer
+        // drain still owns the control record or later nested appends.
+        if (entry.detachRequested && entry.announcement !== 'dispatching'
+          && !entry.draining && entry.controlWrite === undefined) entry.detach()
       }
     }
   }
@@ -1242,6 +1362,7 @@ export class SessionStore extends Service {
       emitCtx: this.ctx,
       announcement: 'pending',
       appending: false,
+      draining: false,
       detachRequested: false,
       detach: () => { this.detachEntered(entry) },
     }
@@ -1266,6 +1387,8 @@ export class SessionStore extends Service {
   /** Remove one exact entered session and emit its paired disposal when announced. */
   private detachEntered(entry: SessionEntry): void {
     entry.detachRequested = false
+    // No publication follows a detached session, so a pending control record is dropped.
+    entry.controlWrite = undefined
     // A stale capability cannot remove observers or storage belonging to a
     // later same-id lifecycle.
     /* v8 ignore next -- enter() rejects replacement while this single-shot detach capability is live. */

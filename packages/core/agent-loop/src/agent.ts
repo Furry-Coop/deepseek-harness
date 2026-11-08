@@ -37,7 +37,7 @@ import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import { ToolActivationError, ToolBatchExecutionError } from '@deepseek-ai/dsh-tools'
 import type { ResolvedToolSet } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
-import { ReactLoopInbox } from './inbox.ts'
+import { ReactLoopInbox, type PendingInboxSnapshot } from './inbox.ts'
 import { RuntimeContextProjection } from './runtime-context.ts'
 import { AssistantStreamAttempt } from './assistant-stream.ts'
 import { SystemPromptProjection } from './runtime-context.ts'
@@ -123,6 +123,24 @@ function abortedCancelCause(signal: AbortSignal): AgentCancelCause | undefined {
     default:
       return assertNever(cause)
   }
+}
+
+/**
+ * Report a failed pending-input snapshot without letting the report itself
+ * replace the cancellation guarantee that already ran.
+ *
+ * The rejected value is inspected only after the abort and clear window closed:
+ * `instanceof` can run a Proxy's `getPrototypeOf`, so it must not run first.
+ * @param rejected - the exact value the pending-input snapshot rejected with.
+ * @returns the original Error, or a fixed-message Error carrying the rejection as its cause.
+ */
+function snapshotFailure(rejected: unknown): Error {
+  try {
+    if (rejected instanceof Error) return rejected
+  } catch {
+    // A Proxy may reject prototype inspection; report it as the cause instead.
+  }
+  return new Error('agent inbox snapshot failed with a non-Error rejection', { cause: rejected })
 }
 
 /** Drives one session through turn and step boundaries. */
@@ -214,10 +232,22 @@ export class ReactLoopAgent implements Agent {
 
   cancel(cause: AgentCancelCause, options: CancelOptions = {}): void {
     const clearInbox = !options.keepInbox
-    // Capture the activity and its pending occurrences before any abort
-    // listener or discard notification can add later work.
+    // Capture the entry cut, activity, and its pending occurrences before any
+    // abort listener or discard notification can add later work.
+    const entrySeq = this.session.seq
     const activity = this.phase
-    const captured = clearInbox ? this.inbox.snapshotPending() : undefined
+    let captured: PendingInboxSnapshot | undefined
+    let captureFailure: { readonly rejected: unknown } | undefined
+    if (clearInbox) {
+      try {
+        captured = this.inbox.snapshotPending()
+      } catch (rejected: unknown) {
+        // Pending input cannot be captured safely. Record the exact rejection and
+        // report it only after the abort and clear window below closed: converting
+        // or inspecting the value can run caller code.
+        captureFailure = { rejected }
+      }
+    }
     // Drop only the wakes this cancellation owns, before any callback can latch
     // a newer one behind them.
     if (clearInbox && activity.kind !== 'idle') activity.wakes.clear()
@@ -240,13 +270,14 @@ export class ReactLoopAgent implements Agent {
       // Remove only the captured occurrences: abort listeners and discard
       // notifications may already have added input that must stay pending.
       if (captured !== undefined) {
-        this.inbox.cancelSnapshot(captured)
+        this.inbox.cancelSnapshot(captured, cause.kind === 'disposed' ? 'disposed' : 'user', entrySeq)
         removed = true
       }
     } finally {
       this.cancelDepth -= 1
       if (this.cancelDepth === 0) this.replayDeferredWakes(removed, cause)
     }
+    if (captureFailure !== undefined) throw snapshotFailure(captureFailure.rejected)
   }
 
   /**

@@ -78,8 +78,17 @@ export interface Inbox {
   /** Input awaiting the next step boundary. */
   readonly nextStep: readonly UserMessage[]
 
-  /** Durably cancel all pending input, clearing next-step before next-turn. */
-  clear(): void
+  /**
+   * Durably cancel pending input, clearing next-step before next-turn.
+   *
+   * The call captures both lists before it runs any callback, so input inserted
+   * by a discard notification survives. A user cancellation with nothing
+   * captured still leaves one durable intent fact so recovery can tell a user
+   * cancellation from a crash that lost the queue.
+   * @param cause - the stable caller intent recorded with the cancellation; a
+   *   plain clear is a user cancellation unless the disposing lifecycle says otherwise.
+   */
+  clear(cause?: 'user' | 'disposed'): void
 
   /**
    * Append one message to a pending list.

@@ -5,6 +5,7 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import SessionStore, {
   adoptSessionEvent,
+  appendAfterPublication,
   SESSION_FORMAT_VERSION,
   Session,
   SessionEvent,
@@ -1729,8 +1730,224 @@ describe('SessionStore', () => {
     expect(ctx.sessions.get(session.id)).toBeUndefined()
   })
 
-  it('observes async session/created rejection without rolling back or starving peers', async () => {
+  it('commits a control write immediately when no publication is open', async () => {
     const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const session = ctx.sessions.prepare(SessionId('control-write-immediate'))
+    ctx.sessions.enter(session)
+    ctx.sessions.announce(session)
+    const order: string[] = []
+    ctx.on('session/event', (subject, event) => {
+      if (subject === session && event.type === 'request/context') order.push('record')
+    })
+
+    appendAfterPublication(session, 'request/context', { provider: 'immediate', model: 'model' }, () => {
+      order.push('settled')
+    })
+
+    expect(order).toEqual(['record', 'settled'])
+    expect(session.snapshotEvents().map(event => event.type)).toEqual(['request/context'])
+  })
+
+  it('commits one control write after the open publication, before detach', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const session = ctx.sessions.prepare(SessionId('control-write-after-publication'))
+    const detach = ctx.sessions.enter(session)
+    ctx.sessions.announce(session)
+    const order: string[] = []
+    let attachedDuringControl = false
+    ctx.on('session/event', (subject, event) => {
+      if (subject !== session) return
+      if (event.type === 'turn/start') {
+        order.push('publication')
+        appendAfterPublication(session, 'request/context', { provider: 'control', model: 'model' }, () => {
+          order.push('settled')
+        })
+        detach()
+        return
+      }
+      if (event.type !== 'request/context') return
+      order.push('control')
+      attachedDuringControl = ctx.sessions.get(session.id) === session
+    })
+
+    session.append('turn/start', { turn: 1 })
+
+    expect(order).toEqual(['publication', 'control', 'settled'])
+    expect(attachedDuringControl).toBe(true)
+    expect(session.snapshotEvents().map(event => event.type)).toEqual(['turn/start', 'request/context'])
+    expect(ctx.sessions.get(session.id)).toBeUndefined()
+  })
+
+  it('contains a throwing control-write settlement after committing the record and detaching', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const session = ctx.sessions.prepare(SessionId('control-write-settle-failure'))
+    const detach = ctx.sessions.enter(session)
+    ctx.sessions.announce(session)
+    const warnings: string[] = []
+    ctx.logger.warn = ((message: unknown) => { warnings.push(String(message)) }) as typeof ctx.logger.warn
+    const order: string[] = []
+    ctx.on('session/event', (subject, event) => {
+      if (subject !== session) return
+      if (event.type === 'turn/start') {
+        appendAfterPublication(session, 'request/context', { provider: 'control', model: 'model' }, () => {
+          order.push('settle')
+          throw new Error('settle failed')
+        })
+        detach()
+        return
+      }
+      if (event.type === 'request/context') order.push('control')
+    })
+
+    session.append('turn/start', { turn: 1 })
+
+    // The deferred write commits before its settle callback throws, so the
+    // warning is the only consequence and the deferred detach still runs.
+    expect(order).toEqual(['control', 'settle'])
+    expect(warnings).toEqual([
+      'session "control-write-settle-failure": post-publication control settle threw: Error: settle failed',
+    ])
+    expect(session.snapshotEvents().map(event => event.type)).toEqual(['turn/start', 'request/context'])
+    expect(ctx.sessions.get(session.id)).toBeUndefined()
+  })
+
+  it('refuses a second control write and settles both requests', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const session = ctx.sessions.prepare(SessionId('control-write-bounded'))
+    ctx.sessions.enter(session)
+    ctx.sessions.announce(session)
+    const settledOrder: string[] = []
+    ctx.on('session/event', (subject, event) => {
+      if (subject !== session || event.type !== 'turn/start') return
+      appendAfterPublication(session, 'request/context', { provider: 'first', model: 'model' }, () => {
+        settledOrder.push('first')
+      })
+      expect(() => {
+        appendAfterPublication(session, 'request/context', { provider: 'second', model: 'model' }, () => {
+          settledOrder.push('refused')
+        })
+      }).toThrow(/already has a control record/)
+    })
+
+    session.append('turn/start', { turn: 1 })
+
+    expect(settledOrder).toEqual(['refused', 'first'])
+    expect(session.snapshotEvents().map(event => event.type)).toEqual(['turn/start', 'request/context'])
+  })
+
+  it('contains a throwing observer of the deferred control write and still settles and detaches', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const session = ctx.sessions.prepare(SessionId('control-write-observer-throws'))
+    const detach = ctx.sessions.enter(session)
+    ctx.sessions.announce(session)
+    const warnings: string[] = []
+    ctx.logger.warn = ((message: unknown) => { warnings.push(String(message)) }) as typeof ctx.logger.warn
+    let settled = 0
+    ctx.on('session/event', (subject, event) => {
+      if (subject !== session) return
+      if (event.type === 'turn/start') {
+        appendAfterPublication(session, 'request/context', { provider: 'control', model: 'model' }, () => {
+          settled += 1
+        })
+        detach()
+        return
+      }
+      if (event.type === 'request/context') throw new Error('intent observer threw')
+    })
+
+    session.append('turn/start', { turn: 1 })
+
+    expect(settled).toBe(1)
+    expect(session.snapshotEvents().map(event => event.type)).toEqual(['turn/start', 'request/context'])
+    expect(ctx.sessions.get(session.id)).toBeUndefined()
+    expect(warnings).toContain(
+      'session "control-write-observer-throws": session/event listener threw: Error: intent observer threw',
+    )
+  })
+
+  it('settles a control write whose append fails and still detaches', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const session = ctx.sessions.prepare(SessionId('control-write-failure'))
+    const detach = ctx.sessions.enter(session)
+    ctx.sessions.announce(session)
+    const warnings: string[] = []
+    ctx.logger.warn = ((message: unknown) => { warnings.push(String(message)) }) as typeof ctx.logger.warn
+    let settled = 0
+    ctx.on('session/event', (subject, event) => {
+      if (subject !== session || event.type !== 'turn/start') return
+      // A non-finite number is valid TypeScript but not lossless JSON, so the
+      // deferred append fails after the publication it repairs already committed.
+      appendAfterPublication(session, 'agent/inbox/spliced', { target: 'next-step', start: Number.NaN, inserted: [] }, () => {
+        settled += 1
+      })
+      detach()
+    })
+
+    session.append('turn/start', { turn: 1 })
+
+    expect(warnings.some(message => message.includes('post-publication control write threw'))).toBe(true)
+    expect(settled).toBe(1)
+    expect(session.snapshotEvents().map(event => event.type)).toEqual(['turn/start'])
+    expect(ctx.sessions.get(session.id)).toBeUndefined()
+  })
+
+  it('refuses a control write for an unannounced, failed, or detached store entry', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const unentered = ctx.sessions.prepare(SessionId('control-write-unentered'))
+    let unenteredSettled = 0
+    expect(() => {
+      appendAfterPublication(unentered, 'request/context', { provider: 'p', model: 'm' }, () => {
+        unenteredSettled += 1
+      })
+    }).toThrow(/cannot append outside a SessionStore/)
+    expect(unenteredSettled).toBe(1)
+
+    const unannounced = ctx.sessions.prepare(SessionId('control-write-unannounced'))
+    ctx.sessions.enter(unannounced)
+    let unannouncedSettled = 0
+    expect(() => {
+      appendAfterPublication(unannounced, 'request/context', { provider: 'p', model: 'm' }, () => {
+        unannouncedSettled += 1
+      })
+    }).toThrow(/cannot append before session\/created completes/)
+    expect(unannouncedSettled).toBe(1)
+
+    const failed = ctx.sessions.prepare(SessionId('control-write-failed-announcement'))
+    ctx.sessions.enter(failed)
+    const veto = (): never => { throw new Error('creation vetoed') }
+    const stopVeto = ctx.on('session/created', veto)
+    expect(() => { ctx.sessions.announce(failed) }).toThrow('creation vetoed')
+    stopVeto()
+    let failedSettled = 0
+    expect(() => {
+      appendAfterPublication(failed, 'request/context', { provider: 'p', model: 'm' }, () => {
+        failedSettled += 1
+      })
+    }).toThrow(/cannot append before session\/created completes/)
+    expect(failedSettled).toBe(1)
+
+    const detached = ctx.sessions.prepare(SessionId('control-write-detached'))
+    const detach = ctx.sessions.enter(detached)
+    ctx.sessions.announce(detached)
+    detach()
+    let detachedSettled = 0
+    expect(() => {
+      appendAfterPublication(detached, 'request/context', { provider: 'p', model: 'm' }, () => {
+        detachedSettled += 1
+      })
+    }).toThrow(/cannot append outside a SessionStore/)
+    expect(detachedSettled).toBe(1)
+    expect(ctx.sessions.get(detached.id)).toBeUndefined()
+  })
+
+  it('observes async session/created rejection without rolling back or starving peers', async () => {    const ctx = new Context()
     await ctx.plugin(SessionStore)
     const warnings: string[] = []
     ctx.logger.warn = ((message: unknown) => { warnings.push(String(message)) }) as typeof ctx.logger.warn

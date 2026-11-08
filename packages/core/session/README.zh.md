@@ -120,6 +120,10 @@ session.deriveMessages()         // the derived model history
 
 每次追加都会使用共享的迭代式 `snapshotJsonValue()` 流程，对每个嵌套值只读取、校验并复制一次，因此有状态的 getter 无法给校验提供一个值、给存储提供另一个值。非无损 JSON 载荷（BigInt、循环、稀疏数组、`-0`、特殊原型）会在追加位置被拒绝，先于任何后端刷新。追加路径会构造每个 `SessionSeq`；surface 事件还会校验标记形态、被引用的源事件序号，以及替换的完整遮蔽节点覆盖。
 
+### 发布后控制写入
+
+`session/event` 观察者不能追加：日志会拒绝重入追加，以保持本次发布原子。`appendAfterPublication(session, type, data, settled?)` 是宿主内部的唯一例外，只服务那一个必须为正在发布的事件记录控制事实的生产者——agent loop 的持久取消记录。它只接受一条带类型的追加，不接受回调：没有发布进行时立即追加，失败直接抛给调用方；发布期间存储最多保留一条记录，并在最外层发布结束后、任何延迟 detach 之前同步提交。同一发布期间的第二次请求会被拒绝。可选的 `settled` 完成通知恰好运行一次，且在记录提交或失败之后、或拒绝抛出之前同步运行，因此消费方在同一 tick 就释放覆盖该写入及其自身观察者的所有权，而不是推迟到微任务。延迟追加失败只记录日志，不跳过 detach。所有权跟随存储条目：独立 Session 直接追加；已脱离、未进入或尚未公告完成的存储 Session 不会获得延迟写入，追加本身会拒绝。只有 agent-loop 的 inbox 可以调用它；`verify-control-write-callers` 拒绝其他生产调用方。
+
 ### 共享恢复逻辑
 
 `ToolCallRecovery` 从已提交事件中跟踪尚无结果的请求，不保留事件历史。AgentLoop 观察实时步骤；崩溃恢复与 fork 种子构造通过 `openTurnClosers` 回放各自的前缀。实时失败与崩溃恢复默认使用中断结果文案；fork 构造传入 fork 原因，以选择其专用的重试指引。调用方在关闭步骤之前追加恢复结果（[参考](../agent-loop/README.zh.md)）。

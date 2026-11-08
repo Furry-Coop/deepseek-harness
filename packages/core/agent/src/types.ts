@@ -113,6 +113,32 @@ declare module '@deepseek-ai/dsh-session/types' {
       removedCount?: number
       inserted: UserMessage[]
       outcome?: 'canceled'
+      /**
+       * The stable caller intent behind a cancellation, recorded even when the
+       * cancellation removed no pending input (an intent-only splice with no
+       * `removedCount`). {@link Agent.cancel} records `disposed` for ordinary
+       * agent teardown and `user` for every other cause; this writer omits it
+       * on a mutation that is not a lifecycle cancellation. Consumers use it to
+       * tell a normal disposal's discard apart from work the user cancelled,
+       * including a cancel issued after the queue was already empty. A record
+       * written before this member existed also omits it, so its absence is
+       * unknown history rather than proof that no cancellation occurred.
+       */
+      cause?: 'user' | 'disposed'
+      /**
+       * Session log length captured at cancellation entry, before the
+       * cancellation ran any abort listener or clear notification. A pending
+       * occurrence inserted at or after this seq is later input that the
+       * cancellation did not target, even when the cancellation's own splice is
+       * logged after it. Consumers take this cut instead of the splice's seq;
+       * an older cancellation therefore cannot claim a later turn's claim or
+       * first build. This writer omits it on a mutation that is not a lifecycle
+       * cancellation, and a record written before it existed carries none at
+       * all: without `entrySeq` the exact entry cut cannot be rebuilt, so
+       * consumers must not substitute the intent's own seq or read the absence
+       * as a non-cancellation.
+       */
+      entrySeq?: import('@deepseek-ai/dsh-session/types').SessionLogOffset
     }
     /**
      * Complete model selection that applies from the next model step until a

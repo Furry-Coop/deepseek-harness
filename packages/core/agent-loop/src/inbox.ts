@@ -6,7 +6,13 @@
 
 import type { MessageId } from '@deepseek-ai/dsh-llm'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
-import type { Session, SessionEventMap, UserMessage } from '@deepseek-ai/dsh-session'
+import {
+  appendAfterPublication,
+  type Session,
+  type SessionEventMap,
+  type SessionLogOffset,
+  type UserMessage,
+} from '@deepseek-ai/dsh-session'
 import type {
   AgentEventDispatch,
   Inbox as InboxContract,
@@ -87,6 +93,9 @@ interface CommittedSplice {
  * @param dispatch - agent-scoped notifications for Inbox lifecycle events.
  */
 export class ReactLoopInbox implements InboxContract {
+  /** One deferred post-append cancel intent; the log rejects reentrant appends. */
+  #queuedIntent = false
+
   constructor(
     private readonly readState: () => InboxState,
     private readonly session: Session,
@@ -109,10 +118,18 @@ export class ReactLoopInbox implements InboxContract {
     return state['next-turn'].length > 0 || state['next-step'].length > 0
   }
 
-  /** Durably cancel all pending input, clearing next-step before next-turn. */
-  clear(): void {
-    this.splice('next-step', 0, this.nextStep.length, [])
-    this.splice('next-turn', 0, this.nextTurn.length, [])
+  /**
+   * Durably cancel all pending input, clearing next-step before next-turn.
+   *
+   * The call captures both lists before it runs any callback, so input inserted
+   * by a discard notification survives. A user cancellation with nothing
+   * captured still leaves one durable intent fact so recovery can tell a user
+   * cancellation from a crash that lost the queue.
+   * @param cause - the stable caller intent recorded with the cancellation; a
+   *   plain clear is a user cancellation unless the disposing lifecycle says otherwise.
+   */
+  clear(cause: 'user' | 'disposed' = 'user'): void {
+    this.cancelSnapshot(this.snapshotPending(), cause, this.session.seq)
   }
 
   /**
@@ -130,14 +147,26 @@ export class ReactLoopInbox implements InboxContract {
    * Removal matches each captured occurrence by message identity in the lane as
    * it exists now, so input inserted by a cancellation callback survives and a
    * changed length cannot delete it. Both lanes come from one snapshot taken
-   * before any callback ran.
+   * before any callback ran. The caller records the session log length it
+   * captured at cancellation entry; a record may be appended after later input,
+   * so readers use that cut rather than the splice's own seq.
    * @param snapshot - pending input captured before the cancellation callbacks ran.
+   * @param cause - whether a user or the disposing lifecycle cancelled the work.
+   * @param entrySeq - session log length captured at cancellation entry.
    */
-  cancelSnapshot(snapshot: PendingInboxSnapshot): void {
+  cancelSnapshot(
+    snapshot: PendingInboxSnapshot,
+    cause: 'user' | 'disposed',
+    entrySeq: SessionLogOffset,
+  ): void {
     const step = new Map(snapshot.step.map(message => [message.id, message] as const))
     const turn = new Map(snapshot.turn.map(message => [message.id, message] as const))
-    this.cancelLane('next-step', step)
-    this.cancelLane('next-turn', turn)
+    if (step.size === 0 && turn.size === 0) {
+      if (cause === 'user') this.recordCancelIntent(entrySeq)
+      return
+    }
+    this.cancelLane('next-step', step, cause, entrySeq)
+    this.cancelLane('next-turn', turn, cause, entrySeq)
   }
 
   /**
@@ -148,8 +177,15 @@ export class ReactLoopInbox implements InboxContract {
    * message object — is later input and is not removed by this snapshot again.
    * @param target - pending list to modify.
    * @param captured - occurrences from {@link snapshotPending}, keyed by identity.
+   * @param cause - cancellation intent recorded on each splice.
+   * @param entrySeq - session log length captured at cancellation entry.
    */
-  private cancelLane(target: InboxTarget, captured: Map<MessageId, UserMessage>): void {
+  private cancelLane(
+    target: InboxTarget,
+    captured: Map<MessageId, UserMessage>,
+    cause: 'user' | 'disposed',
+    entrySeq: SessionLogOffset,
+  ): void {
     for (;;) {
       const lane = this.readState()[target]
       const start = lane.findIndex(message => captured.get(message.id) === message)
@@ -160,8 +196,41 @@ export class ReactLoopInbox implements InboxContract {
         count += 1
       }
       for (const message of lane.slice(start, start + count)) captured.delete(message.id)
-      this.mutate(target, start, count, [], true)
+      this.mutate(target, start, count, [], true, { cause, entrySeq })
     }
+  }
+
+  /**
+   * Record a user cancellation that removed no pending input; fold leaves state unchanged.
+   *
+   * A cancellation raised from inside an append's session observer cannot
+   * append reentrantly, so {@link appendAfterPublication} commits the record
+   * synchronously after that publication and before detach. The guard covers
+   * exactly this write and its synchronous observers: the store settles the
+   * write after it commits, fails, or is refused, so a later cancellation in the
+   * same synchronous stack records its own entry cut. A failing or refused write
+   * releases the guard too, instead of silencing later cancellations.
+   * The record is an empty splice, so it removes no later input. The splice
+   * records `entrySeq` for the caller's entry cut; that cut, not the splice seq,
+   * distinguishes input the cancellation targeted from later input.
+   * Window: a physical kill between the reentrant cancel and the
+   * post-publication commit loses the record.
+   * @param entrySeq - session log length captured at cancellation entry.
+   */
+  private recordCancelIntent(entrySeq: SessionLogOffset): void {
+    if (this.#queuedIntent) return
+    this.#queuedIntent = true
+    const splice: SessionEventMap['agent/inbox/spliced'] = {
+      target: 'next-step',
+      start: 0,
+      inserted: [],
+      outcome: 'canceled',
+      cause: 'user',
+      entrySeq,
+    }
+    appendAfterPublication(this.session, 'agent/inbox/spliced', splice, () => {
+      this.#queuedIntent = false
+    })
   }
 
   /**
@@ -278,13 +347,23 @@ export class ReactLoopInbox implements InboxContract {
     return undefined
   }
 
-  /** Commit one normalized mutation and publish its live events. */
+  /**
+   * Commit one normalized mutation and publish its live events.
+   * @param target - pending list to mutate.
+   * @param start - splice position.
+   * @param deleteCount - maximum number of messages to remove.
+   * @param inserted - messages to insert at the resolved position.
+   * @param discardRemoved - whether removed messages are cancellation discards.
+   * @param cancellation - cancellation intent and entry cut for a lifecycle removal; absent for ordinary splices.
+   * @returns messages removed by the splice.
+   */
   private mutate(
     target: InboxTarget,
     start: number,
     deleteCount: number,
     inserted: UserMessage[],
     discardRemoved: boolean,
+    cancellation?: { cause: 'user' | 'disposed'; entrySeq: SessionLogOffset },
   ): CommittedSplice {
     const state = this.readState()
     const inbox = state[target]
@@ -314,6 +393,13 @@ export class ReactLoopInbox implements InboxContract {
       ...(actualDeleteCount === 0 ? {} : { removedCount: actualDeleteCount }),
       inserted,
       ...(outcome === undefined ? {} : { outcome }),
+      // Only a cancellation carries the caller's stable intent and entry cut;
+      // explicit removals and replacements stay byte-identical to the released
+      // event.
+      ...(outcome === undefined || cancellation === undefined ? {} : {
+        cause: cancellation.cause,
+        entrySeq: cancellation.entrySeq,
+      }),
     }
     const removed = inbox.slice(actualStart, actualStart + actualDeleteCount)
     const event = this.session.append('agent/inbox/spliced', splice)

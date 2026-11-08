@@ -72,7 +72,7 @@ const handle = await ctx.agents.create({
 
 ### 一个步骤做什么
 
-每个步骤都会发送会话的派生历史——最新的非空 `system/message` 节点是有效提示词，渲染提示词为空时则没有系统消息——及其可见工具 schema；模型的工具调用经过受守卫的工具流水线，每个被接纳的事实都会在下一步据此派生之前追加到会话日志。循环把完整的原始调用批次传给 `ctx.tools.execute()`；内置执行器保留模型顺序的结果和独占屏障。取消是协作式的：`agent.cancel()` 在进入时捕获当前活动与两份待处理列表，只中止该活动，并在未设置 `keepInbox` 时只删除捕获到的待处理输入，因此由 abort 监听器或清除通知投递的输入继续待处理并唤醒下一次活动；被取消的流会终结已送达用户的文本。锁存在被中止活动或维护任务上的唤醒，只有在其本次投递插入的那条待处理 occurrence 仍待处理时才会兑现；移除该 occurrence 会撤回锁存唤醒，其余留存输入继续作为被动输入等待之后真实到达的唤醒（[决策](../../../.agents/notes/implemented/architecture/2026-11-08-wakeup-insertion-identity.zh.md)）。
+每个步骤都会发送会话的派生历史——最新的非空 `system/message` 节点是有效提示词，渲染提示词为空时则没有系统消息——及其可见工具 schema；模型的工具调用经过受守卫的工具流水线，每个被接纳的事实都会在下一步据此派生之前追加到会话日志。循环把完整的原始调用批次传给 `ctx.tools.execute()`；内置执行器保留模型顺序的结果和独占屏障。取消是协作式的：`agent.cancel()` 在进入时捕获当前活动与两份待处理列表，只中止该活动，并在未设置 `keepInbox` 时只删除捕获到的待处理输入，因此由 abort 监听器或清除通知投递的输入继续待处理并唤醒下一次活动；被取消的流会终结已送达用户的文本。锁存在被中止活动或维护任务上的唤醒，只有在其本次投递插入的那条待处理 occurrence 仍待处理时才会兑现；移除该 occurrence 会撤回锁存唤醒，其余留存输入继续作为被动输入等待之后真实到达的唤醒（[决策](../../../.agents/notes/implemented/architecture/2026-11-08-wakeup-insertion-identity.zh.md)）。每条取消 splice 都会记录 `cause`——除 dispose 外的原因写 `user`，销毁写 `disposed`——以及进入时捕获的日志长度 `entrySeq`；空队列的用户取消仍会写一条意图 splice，并通过会话宿主内部的 `appendAfterPublication`，在观察到取消的那次发布之后、detach 之前提交（[决策](../../../.agents/notes/implemented/architecture/2026-11-08-inbox-cancellation-control-commit.zh.md)）。
 
 -----
 

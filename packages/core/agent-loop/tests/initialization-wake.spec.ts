@@ -177,12 +177,25 @@ describe('Agent initialization wakeup', () => {
     }
   })
 
-  it('leaves an idle cancellation with nothing to clear a no-op for the next prompt', async () => {
+  it('records one intent for an idle cancellation with nothing to clear without arming a turn', async () => {
     const ctx = await harness(new MockAdapter([textResponse('later reply')]))
     try {
       const agent = await ctx.agentLoop.create(SessionId('idle-cancel-noop'), { provider: 'mock', model: 'mock' })
+      const entrySeq = agent.session.seq
       agent.cancel({ kind: 'user' })
-      expect(agent.session.snapshotEvents().filter(event => event.type === 'agent/inbox/spliced')).toEqual([])
+      // The empty queue leaves one durable intent at the entry cut; no turn,
+      // claim, or dispatch is armed, so the next prompt still runs.
+      const splices = agent.session.snapshotEvents().filter(event => event.type === 'agent/inbox/spliced')
+      expect(splices).toHaveLength(1)
+      expect(splices[0]?.type === 'agent/inbox/spliced' && splices[0].data).toEqual({
+        target: 'next-step',
+        start: 0,
+        inserted: [],
+        outcome: 'canceled',
+        cause: 'user',
+        entrySeq,
+      })
+      expect(agent.session.snapshotEvents().some(event => event.type === 'turn/start')).toBe(false)
       agent.followup(message('still runs'))
       await agent.whenIdle()
       expect(userTexts(agent)).toEqual(['still runs'])

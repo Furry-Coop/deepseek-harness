@@ -272,14 +272,24 @@ describe('ReactLoopInbox', () => {
     expect(agent.inbox.nextTurn).toEqual([])
     expect(agent.inbox.nextStep).toEqual([])
     expect(discarded).toEqual([nextStep, nextTurn])
-    expect(session.snapshotEvents().slice(beforeClear).map(event => event.type === 'agent/inbox/spliced'
+    // Each cleared lane records the caller's cause and the entry cut captured
+    // when the clear began.
+    const cleared = session.snapshotEvents().slice(beforeClear).map(event => event.type === 'agent/inbox/spliced'
       ? event.data
-      : event.type)).toEqual([
-      { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' },
-      { target: 'next-turn', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' },
+      : event.type)
+    expect(cleared).toEqual([
+      { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled', cause: 'user', entrySeq: beforeClear },
+      { target: 'next-turn', start: 0, removedCount: 1, inserted: [], outcome: 'canceled', cause: 'user', entrySeq: beforeClear },
     ])
 
+    // Clearing an already empty queue leaves one intent record with its own cut.
     agent.inbox.clear()
-    expect(session.snapshotEvents()).toHaveLength(beforeClear + 2)
+    expect(session.snapshotEvents().slice(beforeClear + 2).map(event => event.type === 'agent/inbox/spliced'
+      ? event.data
+      : event.type)).toEqual([
+      { target: 'next-step', start: 0, inserted: [], outcome: 'canceled', cause: 'user', entrySeq: beforeClear + 2 },
+    ])
+    agent.inbox.clear('disposed')
+    expect(session.snapshotEvents()).toHaveLength(beforeClear + 3)
   })
 })

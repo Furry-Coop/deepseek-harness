@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-11-08-inbox-cancellation-control-commit.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-08-inbox-cancellation-control-commit.md
+/agent-note-commit-the-durable-cancellation-record-through-a-host-internal-control-write:
+  en: faa0da0132ff3b7f
+  zh: cede0a4bc477f43a
+/agent-note-commit-the-durable-cancellation-record-through-a-host-internal-control-write/problem:
+  en: 1e075c0c586fedd2
+  zh: d88d34e35bf0435b
+/agent-note-commit-the-durable-cancellation-record-through-a-host-internal-control-write/decision:
+  en: ab2310a2d6cf6aa2
+  zh: 2b753d625ea413fe
+/agent-note-commit-the-durable-cancellation-record-through-a-host-internal-control-write/alternatives-considered:
+  en: 43596df1ff62649b
+  zh: 3088ba7844a45d17
+/agent-note-commit-the-durable-cancellation-record-through-a-host-internal-control-write/testing:
+  en: ed97fb3d15eb2e4e
+  zh: 4b36e1a3959a4fcb
+/agent-note-commit-the-durable-cancellation-record-through-a-host-internal-control-write/consequences:
+  en: 4cfa586186b28121
+  zh: 8ab0625fbc11c376

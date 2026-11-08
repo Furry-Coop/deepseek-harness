@@ -134,11 +134,18 @@ it.each(['loop', 'root'] as const)('unloads %s while a background child is stopp
   expect(child.status).toBe('idle')
   const events = child.session.snapshotEvents()
   expect(events.at(-1)).toMatchObject({ type: 'turn/end', data: { reason: { kind: 'aborted' } } })
-  expect(events.filter(event => event.type === 'agent/inbox/spliced' && event.data.outcome === 'canceled'))
-    .toMatchObject([
-      { data: { target: 'next-step', removedCount: 1 } },
-      { data: { target: 'next-turn', removedCount: 1 } },
-    ])
+  const canceled = events.filter(event => event.type === 'agent/inbox/spliced' && event.data.outcome === 'canceled')
+  expect(canceled.slice(0, 2)).toMatchObject([
+    { data: { target: 'next-step', removedCount: 1, cause: 'disposed' } },
+    { data: { target: 'next-turn', removedCount: 1, cause: 'disposed' } },
+  ])
+  // A later cancellation that finds the queue already clear still records its
+  // own intent, whose cut is that cancellation's own entry position.
+  for (const event of canceled.slice(2)) {
+    if (event.type !== 'agent/inbox/spliced') throw new Error('expected an inbox splice')
+    expect(event.data).toMatchObject({ target: 'next-step', cause: 'user', entrySeq: event.seq })
+    expect(event.data.removedCount).toBeUndefined()
+  }
   if (owner === 'loop') {
     const verify = new Context()
     onTestFinished(async () => { await verify.fiber.dispose() })

@@ -23,7 +23,7 @@ The [format references](persistence-changes/historical-formats/README.md) cover 
 | `JsonlHeaderLine` | header | `18ee62b8900a4c3d046700f05d7a4d49d6cab2a660a020c87481d1603dd8bd4f` | [`HeaderLine`](#persistence-type-sha256-18ee62b8900a4c3d046700f05d7a4d49d6cab2a660a020c87481d1603dd8bd4f) |
 | `SessionEventEnvelope` | envelope | `5776e5553ff2dfe3f5bc202dbb1e7c9f93e35a531aebb7764c23b2b6153b2ccc` | [`union (3 variants)`](#persistence-type-sha256-5776e5553ff2dfe3f5bc202dbb1e7c9f93e35a531aebb7764c23b2b6153b2ccc) |
 | `event:agent-preset/selected` | event | `a10c17474eaf2ddab7095a099e0fe3d046fc18e56c3e344fc8894c05ff9ef97b` | [`{ type: "agent-preset/selected" }`](#persistence-type-sha256-a10c17474eaf2ddab7095a099e0fe3d046fc18e56c3e344fc8894c05ff9ef97b) |
-| `event:agent/inbox/spliced` | event | `cdf988172b589b230f2bce868489def1bb575eb0501076ac757a8f369ac5c64e` | [`{ type: "agent/inbox/spliced" }`](#persistence-type-sha256-cdf988172b589b230f2bce868489def1bb575eb0501076ac757a8f369ac5c64e) |
+| `event:agent/inbox/spliced` | event | `52a43832678a8f67acd18e84481ee23a29744f9040f73275fb4f2d8c5fa1f283` | [`{ type: "agent/inbox/spliced" }`](#persistence-type-sha256-52a43832678a8f67acd18e84481ee23a29744f9040f73275fb4f2d8c5fa1f283) |
 | `event:approval/asked` | event | `3bfeb47b58606f4661904bc723da612782214c463d01e6d61cd6d6193d7374e1` | [`{ type: "approval/asked" }`](#persistence-type-sha256-3bfeb47b58606f4661904bc723da612782214c463d01e6d61cd6d6193d7374e1) |
 | `event:approval/decided` | event | `bb1ab3d08f49a9f3b265f844cd78d5c49813062a7b34b54904b426f85d0ff6e3` | [`{ type: "approval/decided" }`](#persistence-type-sha256-bb1ab3d08f49a9f3b265f844cd78d5c49813062a7b34b54904b426f85d0ff6e3) |
 | `event:approval/policy` | event | `26718e15e7e395bce9642dba5bbe09b3b1a4ce2213d20d566cd9207d7fc5fb78` | [`{ type: "approval/policy" }`](#persistence-type-sha256-26718e15e7e395bce9642dba5bbe09b3b1a4ce2213d20d566cd9207d7fc5fb78) |
@@ -182,6 +182,32 @@ Sources: [`packages/core/session/src/types.ts:439`](../packages/core/session/src
   removedCount?: number
   inserted: UserMessage[]
   outcome?: 'canceled'
+  /**
+   * The stable caller intent behind a cancellation, recorded even when the
+   * cancellation removed no pending input (an intent-only splice with no
+   * `removedCount`). {@link Agent.cancel} records `disposed` for ordinary
+   * agent teardown and `user` for every other cause; this writer omits it
+   * on a mutation that is not a lifecycle cancellation. Consumers use it to
+   * tell a normal disposal's discard apart from work the user cancelled,
+   * including a cancel issued after the queue was already empty. A record
+   * written before this member existed also omits it, so its absence is
+   * unknown history rather than proof that no cancellation occurred.
+   */
+  cause?: 'user' | 'disposed'
+  /**
+   * Session log length captured at cancellation entry, before the
+   * cancellation ran any abort listener or clear notification. A pending
+   * occurrence inserted at or after this seq is later input that the
+   * cancellation did not target, even when the cancellation's own splice is
+   * logged after it. Consumers take this cut instead of the splice's seq;
+   * an older cancellation therefore cannot claim a later turn's claim or
+   * first build. This writer omits it on a mutation that is not a lifecycle
+   * cancellation, and a record written before it existed carries none at
+   * all: without `entrySeq` the exact entry cut cannot be rebuilt, so
+   * consumers must not substitute the intent's own seq or read the absence
+   * as a non-cancellation.
+   */
+  entrySeq?: import('@deepseek-ai/dsh-session/types').SessionLogOffset
 }
 ```
 
@@ -700,7 +726,7 @@ Source: [`packages/llm/llm-retry/src/types.ts:11`](../packages/llm/llm-retry/src
 'model/selection': ModelSelection
 ```
 
-Source: [`packages/core/agent/src/types.ts:121`](../packages/core/agent/src/types.ts)
+Source: [`packages/core/agent/src/types.ts:147`](../packages/core/agent/src/types.ts)
 
 ### `permission/*`
 
@@ -5491,7 +5517,11 @@ SHA-256: `938f7c7357bc403ea3b281a9dd016939df7a0880fc8db12612585be574d0d615`
 
 <a id="persistence-type-sha256-0657d3ca5ac4e7bf79b00bcf860b1c7159d01a9da137497221ec2f1776e365f7"></a>
 
+<a id="persistence-type-packagescoresessionsrctypestssessionlogoffset"></a>
+
 <a id="persistence-type-packagescoresessionsrctypestssessionseq"></a>
+
+<a id="persistence-type-sessionlogoffset"></a>
 
 <a id="persistence-type-sessionseq"></a>
 
@@ -5499,7 +5529,7 @@ SHA-256: `938f7c7357bc403ea3b281a9dd016939df7a0880fc8db12612585be574d0d615`
 
 SHA-256: `0657d3ca5ac4e7bf79b00bcf860b1c7159d01a9da137497221ec2f1776e365f7`
 
-Sources: [`packages/core/session/src/types.ts:33`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:33`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:48`](../packages/core/session/src/types.ts)
 
 `number`
 
@@ -5671,6 +5701,17 @@ One of:
 
 - `"error"`
 - `"success"`
+
+<a id="persistence-type-sha256-21998f6589ca9311383fd5fa7ba7a520eed29c1246db65e95443f4cc556d9300"></a>
+
+### `union (2 variants)`
+
+SHA-256: `21998f6589ca9311383fd5fa7ba7a520eed29c1246db65e95443f4cc556d9300`
+
+One of:
+
+- `"disposed"`
+- `"user"`
 
 <a id="persistence-type-sha256-50cf02d875f8a1f1411f4a6fbcffab9120ccef5f74a47331fbf29480e5f68f48"></a>
 
@@ -5927,6 +5968,24 @@ Sources: [`packages/context/session-reference/src/types.ts:18`](../packages/cont
 SHA-256: `df843efd87c78cf8de98f8e0d0216956cd568d0d0e56a22c853663e274aa1a18`
 
 Array of [`{ capturedFormatVersion?, capturedThroughSeq, compacted, inputIndex, … }`](#persistence-type-sha256-4f91f187baeabef5c7950c4780d31bbe39f3345dff591a6cf26ac7e135ac1cf4).
+
+<a id="persistence-type-sha256-bc4f35ea3f75547a13ce07b9e5e42792783d86497333a3ad1641cda753b05c13"></a>
+
+### `{ cause?, entrySeq?, inserted, outcome?, … }`
+
+SHA-256: `bc4f35ea3f75547a13ce07b9e5e42792783d86497333a3ad1641cda753b05c13`
+
+Sources: [`packages/core/agent/src/types.ts:110`](../packages/core/agent/src/types.ts)
+
+| Property | Presence | Type |
+|---|---|---|
+| `cause` | optional | [`union (2 variants)`](#persistence-type-sha256-21998f6589ca9311383fd5fa7ba7a520eed29c1246db65e95443f4cc556d9300) |
+| `entrySeq` | optional | `number` |
+| `inserted` | required | [`UserMessage[]`](#persistence-type-sha256-7c203f3d4dfa6638ff2601247cc7ca5d46731d2c614aa61217475b9eb1fbd0b3) |
+| `outcome` | optional | `"canceled"` |
+| `removedCount` | optional | `number` |
+| `start` | required | `number` |
+| `target` | required | [`InboxTarget`](#persistence-type-sha256-96f4a9c81fc0f940ef71528a8cc66731ae4cf1f40d79680c5fe3c39f96d7723c) |
 
 <a id="persistence-type-sha256-0e10d7c096b47e61defe372a5fc8bd37d835199410eac44367f95c45082498bd"></a>
 
@@ -6424,22 +6483,6 @@ Sources: [`packages/core/session/src/types.ts:435`](../packages/core/session/src
 | Property | Presence | Type |
 |---|---|---|
 | `inherited` | optional | `true` |
-
-<a id="persistence-type-sha256-d4d960185026266ed7bd127be1e252234689e8b4890c7c2677a644ba58f35401"></a>
-
-### `{ inserted, outcome?, removedCount?, start, … }`
-
-SHA-256: `d4d960185026266ed7bd127be1e252234689e8b4890c7c2677a644ba58f35401`
-
-Sources: [`packages/core/agent/src/types.ts:110`](../packages/core/agent/src/types.ts)
-
-| Property | Presence | Type |
-|---|---|---|
-| `inserted` | required | [`UserMessage[]`](#persistence-type-sha256-7c203f3d4dfa6638ff2601247cc7ca5d46731d2c614aa61217475b9eb1fbd0b3) |
-| `outcome` | optional | `"canceled"` |
-| `removedCount` | optional | `number` |
-| `start` | required | `number` |
-| `target` | required | [`InboxTarget`](#persistence-type-sha256-96f4a9c81fc0f940ef71528a8cc66731ae4cf1f40d79680c5fe3c39f96d7723c) |
 
 <a id="persistence-type-sha256-1ccb56061942f5ccb0d30c9e4f2883b9d115ff906560029de637b61d3cde896d"></a>
 
@@ -8094,17 +8137,17 @@ SHA-256: `a10c17474eaf2ddab7095a099e0fe3d046fc18e56c3e344fc8894c05ff9ef97b`
 | `time` | required | `number` |
 | `type` | required | `"agent-preset/selected"` |
 
-<a id="persistence-type-sha256-cdf988172b589b230f2bce868489def1bb575eb0501076ac757a8f369ac5c64e"></a>
+<a id="persistence-type-sha256-52a43832678a8f67acd18e84481ee23a29744f9040f73275fb4f2d8c5fa1f283"></a>
 
 <a id="persistence-type-eventagentinboxspliced"></a>
 
 ### `{ type: "agent/inbox/spliced" }`
 
-SHA-256: `cdf988172b589b230f2bce868489def1bb575eb0501076ac757a8f369ac5c64e`
+SHA-256: `52a43832678a8f67acd18e84481ee23a29744f9040f73275fb4f2d8c5fa1f283`
 
 | Property | Presence | Type |
 |---|---|---|
-| `data` | required | [`{ inserted, outcome?, removedCount?, start, … }`](#persistence-type-sha256-d4d960185026266ed7bd127be1e252234689e8b4890c7c2677a644ba58f35401) |
+| `data` | required | [`{ cause?, entrySeq?, inserted, outcome?, … }`](#persistence-type-sha256-bc4f35ea3f75547a13ce07b9e5e42792783d86497333a3ad1641cda753b05c13) |
 | `ignorable` | optional | `true` |
 | `seq` | required | `number` |
 | `time` | required | `number` |

@@ -288,8 +288,17 @@ interface Inbox {
   /** Input awaiting the next step boundary. */
   readonly nextStep: readonly UserMessage[]
 
-  /** Durably cancel all pending input, clearing next-step before next-turn. */
-  clear(): void
+  /**
+   * Durably cancel pending input, clearing next-step before next-turn.
+   *
+   * The call captures both lists before it runs any callback, so input inserted
+   * by a discard notification survives. A user cancellation with nothing
+   * captured still leaves one durable intent fact so recovery can tell a user
+   * cancellation from a crash that lost the queue.
+   * @param cause - the stable caller intent recorded with the cancellation; a
+   *   plain clear is a user cancellation unless the disposing lifecycle says otherwise.
+   */
+  clear(cause?: 'user' | 'disposed'): void
 
   /**
    * Append one message to a pending list.
@@ -342,7 +351,7 @@ interface Inbox {
 type InboxTarget = 'next-turn' | 'next-step'
 ```
 
-Every pending occurrence is its `UserMessage`; `MessageId` is the sole identity. The structural `Inbox` methods record normalized durable `agent/inbox/spliced` mutations and reject duplicate pending ids. `replace(messageId, newMessage)` and `remove(messageId)` locate the pending message across both lists; replacement may change identity and emits the old message as discarded followed by the new message as inserted. Ordinary removals and `clear()` are cancellations. At a step boundary, dsh-agent-loop's package-internal `ReactLoopInbox` removes the proposed batch — all `next-step` input plus, at a turn boundary, one `next-turn` message — through pure deletion splices without discarded notifications, then emits per-message claimed notifications. Loop-only pending detection and claiming are not part of `Agent.inbox`. The `AgentLoop` service registers the standard `inbox` projection before publishing its factory; its cell is the sole live state, and the same fold serves cold consumers even when no Agent exists. The fold rejects unsafe or out-of-range splice coordinates and duplicate identities across both lists, identifying malformed durable history by event seq. Consumers following one message use the exact `agent/inbox/inserted`, `claimed`, and `discarded` notifications.
+Every pending occurrence is its `UserMessage`; `MessageId` is the sole identity. The structural `Inbox` methods record normalized durable `agent/inbox/spliced` mutations and reject duplicate pending ids. `replace(messageId, newMessage)` and `remove(messageId)` locate the pending message across both lists; replacement may change identity and emits the old message as discarded followed by the new message as inserted. Ordinary removals and `clear()` both record `outcome: 'canceled'`; a lifecycle `clear()` additionally records `cause` — `user` for every non-disposal cause and `disposed` for teardown — and `entrySeq`, the log length captured at entry, while an explicit `remove()` or `replace()` keeps the released fields without either member. An empty-queue user `clear()` writes one intent splice that removes nothing. At a step boundary, dsh-agent-loop's package-internal `ReactLoopInbox` removes the proposed batch — all `next-step` input plus, at a turn boundary, one `next-turn` message — through pure deletion splices without discarded notifications, then emits per-message claimed notifications. Loop-only pending detection and claiming are not part of `Agent.inbox`. The `AgentLoop` service registers the standard `inbox` projection before publishing its factory; its cell is the sole live state, and the same fold serves cold consumers even when no Agent exists. The fold rejects unsafe or out-of-range splice coordinates and duplicate identities across both lists, identifying malformed durable history by event seq. Consumers following one message use the exact `agent/inbox/inserted`, `claimed`, and `discarded` notifications.
 
 Cancellation:
 

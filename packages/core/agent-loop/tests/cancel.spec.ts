@@ -1475,8 +1475,8 @@ describe('Agent.cancel()', () => {
       })
       const inbox = agent.inbox as ReactLoopInbox
       const real = inbox.cancelSnapshot.bind(inbox)
-      const failure = vi.spyOn(inbox, 'cancelSnapshot').mockImplementation((snapshot) => {
-        real(snapshot)
+      const failure = vi.spyOn(inbox, 'cancelSnapshot').mockImplementation((snapshot, cause, entrySeq) => {
+        real(snapshot, cause, entrySeq)
         throw new Error('forced removal failure')
       })
       try {
@@ -1636,6 +1636,51 @@ describe('Agent.cancel()', () => {
       expect(agent.inbox.nextTurn).toHaveLength(1)
       expect(agent.inbox.nextTurn[0]).not.toBe(withdrawn)
       expect(agent.inbox.nextTurn[0]?.content).toEqual([{ type: 'text', text: 'passive replacement' }])
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it.each([
+    ['a value that cannot be rendered as text', (): object => ({ __proto__: null })],
+    ['undefined', () => undefined],
+  ])('keeps the abort guarantee when the failed capture rejects with %s', async (_label, rejection) => {
+    const adapter = new MockAdapter(['hang', textResponse('after rejected snapshot failure')])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('snapshot-rejection'), { provider: 'mock', model: 'mock' })
+      send(agent, 'go')
+      await expect.poll(() => adapter.requests.length).toBe(1)
+      const old = createUserMessage({ content: [{ type: 'text', text: 'old pending' }], source: { kind: 'user' } })
+      agent.inject(old)
+      const signal = adapter.requests[0]?.signal
+      if (signal === undefined) throw new Error('model request omitted its turn signal')
+      const later = createUserMessage({ content: [{ type: 'text', text: 'after rejected snapshot failure' }], source: { kind: 'user' } })
+      signal.addEventListener('abort', () => { agent.followup(later) }, { once: true })
+      // The rejection is inspected only after the abort, so a value with no
+      // usable string conversion or identity cannot skip the abort guarantee.
+      const rejectionValue: unknown = rejection()
+      const snapshot = vi.spyOn(agent.inbox as ReactLoopInbox, 'snapshotPending')
+        .mockImplementation(() => { throw rejectionValue })
+      let reported: unknown
+      try {
+        agent.cancel({ kind: 'user' })
+      } catch (error: unknown) {
+        reported = error
+      } finally {
+        snapshot.mockRestore()
+      }
+      if (!(reported instanceof Error)) throw new Error('cancel did not report the snapshot failure as an Error')
+      // The cause marker distinguishes a reported rejection from an empty one,
+      // including a thrown undefined.
+      expect(Object.hasOwn(reported, 'cause')).toBe(true)
+      expect(reported.cause).toBe(rejectionValue)
+      // The failed capture leaves the old occurrence pending instead of
+      // guessing, and the abort guarantee still stopped the captured activity.
+      expect(agent.inbox.nextStep.map(message => message.id)).toEqual([old.id])
+      await agent.whenIdle()
+      expect(adapter.requests).toHaveLength(2)
+      expect(userTexts(agent)).toEqual(['go', 'old pending', 'after rejected snapshot failure'])
     } finally {
       await ctx.fiber.dispose()
     }
