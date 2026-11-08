@@ -18,6 +18,8 @@ Status: implemented
 
 释放请求独立于 abort 原因记录在该活动上。`runMaintenance()` 只在活动未被释放时兑现其锁存唤醒，因此 Factory 失败路径（`agent.cancel({ kind: 'disposed' }, { keepInbox: true })`）保留队列，不启动轮次、领取或请求；回滚随后在待处理 splice 完整的情况下释放写句柄。发布成功则保留队列并兑现锁存；普通 `runMaintenance()` 任务在拒绝后仍会兑现之后真实到达的唤醒。
 
+该请求也会被外层取消窗口记住。空闲用户取消若在自己的 discarded 通知中释放 agent，其锁存的唤醒在深度归零时继续停驻而不会重放；在同步 `turn/end` 观察者中到达的请求会让驱动器保持空闲：自然下一轮既不会替换已中止的 controller，也不会领取 `keepInbox` 保留的输入。
+
 ## 考虑过的替代方案
 
 **保留布尔值并比较消息 id。** 消息 id 是调用方的标识，而待处理输入契约允许移除后重插同一标识。被移除的唤醒之后再以同一 id 被动重插，仍会通过 id 检查。
@@ -32,8 +34,8 @@ Status: implemented
 
 ## 测试
 
-`packages/core/agent-loop/tests/wakeup-identity.spec.ts` 通过 abort 监听器投递驱动原生循环：被移除的唤醒只剩被动 next-step 输入、同一标识的被动重插、维护任务后锁存又被移除的 steer 唤醒、多个被移除的唤醒、之后真实到达的唤醒、在自身插入期间被撤下的 occurrence，以及释放。`packages/core/agent-loop/tests/initialization-wake.spec.ts` 在真实 JSONL 持久化上挂起 `agent/created`，发送真实 followup，以 `keepInbox` 停止，再让监听器拒绝：不记录轮次、领取或请求，写句柄释放后仍可读到已存储的待处理 splice，下次冷恢复读到该队列且不派发，直到之后的 followup 按顺序运行它。其配套用例表明监听器正常返回时会发布并随后兑现锁存唤醒。`packages/core/agent-loop/tests/cancel.spec.ts` 覆盖取消捕获：abort 监听器的输入得以保留，捕获项按身份原地删除，idle 清除回调的唤醒等待两条通道清空、并在其 occurrence 被移除时撤回，删除失败不启动任何轮次，释放同样不启动。
+`packages/core/agent-loop/tests/wakeup-identity.spec.ts` 通过 abort 监听器投递驱动原生循环：被移除的唤醒只剩被动 next-step 输入、同一标识的被动重插、维护任务后锁存又被移除的 steer 唤醒、多个被移除的唤醒、之后真实到达的唤醒、在自身插入期间被撤下的 occurrence，以及释放。`packages/core/agent-loop/tests/initialization-wake.spec.ts` 在真实 JSONL 持久化上挂起 `agent/created`，发送真实 followup，以 `keepInbox` 停止，再让监听器拒绝：不记录轮次、领取或请求，写句柄释放后仍可读到已存储的待处理 splice，下次冷恢复读到该队列且不派发，直到之后的 followup 按顺序运行它。其配套用例表明监听器正常返回时会发布并随后兑现锁存唤醒。`packages/core/agent-loop/tests/cancel.spec.ts` 覆盖取消捕获：abort 监听器的输入得以保留，捕获项按身份原地删除，idle 清除回调的唤醒等待两条通道清空、并在其 occurrence 被移除时撤回，删除失败不启动任何轮次，释放同样不启动；空闲用户取消中嵌套的释放会停放晚到的唤醒 followup，同步 `turn/end` 观察者请求带 `keepInbox` 的释放时驱动器保持空闲、输入继续待处理。
 
 ## 影响
 
-锁存的开销是一条投影引用的 `Set` 与每次清除式取消的一份快照。没有任何新增持久内容：`agent/inbox/spliced` 事件、持久 inbox 投影以及 TypeScript 与 Python SDK 投影都不变，`Inbox` 保留公开的 `clear()` 与 splice 返回值。返回 occurrence 的 insert 与捕获辅助方法留在包内部的 `ReactLoopInbox` 上。取消现在先中止捕获到的活动，再移除该活动的输入，因此 abort 监听器的输入被归类为唤醒下一次活动，而不会加入被取消的活动；一份快照原地删除捕获项，保持了周围队列顺序。插入被撤下的唤醒不会再开轮次；需要轮次边界的调用方必须在 idle 时发送。初始化失败到此为止并保留队列，留存输入保持被动，直到之后的真实唤醒或冷恢复。
+锁存的开销是一条投影引用的 `Set` 与每次清除式取消的一份快照。没有任何新增持久内容：`agent/inbox/spliced` 事件、持久 inbox 投影以及 TypeScript 与 Python SDK 投影都不变，`Inbox` 保留公开的 `clear()` 与 splice 返回值。返回 occurrence 的 insert 与捕获辅助方法留在包内部的 `ReactLoopInbox` 上。取消现在先中止捕获到的活动，再移除该活动的输入，因此 abort 监听器的输入被归类为唤醒下一次活动，而不会加入被取消的活动；一份快照原地删除捕获项，保持了周围队列顺序。插入被撤下的唤醒不会再开轮次；需要轮次边界的调用方必须在 idle 时发送。在请求了释放的取消窗口中锁存的唤醒会继续待处理；在轮次最后一次信号检查之后到达的释放请求会结束该驱动器，而不打开其自然下一轮。初始化失败到此为止并保留队列，留存输入保持被动，直到之后的真实唤醒或冷恢复。

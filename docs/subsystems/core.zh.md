@@ -82,8 +82,10 @@ interface Agent {
    * Clear the queued and steering input present at entry — unless `keepInbox`
    * — and abort the activity active at entry. The first cause wins for that
    * activity. Input delivered by an abort listener or a clear notification
-   * stays pending and wakes the next activity. With no active activity,
-   * cancellation aborts nothing and does not arm later work.
+   * stays pending and wakes the next activity unless a disposal was requested
+   * anywhere in the same cancellation window; a disposal request is terminal
+   * for that activity and starts no further turn, claim, or request. With no
+   * active activity, cancellation aborts nothing and does not arm later work.
    * @param cause - the stable caller intent carried by the active operation signal.
    * @param options - cancellation options; `keepInbox` preserves pending work.
    */
@@ -400,7 +402,7 @@ pre-step 决策使用与持久 user-role 输入相同、带标识的 `UserMessag
 
 `agent/pre-step` 接收一个 payload，携带独占的已领取批次（`messages`）、拟进入步骤的坐标（`turn`、`step`）与当前轮次的取消 `signal`。首次提案在已打开的轮次内、任何步骤开始前运行；工具 continuation 可以在步骤之间提交空的已领取批次：
 
-它返回 `PreStepDecision`。reject 不会打开步骤。enter 提供在 `step/start` 后追加的完整消息批次；最终决策省略的已领取消息保持已删除，而领取后插入的输入仍留待后续处理。reject 可设置 `preserveClaimed`，把完整已领取批次按原顺序放回待处理步骤边界之前；该轮仍以 blocked 关闭并等待下一次唤醒输入，取消的轮次会丢弃该批次；`Agent.cancel()` 在进入时捕获当前活动与两份待处理列表，只中止该活动，并在未设置 `keepInbox` 时只删除捕获到的这些 occurrence；由 abort 监听器或清除通知投递的输入继续待处理，并唤醒下一次活动：
+它返回 `PreStepDecision`。reject 不会打开步骤。enter 提供在 `step/start` 后追加的完整消息批次；最终决策省略的已领取消息保持已删除，而领取后插入的输入仍留待后续处理。reject 可设置 `preserveClaimed`，把完整已领取批次按原顺序放回待处理步骤边界之前；该轮仍以 blocked 关闭并等待下一次唤醒输入，取消的轮次会丢弃该批次；`Agent.cancel()` 在进入时捕获当前活动与两份待处理列表，只中止该活动，并在未设置 `keepInbox` 时只删除捕获到的这些 occurrence；由 abort 监听器或清除通知投递的输入继续待处理，并唤醒下一次活动，除非同一取消窗口内请求了释放；此时该输入继续停驻，且不再启动轮次、领取或请求：
 
 ```ts type-equiv
 /** Whether and with which messages the loop enters a proposed step. */

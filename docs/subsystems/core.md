@@ -78,8 +78,10 @@ interface Agent {
    * Clear the queued and steering input present at entry — unless `keepInbox`
    * — and abort the activity active at entry. The first cause wins for that
    * activity. Input delivered by an abort listener or a clear notification
-   * stays pending and wakes the next activity. With no active activity,
-   * cancellation aborts nothing and does not arm later work.
+   * stays pending and wakes the next activity unless a disposal was requested
+   * anywhere in the same cancellation window; a disposal request is terminal
+   * for that activity and starts no further turn, claim, or request. With no
+   * active activity, cancellation aborts nothing and does not arm later work.
    * @param cause - the stable caller intent carried by the active operation signal.
    * @param options - cancellation options; `keepInbox` preserves pending work.
    */
@@ -392,7 +394,7 @@ Source: [`packages/core/agent/src/types.ts`](../../packages/core/agent/src/types
 
 `agent/pre-step` receives one payload carrying the exclusive claimed batch (`messages`), the proposed step's coordinates (`turn`, `step`), and the current turn's cancellation `signal`. The initial proposal runs inside an open turn before any step; a tool continuation may submit an empty claimed batch between steps:
 
-It returns a `PreStepDecision`. Reject opens no step. Enter supplies the complete message batch appended after `step/start`; claimed messages omitted by the final decision remain removed, while input inserted after the claim stays pending. A reject may set `preserveClaimed` to return the exact claimed batch to the front of the pending-step boundary in original order; the turn still closes blocked, waits for the next waking input, and a cancelled turn drops the batch. `Agent.cancel()` captures the activity and both pending lists at entry, aborts only that activity, and removes only those captured occurrences unless `keepInbox` is set; input delivered by an abort listener or a clear notification stays pending and wakes the next activity:
+It returns a `PreStepDecision`. Reject opens no step. Enter supplies the complete message batch appended after `step/start`; claimed messages omitted by the final decision remain removed, while input inserted after the claim stays pending. A reject may set `preserveClaimed` to return the exact claimed batch to the front of the pending-step boundary in original order; the turn still closes blocked, waits for the next waking input, and a cancelled turn drops the batch. `Agent.cancel()` captures the activity and both pending lists at entry, aborts only that activity, and removes only those captured occurrences unless `keepInbox` is set; input delivered by an abort listener or a clear notification stays pending and wakes the next activity unless a disposal was requested anywhere in the same cancellation window, which leaves that input parked and starts no further turn, claim, or request:
 
 ```ts type-equiv
 /** Whether and with which messages the loop enters a proposed step. */

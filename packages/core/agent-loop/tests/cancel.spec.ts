@@ -1525,6 +1525,114 @@ describe('Agent.cancel()', () => {
     }
   })
 
+  it('does not start a turn for a wake latched while a disposal nests in an idle user cancellation', async () => {
+    const adapter = new MockAdapter([])
+    const ctx = await harness(adapter)
+    try {
+      const handle = await ctx.agents.create({
+        sessionId: SessionId('nested-disposed-idle-window'),
+        agentOptions: { provider: 'mock', model: 'mock' },
+      })
+      const agent = handle.agent
+      const oldStep = createUserMessage({ content: [{ type: 'text', text: 'old step' }], source: { kind: 'user' } })
+      const oldTurn = createUserMessage({ content: [{ type: 'text', text: 'old turn' }], source: { kind: 'user' } })
+      const later = createUserMessage({ content: [{ type: 'text', text: 'later' }], source: { kind: 'user' } })
+      agent.inject(oldStep)
+      agent.send(oldTurn, 'next-turn', false)
+      let disposal: Promise<void> | undefined
+      let lateInsertions = 0
+      let claims = 0
+      const stopClaims = ctx.on('agent/inbox/claimed', ({ message }) => {
+        if (message.id === later.id) claims += 1
+      })
+      const dispose = ctx.on('agent/inbox/discarded', ({ message }) => {
+        if (message.id === oldStep.id) {
+          // The owner releases this real handle synchronously from the user
+          // cancellation's own discard notification, so its disposed cancel
+          // nests inside the idle cancellation that captured both lanes.
+          disposal ??= handle.dispose()
+          return
+        }
+        if (message.id === oldTurn.id) {
+          lateInsertions += 1
+          // The nested disposal captured the turn lane before this waking
+          // followup arrived, so only the enclosing cancellation window can
+          // still hold it.
+          agent.followup(later)
+        }
+      })
+      agent.cancel({ kind: 'user' })
+      dispose()
+      stopClaims()
+      if (disposal === undefined) throw new Error('the discard notification did not start disposal')
+      await disposal
+
+      expect(lateInsertions).toBe(1)
+      // The disposal request in this window forbids the replay: no turn, no
+      // claim of the late input, and no model request over the agent being released.
+      const evidence = {
+        turnStarts: agent.session.snapshotEvents().filter(event => event.type === 'turn/start').length,
+        claims,
+        requests: adapter.requests.length,
+      }
+      expect(evidence).toEqual({ turnStarts: 0, claims: 0, requests: 0 })
+      // The late waking input is real input: it stays pending for an explicit wake.
+      expect(agent.inbox.nextTurn.map(message => message.id)).toEqual([later.id])
+      expect(agent.inbox.nextStep).toEqual([])
+      // Each cancellation keeps its own cause and entry cut.
+      const cancellations = agent.session.snapshotEvents().flatMap(event =>
+        event.type === 'agent/inbox/spliced' && event.data.outcome === 'canceled'
+          ? [{ cause: event.data.cause, entrySeq: event.data.entrySeq }]
+          : [])
+      const outer = cancellations[0]
+      const inner = cancellations[1]
+      if (outer?.entrySeq === undefined || inner?.entrySeq === undefined) {
+        throw new Error('a cancellation splice omitted its cause or entry cut')
+      }
+      expect(outer.cause).toBe('user')
+      expect(inner.cause).toBe('disposed')
+      expect(inner.entrySeq).toBeGreaterThan(outer.entrySeq)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('stops the driver when a synchronous turn/end observer requests a disposing keepInbox cancellation', async () => {
+    const adapter = new MockAdapter([textResponse('first turn'), textResponse('must not run')])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('turn-end-disposed-keep'), { provider: 'mock', model: 'mock' })
+      const later = createUserMessage({ content: [{ type: 'text', text: 'later turn' }], source: { kind: 'user' } })
+      // The running turn queues its own next-turn input, so the driver would
+      // naturally open a second turn once this one closes.
+      const stopRequest = ctx.on('agent/request', ({ turn }, next) => {
+        if (turn === 1) agent.followup(later)
+        return next()
+      })
+      let cancelled = false
+      const stopTurnEnd = ctx.on('session/event', (session, event) => {
+        if (session !== agent.session || event.type !== 'turn/end' || cancelled) return
+        cancelled = true
+        agent.cancel({ kind: 'disposed' }, { keepInbox: true })
+      })
+      send(agent, 'first')
+      await agent.whenIdle()
+      stopTurnEnd()
+      stopRequest()
+
+      // The disposal request aborts the closing activity and keeps its pending
+      // input, but the natural next turn must not reset that request and claim it.
+      expect(cancelled).toBe(true)
+      expect(adapter.requests).toHaveLength(1)
+      expect(agent.session.snapshotEvents().filter(event => event.type === 'turn/start')).toHaveLength(1)
+      expect(agent.inbox.nextTurn.map(message => message.id)).toEqual([later.id])
+      expect(agent.session.snapshotEvents().findLast(event => event.type === 'turn/end')?.data.reason)
+        .toEqual({ kind: 'completed' })
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('keeps a turn occurrence a clear callback removed and re-appended', async () => {
     const adapter = new MockAdapter([])
     const ctx = await harness(adapter)
@@ -1636,6 +1744,44 @@ describe('Agent.cancel()', () => {
       expect(agent.inbox.nextTurn).toHaveLength(1)
       expect(agent.inbox.nextTurn[0]).not.toBe(withdrawn)
       expect(agent.inbox.nextTurn[0]?.content).toEqual([{ type: 'text', text: 'passive replacement' }])
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('reports an Error snapshot failure unchanged after the cancellation guarantee ran', async () => {
+    const adapter = new MockAdapter(['hang', textResponse('after failed capture')])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('snapshot-error-rejection'), { provider: 'mock', model: 'mock' })
+      send(agent, 'go')
+      await expect.poll(() => adapter.requests.length).toBe(1)
+      const old = createUserMessage({ content: [{ type: 'text', text: 'old pending' }], source: { kind: 'user' } })
+      agent.inject(old)
+      const signal = adapter.requests[0]?.signal
+      if (signal === undefined) throw new Error('model request omitted its turn signal')
+      const later = createUserMessage({ content: [{ type: 'text', text: 'after failed capture' }], source: { kind: 'user' } })
+      signal.addEventListener('abort', () => { agent.followup(later) }, { once: true })
+      const rejection = new Error('inbox projection read failed')
+      const snapshot = vi.spyOn(agent.inbox as ReactLoopInbox, 'snapshotPending')
+        .mockImplementation(() => { throw rejection })
+      let reported: unknown
+      try {
+        agent.cancel({ kind: 'user' })
+      } catch (error: unknown) {
+        reported = error
+      } finally {
+        snapshot.mockRestore()
+      }
+      // The original Error is reported unchanged rather than wrapped with a cause.
+      expect(reported).toBe(rejection)
+      expect(Object.hasOwn(rejection, 'cause')).toBe(false)
+      // The failed capture leaves the old occurrence pending instead of
+      // guessing, and the abort guarantee still stopped the captured activity.
+      expect(agent.inbox.nextStep.map(message => message.id)).toEqual([old.id])
+      await agent.whenIdle()
+      expect(adapter.requests).toHaveLength(2)
+      expect(userTexts(agent)).toEqual(['go', 'old pending', 'after failed capture'])
     } finally {
       await ctx.fiber.dispose()
     }

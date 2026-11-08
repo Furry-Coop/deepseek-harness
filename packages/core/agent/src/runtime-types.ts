@@ -226,8 +226,10 @@ declare module './types.ts' {
    * Clear the queued and steering input present at entry — unless `keepInbox`
    * — and abort the activity active at entry. The first cause wins for that
    * activity. Input delivered by an abort listener or a clear notification
-   * stays pending and wakes the next activity. With no active activity,
-   * cancellation aborts nothing and does not arm later work.
+   * stays pending and wakes the next activity unless a disposal was requested
+   * anywhere in the same cancellation window; a disposal request is terminal
+   * for that activity and starts no further turn, claim, or request. With no
+   * active activity, cancellation aborts nothing and does not arm later work.
    * @param cause - the stable caller intent carried by the active operation signal.
    * @param options - cancellation options; `keepInbox` preserves pending work.
    */

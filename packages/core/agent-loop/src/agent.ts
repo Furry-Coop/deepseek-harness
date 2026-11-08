@@ -160,6 +160,8 @@ export class ReactLoopAgent implements Agent {
   private readonly deferredWakes = new Set<UserMessage>()
   /** Nesting depth of cancellation bookkeeping; an idle wake waits until it reaches zero. */
   private cancelDepth = 0
+  /** Whether any cancellation nested in the open window requested disposal. */
+  private cancelWindowDisposed = false
 
   /** Fused dispatcher, built once in the constructor so hot-path dispatches never allocate. */
   private readonly dispatch: AgentEventDispatch
@@ -232,6 +234,11 @@ export class ReactLoopAgent implements Agent {
 
   cancel(cause: AgentCancelCause, options: CancelOptions = {}): void {
     const clearInbox = !options.keepInbox
+    // One outermost cancellation owns the window through every cancel nested in
+    // its callbacks. A disposal request anywhere in that window forbids the idle
+    // wakes it holds from replaying, because the owner is releasing the agent.
+    if (this.cancelDepth === 0) this.cancelWindowDisposed = false
+    if (cause.kind === 'disposed') this.cancelWindowDisposed = true
     // Capture the entry cut, activity, and its pending occurrences before any
     // abort listener or discard notification can add later work.
     const entrySeq = this.session.seq
@@ -275,7 +282,13 @@ export class ReactLoopAgent implements Agent {
       }
     } finally {
       this.cancelDepth -= 1
-      if (this.cancelDepth === 0) this.replayDeferredWakes(removed, cause)
+      if (this.cancelDepth === 0) {
+        // Take and clear the window's disposal fact before replay can run any
+        // callback, so no wake held by this window starts a turn during release.
+        const disposed = this.cancelWindowDisposed
+        this.cancelWindowDisposed = false
+        this.replayDeferredWakes(removed, disposed)
+      }
     }
     if (captureFailure !== undefined) throw snapshotFailure(captureFailure.rejected)
   }
@@ -287,14 +300,15 @@ export class ReactLoopAgent implements Agent {
    * passive input that merely remained queued must not start a turn, and a
    * nested cancellation that removed the waking occurrence withdraws it. A
    * failed removal leaves input this cancellation still owes, so nothing
-   * starts, and a disposed agent starts nothing either.
+   * starts, and a disposal requested anywhere in the window starts nothing
+   * either.
    * @param removed - whether both lanes' captured occurrences were removed.
-   * @param cause - the cancellation cause that held the wakes.
+   * @param disposed - whether any cancellation in the window requested disposal.
    */
-  private replayDeferredWakes(removed: boolean, cause: AgentCancelCause): void {
+  private replayDeferredWakes(removed: boolean, disposed: boolean): void {
     const wakes = [...this.deferredWakes]
     this.deferredWakes.clear()
-    if (!removed || cause.kind === 'disposed') return
+    if (!removed || disposed) return
     if (wakes.some(occurrence => this.inbox.holdsOccurrence(occurrence))) this.wakeDriver()
   }
 
@@ -591,11 +605,15 @@ export class ReactLoopAgent implements Agent {
         this.throwError(error)
       }
     }
+    // A synchronous turn/end observer can request disposal after the turn's
+    // last signal check. That request is terminal for the activity: opening the
+    // natural next turn would replace the aborted controller, reset the
+    // disposal fact, and claim work over the agent being released.
+    if (phase.disposed) return false
     if (!this.inbox.hasPending) return false
     phase.abort = new AbortController()
     // A fresh controller makes a latch set on the old one stale: the live driver claims the queue itself.
     phase.wakes.clear()
-    phase.disposed = false
     phase.step = 0
     return true
   }
