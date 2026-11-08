@@ -10,9 +10,9 @@ import {
   findPluginRecordReferences,
   isAdmittedCaller,
   OWNER_FILE,
-  readRepositorySources,
   unescaped,
 } from './verify-plugin-record-callers.ts'
+import { readRepositorySources } from './restricted-source-callers.ts'
 
 const roots: string[] = []
 
@@ -144,14 +144,10 @@ describe('verify-plugin-record-callers', () => {
       'scripts/verify-plugin-record-callers.spec.ts',
       'scripts/verify-plugin-record-callers.ts',
     ]) expect(isAdmittedCaller(file), file).toBe(true)
-    for (const file of [RELEASE, 'packages/core/session/src/surface.ts', 'scripts/tool.ts', 'apps/web/src/main.ts']) {
+    // The prefix admits packages under `packages/experimental/` only, and each gate exempts only itself.
+    for (const file of [RELEASE, 'packages/experimental-bridge/src/index.ts', 'scripts/verify-control-write-callers.ts']) {
       expect(isAdmittedCaller(file), file).toBe(false)
     }
-  })
-
-  it('reports the line of each reference', () => {
-    expect(findPluginRecordReferences(RELEASE, 'const a = 1\n\nS.appendPluginRecord()\n'))
-      .toEqual([{ file: RELEASE, line: 3, text: 'S.appendPluginRecord()' }])
   })
 
   it('refuses a corpus whose owner no longer exports the function', () => {
@@ -171,28 +167,6 @@ describe('verify-plugin-record-callers', () => {
     for (const files of [withoutExperimental, withoutRelease]) {
       expect(() => checkPluginRecordCallers(files)).toThrow(/lacks experimental or release package source/)
     }
-  })
-
-  it('reads tracked and unignored sources outside vendor, skipping other files and deleted ones', () => {
-    const root = repository({
-      '.gitignore': 'ignored/\n',
-      [OWNER_FILE]: OWNER_SOURCE,
-      'scripts/tool.mjs': 'export {}\n',
-      'ignored/scratch.ts': 'export {}\n',
-      'vendor/cordis/src/index.ts': 'export {}\n',
-      'docs/page.md': '# Page\n',
-      'packages/core/gone/src/index.ts': 'export {}\n',
-    })
-    execFileSync('git', ['add', '.'], { cwd: root, stdio: 'pipe' })
-    rmSync(join(root, 'packages/core/gone/src/index.ts'))
-    mkdirSync(join(root, 'packages/core/agent/src'), { recursive: true })
-    writeFileSync(join(root, 'packages/core/agent/src/new.ts'), 'export {}\n')
-
-    expect([...readRepositorySources(root).keys()].sort()).toEqual([
-      'packages/core/agent/src/new.ts',
-      OWNER_FILE,
-      'scripts/tool.mjs',
-    ])
   })
 
   it('accepts declared names through renamed imports, inferred aliases, and namespace calls', () => {

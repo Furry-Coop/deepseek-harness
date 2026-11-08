@@ -1,22 +1,10 @@
-import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   ADMITTED_CONSUMER,
   checkControlWriteCallers,
-  findControlWriteReferences,
   isAdmittedCaller,
   OWNER_FILE,
-  readRepositorySources,
 } from './verify-control-write-callers.ts'
-
-const roots: string[] = []
-
-afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
-})
 
 const OWNER_SOURCE = 'export function appendAfterPublication<T>(session, type, data): void { return }\n'
 const RELEASE = 'packages/core/agent/src/index.ts'
@@ -68,11 +56,6 @@ describe('verify-control-write-callers', () => {
     }
   })
 
-  it('reports the line of each reference', () => {
-    expect(findControlWriteReferences(RELEASE, 'const a = 1\n\nS.appendAfterPublication()\n'))
-      .toEqual([{ file: RELEASE, line: 3, text: 'S.appendAfterPublication()' }])
-  })
-
   it('refuses a corpus whose owner no longer exports the function', () => {
     for (const owner of [undefined, 'function appendAfterPublication<T>() {}\n', 'export const appendAfterPublication = () => {}\n']) {
       const files = corpus('')
@@ -86,32 +69,5 @@ describe('verify-control-write-callers', () => {
     const files = corpus('')
     files.delete(ADMITTED_CONSUMER)
     expect(() => checkControlWriteCallers(files)).toThrow(/lacks packages\/core\/agent-loop\/src\/inbox.ts/)
-  })
-
-  it('reads tracked and unignored sources outside vendor, skipping other files and deleted ones', () => {
-    const root = mkdtempSync(join(tmpdir(), 'dsh-control-write-callers-'))
-    roots.push(root)
-    execFileSync('git', ['init', '--quiet'], { cwd: root, stdio: 'pipe' })
-    const write = (file: string, contents: string): void => {
-      mkdirSync(dirname(join(root, file)), { recursive: true })
-      writeFileSync(join(root, file), contents)
-    }
-    write('.gitignore', 'ignored/\n')
-    write(OWNER_FILE, OWNER_SOURCE)
-    write('scripts/tool.mjs', 'export {}\n')
-    write('ignored/scratch.ts', 'export {}\n')
-    write('vendor/cordis/src/index.ts', 'export {}\n')
-    write('docs/page.md', '# Page\n')
-    write('packages/core/gone/src/index.ts', 'export {}\n')
-    execFileSync('git', ['add', '.'], { cwd: root, stdio: 'pipe' })
-    rmSync(join(root, 'packages/core/gone/src/index.ts'))
-    mkdirSync(join(root, 'packages/core/agent/src'), { recursive: true })
-    writeFileSync(join(root, 'packages/core/agent/src/new.ts'), 'export {}\n')
-
-    expect([...readRepositorySources(root).keys()].sort()).toEqual([
-      'packages/core/agent/src/new.ts',
-      OWNER_FILE,
-      'scripts/tool.mjs',
-    ])
   })
 })

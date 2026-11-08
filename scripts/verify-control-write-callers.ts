@@ -14,15 +14,17 @@
  * counts — an import, a re-export, a call, a namespace member, a destructured
  * binding — and so does a string literal of exactly that name, which reaches the
  * function by element access. Comments, longer strings, and wildcard re-exports
- * name nothing and are not reported.
+ * name nothing and are not reported. Source discovery and reference parsing are
+ * shared with the plugin-record gate in `restricted-source-callers.ts`.
  */
 
-import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import ts from 'typescript'
-
-const root = resolve(import.meta.dirname, '..')
+import {
+  findSourceReferences,
+  isTestFile,
+  readRepositorySources,
+  type SourceReference,
+} from './restricted-source-callers.ts'
 
 /** The restricted function. */
 export const RESTRICTED_NAME = 'appendAfterPublication'
@@ -39,27 +41,8 @@ const GATE_FILES: ReadonlySet<string> = new Set([
   'scripts/verify-control-write-callers.spec.ts',
 ])
 
-const SOURCE_EXTENSION = /\.(?:[cm]?[jt]s|[jt]sx)$/u
-
 /** One production-source reference to the restricted function outside its admitted caller. */
-export interface ControlWriteCaller {
-  /** Repository-relative path, in POSIX separators. */
-  readonly file: string
-  /** One-based line number. */
-  readonly line: number
-  /** The trimmed source line. */
-  readonly text: string
-}
-
-/**
- * Whether a repository path is a test file under the repository's lint-override globs.
- * @param file - repository-relative path, in POSIX separators.
- * @returns whether the file is a package, app, or example test, or a script spec.
- */
-export function isTestFile(file: string): boolean {
-  return /^(?:packages\/[^/]+\/[^/]+|apps\/[^/]+|examples\/[^/]+)\/tests\//u.test(file)
-    || /^scripts\/.+\.spec\.tsx?$/u.test(file)
-}
+export type ControlWriteCaller = SourceReference
 
 /**
  * Whether a file may reference the restricted function.
@@ -70,13 +53,6 @@ export function isAdmittedCaller(file: string): boolean {
   return file === OWNER_FILE || file === ADMITTED_CONSUMER || isTestFile(file) || GATE_FILES.has(file)
 }
 
-function scriptKind(file: string): ts.ScriptKind {
-  if (file.endsWith('.tsx')) return ts.ScriptKind.TSX
-  if (file.endsWith('.jsx')) return ts.ScriptKind.JSX
-  if (/\.[cm]?js$/u.test(file)) return ts.ScriptKind.JS
-  return ts.ScriptKind.TS
-}
-
 /**
  * Find references to the restricted function in one source file, admitted or not.
  * @param file - repository-relative path; its extension selects the parser.
@@ -85,21 +61,7 @@ function scriptKind(file: string): ts.ScriptKind {
  */
 export function findControlWriteReferences(file: string, source: string): ControlWriteCaller[] {
   if (!source.includes(RESTRICTED_NAME)) return []
-  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, scriptKind(file))
-  const lines = source.split(/\r?\n/u)
-  const references: ControlWriteCaller[] = []
-  const visit = (node: ts.Node): void => {
-    const named = ts.isIdentifier(node)
-      || ts.isStringLiteral(node)
-      || ts.isNoSubstitutionTemplateLiteral(node)
-    if (named && node.text === RESTRICTED_NAME) {
-      const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line
-      references.push({ file, line: line + 1, text: lines[line]?.trim() ?? '' })
-    }
-    ts.forEachChild(node, visit)
-  }
-  visit(sourceFile)
-  return references
+  return findSourceReferences(file, source, RESTRICTED_NAME)
 }
 
 /**
@@ -120,31 +82,6 @@ export function checkControlWriteCallers(files: ReadonlyMap<string, string>): Co
   return [...files.keys()]
     .filter(file => !isAdmittedCaller(file))
     .flatMap(file => findControlWriteReferences(file, files.get(file) ?? ''))
-}
-
-/**
- * Read every tracked or unignored source file outside `vendor/`.
- * @param repoRoot - the repository root; defaults to this checkout.
- * @returns repository-relative path, in POSIX separators, to contents.
- */
-export function readRepositorySources(repoRoot: string = root): Map<string, string> {
-  const listing = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-  })
-  const files = new Map<string, string>()
-  for (const entry of listing.split('\0')) {
-    const file = entry.replaceAll('\\', '/')
-    if (file === '' || file.startsWith('vendor/') || !SOURCE_EXTENSION.test(file)) continue
-    try {
-      files.set(file, readFileSync(resolve(repoRoot, file), 'utf8'))
-    } catch (error: unknown) {
-      // A file deleted in the working tree is still listed until the deletion is staged.
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-  }
-  return files
 }
 
 function main(): void {

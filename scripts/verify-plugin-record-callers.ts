@@ -19,11 +19,10 @@
  * test declarations cannot authorize a production write.
  */
 
-import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 import ts from 'typescript'
 import { collectPluginRecords } from './plugin-record-catalog.ts'
+import { findSourceReferences, isTestFile, readRepositorySources, type SourceReference } from './restricted-source-callers.ts'
 import { faceConfigs } from './ts-project.ts'
 
 const root = resolve(import.meta.dirname, '..')
@@ -45,8 +44,6 @@ const GATE_FILES: ReadonlySet<string> = new Set([
 
 /** The published dependency policy names the restricted function to classify the export's package edge. */
 export const DEPENDENCY_POLICY_FILE = 'scripts/package-dependency-policy.ts'
-
-const SOURCE_EXTENSION = /\.(?:[cm]?[jt]s|[jt]sx)$/u
 
 /** A line continuation, which a string or template literal drops from its value. */
 const LINE_CONTINUATION = /\\(?:\r\n|[\n\r\u2028\u2029])/gu
@@ -79,25 +76,9 @@ export function unescaped(source: string): string {
 }
 
 /** One production-source reference to the restricted function outside its admitted callers. */
-export interface PluginRecordCaller {
-  /** Repository-relative path, in POSIX separators. */
-  readonly file: string
-  /** One-based line number. */
-  readonly line: number
-  /** The trimmed source line. */
-  readonly text: string
+export interface PluginRecordCaller extends SourceReference {
   /** Why a production write lacks a catalogue declaration, when applicable. */
   readonly reason?: string
-}
-
-/**
- * Whether a repository path is a test file under the repository's lint-override globs.
- * @param file - repository-relative path, in POSIX separators.
- * @returns whether the file is a package, app, or example test, or a script spec.
- */
-export function isTestFile(file: string): boolean {
-  return /^(?:packages\/[^/]+\/[^/]+|apps\/[^/]+|examples\/[^/]+)\/tests\//u.test(file)
-    || /^scripts\/.+\.spec\.tsx?$/u.test(file)
 }
 
 /**
@@ -110,13 +91,6 @@ export function isAdmittedCaller(file: string): boolean {
     || file === DEPENDENCY_POLICY_FILE
 }
 
-function scriptKind(file: string): ts.ScriptKind {
-  if (file.endsWith('.tsx')) return ts.ScriptKind.TSX
-  if (file.endsWith('.jsx')) return ts.ScriptKind.JSX
-  if (/\.[cm]?js$/u.test(file)) return ts.ScriptKind.JS
-  return ts.ScriptKind.TS
-}
-
 /**
  * Find references to the restricted function in one source file, admitted or not.
  * @param file - repository-relative path; its extension selects the parser.
@@ -125,21 +99,7 @@ function scriptKind(file: string): ts.ScriptKind {
  */
 export function findPluginRecordReferences(file: string, source: string): PluginRecordCaller[] {
   if (!source.includes(RESTRICTED_NAME) && !unescaped(source).includes(RESTRICTED_NAME)) return []
-  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, scriptKind(file))
-  const lines = source.split(/\r?\n/u)
-  const references: PluginRecordCaller[] = []
-  const visit = (node: ts.Node): void => {
-    const named = ts.isIdentifier(node)
-      || ts.isStringLiteral(node)
-      || ts.isNoSubstitutionTemplateLiteral(node)
-    if (named && node.text === RESTRICTED_NAME) {
-      const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line
-      references.push({ file, line: line + 1, text: lines[line]?.trim() ?? '' })
-    }
-    ts.forEachChild(node, visit)
-  }
-  visit(sourceFile)
-  return references
+  return findSourceReferences(file, source, RESTRICTED_NAME)
 }
 
 /** Whether the owner still exports a function declaration under the restricted name. */
@@ -245,31 +205,6 @@ export function checkDeclaredPluginRecordWrites(
     violations.push({ file, line: 1, text: '', reason: 'production record writers must be included in a Host or Client compiler face' })
   }
   return violations
-}
-
-/**
- * Read every tracked or unignored source file outside `vendor/`.
- * @param repoRoot - the repository root; defaults to this checkout.
- * @returns repository-relative path, in POSIX separators, to contents.
- */
-export function readRepositorySources(repoRoot: string = root): Map<string, string> {
-  const listing = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-  })
-  const files = new Map<string, string>()
-  for (const entry of listing.split('\0')) {
-    const file = entry.replaceAll('\\', '/')
-    if (file === '' || file.startsWith('vendor/') || !SOURCE_EXTENSION.test(file)) continue
-    try {
-      files.set(file, readFileSync(resolve(repoRoot, file), 'utf8'))
-    } catch (error: unknown) {
-      // A file deleted in the working tree is still listed until the deletion is staged.
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-  }
-  return files
 }
 
 function main(): void {
