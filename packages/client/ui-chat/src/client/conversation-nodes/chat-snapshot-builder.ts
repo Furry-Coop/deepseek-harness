@@ -11,7 +11,7 @@ import type {
   ChatLocationNodeIndex, ChatNodeProcessSource, ChatNodeSource, ChatNodeStore, ChatSnapshot,
   ChatTurnNavigationIndex, ChatTurnProcessPresentation, LegacyConversationSlice, TurnNavigationItem,
 } from '../contract/snapshot.ts'
-import { isAtOrOutside } from '../contract/group-tree.ts'
+import { isAtOrOutside, isProcessTail } from '../contract/group-tree.ts'
 import { locationCoordinates } from './common.ts'
 import { sessionRecallLabels, skillInvocationName } from './event-projection.ts'
 import { GroupTreeSegments } from './group-tree-segments.ts'
@@ -467,6 +467,8 @@ function turnProcessPresentations(
       continue
     }
     if (isAtOrOutside(node, 'turn')) continue
+    // A tail Node keeps the position its own anchor gives it; it never moves the Turn control.
+    if (isProcessTail(node)) continue
     presentations.set(location.turn.turn, {
       ...current,
       earliestProcessAnchor: Math.min(current.earliestProcessAnchor ?? node.anchorSeq, node.anchorSeq),

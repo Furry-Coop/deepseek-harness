@@ -19,6 +19,8 @@ The Session Controller owns the contiguous loaded logical-event window. Each `Se
 | Group Definition | A business package derives one target's root references and group snapshots from materialized Nodes; it owns membership, segmentation, summaries, and incremental caches. |
 | View | A Slot entry such as Chat or Trajectory reads only its target snapshot and renders target-owned nodes. |
 
+`ConversationNodeContext.sessionId` names the displayed Session even when the loaded window holds history inherited from a fork; a detached assembler constructed without a Session binding leaves it undefined. `match` sees only the current event, so a Definition reads it in `start`, `update`, `buildLocationData`, or `buildViewNode`.
+
 Chat and Trajectory may recognize the same durable event family, but each keeps its own Definition State and final node payload. Shared target-neutral machinery is limited to identity routing, ordered replay, Location data, predecessor dependencies, and publication cadence.
 
 ## Target activation
@@ -261,6 +263,7 @@ A Chat Node also chooses where its row stands through `groupTree`. Positions are
 | Another input of its Turn, such as later human input or a trigger notice; before the process it is the opening input, after it the whole Turn stays open | `input` |
 | A Turn notice that stays outside whole-Turn folding, such as an error or the completed-turn footer | `turn` |
 | An independent row that whole-Turn folding still hides, such as a model retry | `process` |
+| The Turn's process tail: after the final segment's other members and before a reply that ended it | `tail` |
 | Ordinary process content that joins the surrounding step run | omit `groupTree` |
 
 The [Chat business rules](../../packages/client/ui-chat/src/client/conversation-nodes/README.md#process-grouping) list the positions the built-in Nodes declare. When a generic Definition of the same target also matches the event your Node presents, claim the event with `exclusive: true` as described above.

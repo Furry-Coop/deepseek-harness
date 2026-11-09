@@ -6,7 +6,7 @@ import type { ChatNodeHookContext, ChatNodeOwnerProps, ChatFlowSlotProps, UsePre
 import { hasAssistantReplyContent } from '../contract/assistant-content.ts'
 import type { ChatNode } from '../contract/chat-nodes.ts'
 import type { ChatNodeStore } from '../contract/snapshot.ts'
-import { isAtOrOutside } from '../contract/group-tree.ts'
+import { isAtOrOutside, isProcessTail } from '../contract/group-tree.ts'
 import { turnProcessAlwaysOpen } from '../contract/turn-process.ts'
 import { turnProcessOpen } from '../stores.ts'
 import { hiddenOrCollapsing } from './flow-motion.ts'
@@ -86,9 +86,9 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
     && processWindowReady
     && !replyRow
     && !isAtOrOutside(routedNode, 'turn')
-    && routedNode.anchorSeq >= processSpec.processStartSeq
-    && (liveProcess || processSpec.answerAnchorSeq === null || routedNode.anchorSeq < processSpec.answerAnchorSeq
-      || (groupPart === 'reasoning' && routedNode.kind === 'assistant-step' && routedNode.data.step === processSpec.answerStep))
+    && (isProcessTail(routedNode) || (routedNode.anchorSeq >= processSpec.processStartSeq
+      && (liveProcess || processSpec.answerAnchorSeq === null || routedNode.anchorSeq < processSpec.answerAnchorSeq
+        || (groupPart === 'reasoning' && routedNode.kind === 'assistant-step' && routedNode.data.step === processSpec.answerStep))))
   const processAnswer = routedNode !== undefined
     && processWindowReady
     && !liveProcess

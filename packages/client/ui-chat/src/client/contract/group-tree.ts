@@ -10,6 +10,11 @@ import type { ChatConversationViewNode } from './chat-nodes.ts'
  *   the whole Turn open.
  * - `turn`: the Node stays in its Turn outside the Turn's process disclosure.
  * - `process`: the Node stays in the process disclosure outside step runs.
+ * - `tail`: the Node joins the Turn's last process segment as its final member,
+ *   after that segment's other members and before a reply that ended it, whatever
+ *   its `anchorSeq`. It neither starts, splits, nor closes an existing segment; a
+ *   Turn with no process segment places it in a segment of its own, before the
+ *   Turn's final reply when one exists and otherwise at its own anchor.
  * - absent: the Node joins the step run around it.
  *
  * The Definition that builds a Node chooses its position, and step runs, the
@@ -22,9 +27,9 @@ import type { ChatConversationViewNode } from './chat-nodes.ts'
  * Final answer only just the final answer's reply row does. Reasoning rows
  * stay in the folded process in both choices.
  */
-export type ChatGroupTree = 'exchange' | 'input' | 'turn' | 'process'
+export type ChatGroupTree = 'exchange' | 'input' | 'turn' | 'process' | 'tail'
 
-const DEPTH: Readonly<Record<ChatGroupTree, number>> = { exchange: 0, input: 1, turn: 2, process: 3 }
+const DEPTH: Readonly<Record<ChatGroupTree, number>> = { exchange: 0, input: 1, turn: 2, process: 3, tail: 4 }
 
 /**
  * Test whether a Node stands at a group-tree position or outside it.
@@ -34,4 +39,13 @@ const DEPTH: Readonly<Record<ChatGroupTree, number>> = { exchange: 0, input: 1, 
  */
 export function isAtOrOutside(node: Pick<ChatConversationViewNode, 'groupTree'>, position: ChatGroupTree): boolean {
   return node.groupTree !== undefined && DEPTH[node.groupTree] <= DEPTH[position]
+}
+
+/**
+ * Test whether a Node joins its Turn's process tail.
+ * @param node - Chat Node, when one is materialized.
+ * @returns whether the Node declares the `tail` position.
+ */
+export function isProcessTail(node: Pick<ChatConversationViewNode, 'groupTree'> | undefined): boolean {
+  return node?.groupTree === 'tail'
 }

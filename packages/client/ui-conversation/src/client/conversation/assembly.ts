@@ -253,7 +253,7 @@ export class UiConversation extends Service {
     if (current !== undefined) return current.binding
     const binding = new BoundConversation(
       owner.eventSource,
-      new ConversationNodeAssembler(this.events, this.views, this.groups),
+      new ConversationNodeAssembler(this.events, this.views, this.groups, owner.sessionId),
     )
     const record: BindingRecord = { source: owner, binding, disposeScope: () => {} }
     this.bindings.set(owner, record)

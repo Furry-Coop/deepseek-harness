@@ -18,6 +18,19 @@ export interface ChatConversationViewNode extends ConversationViewNode {
    * opening Turn, or at the first loaded Turn when none is loaded.
    */
   readonly groupTree?: ChatGroupTree | undefined
+  /**
+   * Optional live activity this Node contributes to its process disclosure
+   * title. Only a running contribution competes with native Tools and reasoning;
+   * candidates order by this Node's `anchorSeq` against the native selection's
+   * start, and a stopped or absent contribution leaves the native title.
+   */
+  readonly processActivity?: ChatProcessActivity | undefined
+}
+
+/** A Node's own running state as a candidate for the process disclosure title. */
+export interface ChatProcessActivity {
+  /** Whether the contributing activity is still in progress. */
+  readonly running: boolean
 }
 
 /** Merge-extensible payload registry keyed by final Chat renderer kind. */

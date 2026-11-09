@@ -12,7 +12,7 @@ import type {
   MessageImageLoader, MessageImageSource, MessageImagesOwnerProps, RenderEntry, TurnLocation, UserTextFacts, UserTextInput,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {
-  HostObservable, InjectFace, KeyedSnapshotSelectorHook, PropsLocale, PropsRenderSlots, PropsRuntime,
+  HostObservable, InjectFace, KeyedSnapshotSelectorHook, LocaleNamespaceMap, PropsLocale, PropsRenderSlots, PropsRuntime,
   PropsRenderFactories, PropsStore, SlotHookFactory, SnapshotSelectorHook,
 } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
@@ -289,6 +289,18 @@ export interface PresentationInjected {
   }
 }
 
+/** Owner currency of one live process title contributed by a Chat Node. */
+export interface ChatProcessActivityOwnerProps {
+  /** Whether the active work-details mode appends live task detail to the title. */
+  readonly detailed: boolean
+}
+
+/** Full props of one keyed live process title renderer. */
+export type ChatProcessActivityViewProps<
+  Kind extends ChatNodeKind = ChatNodeKind,
+  Namespace extends keyof LocaleNamespaceMap = 'chat',
+> = PropsRuntime<'conversation.chat.process.activity', Kind> & PropsLocale<Namespace>
+
 /** Full props of one keyed Chat renderer. */
 export type ChatNodeViewProps<Kind extends ChatNodeKind = ChatNodeKind> =
   PropsRuntime<'conversation.chat.node', Kind> & PropsLocale<'chat'> & PropsRenderFactories
@@ -378,7 +390,7 @@ export interface ChatFlowOwnerProps extends Pick<ChatNodeOwnerProps,
 /** Full props of the Chat-owned flow renderer. */
 export type ChatFlowSlotProps =
   PropsRuntime<'conversation.chat.flow'>
-  & PropsRenderSlots<'conversation.chat.node'>
+  & PropsRenderSlots<'conversation.chat.node' | 'conversation.chat.process.activity'>
   & PropsRenderFactories
   & PropsStore<ChatStore>
   & InjectFace<ChatFlowDataInjected>
@@ -447,6 +459,19 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
       keyProps: { [Kind in ChatNodeKind]: { node: ChatNode<Kind> } }
       hookContext: ChatNodeHookContext
       inject: ChatNodeInjected
+    }
+    /**
+     * Localized label of a running process group when a Chat Node's own activity
+     * is the newest one. The keyed renderer receives that Node and renders
+     * presentational label content inside the native title control, which keeps
+     * its icon, chevron, shimmer, and completed title; without one the native
+     * label renders.
+     */
+    'conversation.chat.process.activity': {
+      kind: 'keyed'
+      scope: 'session'
+      owner: ChatProcessActivityOwnerProps
+      keyProps: { [Kind in ChatNodeKind]: { node: ChatNode<Kind> } }
     }
     /**
      * Message-source decoration owned and rendered by the user Node entry.

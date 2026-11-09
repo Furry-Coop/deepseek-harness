@@ -52,6 +52,28 @@ function separator(seq: number, inTurn: boolean): ChatNode<'user'> | ChatNode<'s
   return inTurn ? { ...user, kind: 'steering', data: { ...user.data, kind: 'steering', messageId: 'steer' as MessageId } } : user
 }
 
+declare module '../src/client/contract/chat-nodes.ts' {
+  interface ChatNodeDataMap {
+    'plugin-activity': { readonly label: string }
+  }
+}
+
+/** A contributed activity Node; `tail` places it in the Turn's final process segment. */
+function contributed(
+  key: string,
+  seq: number,
+  running = true,
+  groupTree?: 'tail',
+): ChatNode<'plugin-activity'> {
+  return {
+    key, id: key, kind: 'plugin-activity', target: 'chat', anchorSeq: seq,
+    location: { kind: 'turn', turn }, visibility: 'visible',
+    ...groupTree === undefined ? {} : { groupTree },
+    ...running ? { processActivity: { running: true } } : {},
+    data: { label: key },
+  }
+}
+
 function harness(nodes: readonly ChatConversationViewNode[], currentTimeline = timeline) {
   const builder = new ChatSnapshotBuilder()
   const state = new ProcessState()
@@ -545,5 +567,140 @@ describe('Definition-owned Chat process groups', () => {
     h.builder.apply({ upserts: [], timeline: { turnOrder: [1], turns: new Map([[1, ended]]) }, changedTurns: [1] })
     expect(h.commit()?.entries).toBeUndefined()
     expect(source.getSnapshot()?.data.closed).toBe(true)
+  })
+
+  it('selects a contributed running activity only when it starts after the native activity', () => {
+    const native = assistant('step thought')
+    expect(processActivity([native]).contribution).toBeUndefined()
+    expect(processActivity([native, contributed('later', 5)]).contribution)
+      .toEqual({ key: 'later', kind: 'plugin-activity', anchorSeq: 5 })
+    expect(processActivity([native, contributed('earlier', 1)]).contribution).toBeUndefined()
+    expect(processActivity([contributed('only', 5)]).contribution)
+      .toEqual({ key: 'only', kind: 'plugin-activity', anchorSeq: 5 })
+    expect(processActivity([contributed('stopped', 5, false)]).contribution).toBeUndefined()
+  })
+
+  it('keeps a running tool ahead of an equally or earlier anchored contribution', () => {
+    const running = tool('call', 2)
+    expect(processActivity([running, contributed('later', 5)]).contribution?.key).toBe('later')
+    expect(processActivity([running, contributed('earlier', 1)]).contribution).toBeUndefined()
+    expect(processActivity([running, contributed('tie', 2)]).contribution).toBeUndefined()
+  })
+
+  it('appends a tail Node to the final process segment without a root row', () => {
+    const h = harness([tool('before', 4), contributed('tail-row', 10, false, 'tail')])
+    expect(h.store.entries.map(entry => entry.kind === 'group' ? 'group' : entry.key)).toEqual(['group'])
+    const group = h.store.entries[0]!
+    if (group.kind !== 'group') throw new Error('expected group')
+    expect(h.store.groupSource(group.key).getSnapshot()?.members).toEqual([
+      { kind: 'node', key: 'before' },
+      { kind: 'node', key: 'tail-row' },
+    ])
+  })
+
+  it('places a tail Node after the last reasoning and before the same Step reply', () => {
+    const h = harness([assistant('thought', 'answer'), contributed('tail-row', 10, false, 'tail')])
+    expect(h.store.entries.map(entry => entry.kind === 'group' ? 'group' : `${entry.key}:${entry.groupPart}`))
+      .toEqual(['group', 'assistant:response'])
+    const group = h.store.entries[0]!
+    if (group.kind !== 'group') throw new Error('expected group')
+    expect(h.store.groupSource(group.key).getSnapshot()?.members).toEqual([
+      { kind: 'node', key: 'assistant', groupPart: 'reasoning' },
+      { kind: 'node', key: 'tail-row' },
+    ])
+  })
+
+  it('places a tail-only segment before the Turn final reply', () => {
+    const h = harness([assistant('', 'answer'), contributed('tail-row', 10, false, 'tail')])
+    expect(h.store.entries.map(entry => entry.kind === 'group' ? 'group' : `${entry.key}:${entry.groupPart}`))
+      .toEqual(['group', 'assistant:response'])
+    const group = h.store.entries[0]!
+    if (group.kind !== 'group') throw new Error('expected group')
+    expect(h.store.groupSource(group.key).getSnapshot()?.members).toEqual([{ kind: 'node', key: 'tail-row' }])
+  })
+
+  it('keeps a tail Node in its own Turn through a later anchor and a cold replay', () => {
+    const tail = contributed('tail-row', 10, false, 'tail')
+    const h = harness([tool('before', 4), tail])
+    const group = h.store.entries[0]!
+    if (group.kind !== 'group') throw new Error('expected group')
+    const source = h.store.groupSource(group.key)
+    const members = source.getSnapshot()?.members
+    h.builder.apply({ upserts: [{ ...tail, anchorSeq: 30 }], timeline })
+    h.commit()
+    expect(source.getSnapshot()?.members).toEqual(members)
+    expect(h.store.entries.map(entry => entry.kind === 'group' ? 'group' : entry.key)).toEqual(['group'])
+    const replay = harness([tool('before', 4), { ...tail, anchorSeq: 30 }])
+    expect(replay.store.entries).toEqual(h.store.entries)
+    expect(replay.store.groupSource(group.key).getSnapshot()?.members).toEqual(members)
+  })
+
+  it('keeps a tail Node in the Turn its Location owns', () => {
+    const h = harness([tool('history', 2), tool('live', 12, 'bash', secondTurn), contributed('tail-row', 6, false, 'tail')], twoTurns)
+    const groups = h.store.entries.filter(entry => entry.kind === 'group')
+    expect(groups).toHaveLength(2)
+    expect(h.store.groupSource(groups[0]!.key).getSnapshot()?.members.map(member => member.key))
+      .toEqual(['history', 'tail-row'])
+    expect(h.store.groupSource(groups[1]!.key).getSnapshot()?.members.map(member => member.key))
+      .toEqual(['live'])
+    expect(h.store.entries.map(entry => entry.kind)).toEqual(['group', 'group'])
+  })
+
+  it('renders a tail-only Turn segment when nothing else belongs to the Turn', () => {
+    const h = harness([contributed('tail-row', 5, false, 'tail')])
+    expect(h.store.entries.map(entry => entry.kind === 'group' ? 'group' : entry.key)).toEqual(['group'])
+    const group = h.store.entries[0]!
+    if (group.kind !== 'group') throw new Error('expected group')
+    expect(h.store.groupSource(group.key).getSnapshot()?.members).toEqual([{ kind: 'node', key: 'tail-row' }])
+  })
+
+  it('keeps a real separator between tail Nodes from merging later process content', () => {
+    const h = harness([
+      tool('a', 2),
+      tool('x', 4, 'bash', secondTurn),
+      contributed('tail-row', 6, false, 'tail'),
+      tool('b', 8),
+    ], twoTurns)
+    const groups = h.store.entries.flatMap(entry => entry.kind === 'group'
+      ? [h.store.groupSource(entry.key).getSnapshot()!]
+      : [])
+    expect(groups.filter(group => group.data.turn === 1).map(group => group.members.map(member => member.key)))
+      .toEqual([['a'], ['b', 'tail-row']])
+    expect(groups.filter(group => group.data.turn === 2).map(group => group.members.map(member => member.key)))
+      .toEqual([['x']])
+  })
+
+  it('keeps a tail-appended group through an older-page prepend', () => {
+    const b = tool('b', 4)
+    const tail = contributed('tail-row', 10, false, 'tail')
+    const h = harness([b, tail])
+    const first = h.store.entries[0]!
+    if (first.kind !== 'group') throw new Error('expected group')
+    const source = h.store.groupSource(first.key)
+    h.builder.replace({ nodes: [tool('a', 2), b, tail], timeline })
+    h.commit()
+    expect(h.store.entries).toEqual([first])
+    expect(source.getSnapshot()?.members.map(member => member.key)).toEqual(['a', 'b', 'tail-row'])
+    expect(h.store.entries.map(entry => entry.kind === 'group' ? 'group' : entry.key)).toEqual(['group'])
+  })
+
+  it.each([
+    ['aborted', { kind: 'aborted', reason: { kind: 'legacy' } }],
+    ['error', { kind: 'error', error: { message: 'failed', code: 'TEST' } }],
+  ] as const)('keeps a tail Node through a %s Turn end', (_label, reason) => {
+    const ended: TurnLocation = {
+      ...turn, status: 'closed',
+      end: { type: 'turn/end', seq: SessionSeq(20), time: 20, data: { turn: 1, reason } },
+    }
+    const h = harness(
+      [tool('before', 4), contributed('tail-row', 10, false, 'tail')],
+      { turnOrder: [1], turns: new Map([[1, ended]]) },
+    )
+    const group = h.store.entries[0]!
+    if (group.kind !== 'group') throw new Error('expected group')
+    const snapshot = h.store.groupSource(group.key).getSnapshot()
+    expect(snapshot?.members.map(member => member.key)).toEqual(['before', 'tail-row'])
+    expect(snapshot?.data.closed).toBe(true)
+    expect(h.store.entries.map(entry => entry.kind === 'group' ? 'group' : entry.key)).toEqual(['group'])
   })
 })

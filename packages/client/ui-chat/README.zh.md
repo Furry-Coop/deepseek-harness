@@ -98,7 +98,7 @@ Chat 在 `MarkdownDelegateProvider.getTriggerProps` 接入处适配 Markdown 目
 
 正常在线时，本地 transcript 与 steering 回显在 Inbox 接受与领取期间保持挂载，直到持久消息到达，不会重复触发跟随底部。跨客户端的待处理 steering 遵循 Inbox 顺序，在匹配位置使用本地回显。已入档的本地 steering 还会排除匹配的旧 Inbox 行，直到领取投影到达；没有本地提交身份的 steering 仍按 Inbox 投影显示。重连后，Host 消息替代已有接收回执的本地回显；已领取但尚未入档时，气泡可能短暂消失。
 
-Chat 末尾为进行中的 Turn 控制行，且该轮尚无可见输入时，第一条本地 transcript 回显显示在控制行前。其他回显保留在正文末尾。控制行与回显共用一个 keyed 列表，因此控制行到达时不会重新挂载回显。持久输入在同一次渲染中替换匹配的回显。
+乐观 transcript 回显等待输入入档期间，第一条本地 transcript 回显显示在所属进行中轮次的标题之前，即使该标题之后已有贡献的过程行。其他回显保留在正文末尾。控制行与回显共用一个 keyed 列表，因此控制行到达时不会重新挂载回显。持久输入在同一次渲染中替换匹配的回显。
 
 工作步骤展示模式控制过程组显示与推理预览。简洁、标准、详细模式收起符合条件的已完成轮次，保留所有 Assistant 回复可见，选「仅最终回答」时只保留最终答案；完全展开模式保留时长或状态抬头，但不支持收起，历史过程行直接显示。[业务规则明细](src/client/conversation-nodes/README.zh.md#display-modes) 统一说明模式表、组头行为、整轮折叠资格、时钟与开合重置。
 
@@ -113,7 +113,9 @@ Chat 通过 `uiConversation.groups` 注册过程 Group Definition。React 通过
 
 `groupPart` 在 Assistant 渲染器中选择推理或回复，不复制 Node 载荷。同一个 callId 的准备、派发与结果阶段由 Tool 节点自己拥有。每个部分有独立的 DOM 锚点用于恢复阅读位置；轮次导航使用原 Node key，落到它的第一个可见部分。展示模式切换以及为完整旧组补入更早成员时，保留组来源、成员父级及 key。原 Node Store 仍是唯一节点数据所有者，替换 Builder 时重新绑定按键订阅，不重挂载容器。模式变化保留尺寸观察器，并复用整轮状态选择器。
 
-Chat Builder 按节点发布 `bottomSource`：节点可见且属于已加载的最新交互段时为 true，而不只是列表最后一行。节点通过 `groupTree` 声明自己在分组树中的位置；含 `exchange` 节点的轮次开启一个交互段，交互段持续到下一个开启轮次。这些位置由外到内依次为 `exchange`、`input`、`turn`、`process`，定义在 [group-tree.ts](src/client/contract/group-tree.ts)；过程分组、整轮折叠和轮次输入判断都读取它们，外部 Definition 声明位置即可放置自己的 Chat 行。交互段起点移动时，只有进入或离开该交互段的轮次中的节点收到通知。Group 读取其首个成员的位置。待发送消息去重与收起判断仍由 Chat 视图处理，不进入 Builder。
+Chat Builder 按节点发布 `bottomSource`：节点可见且属于已加载的最新交互段时为 true，而不只是列表最后一行。节点通过 `groupTree` 声明自己在分组树中的位置；含 `exchange` 节点的轮次开启一个交互段，交互段持续到下一个开启轮次。这些位置由外到内依次为 `exchange`、`input`、`turn`、`process` 与 `tail`，定义在 [group-tree.ts](src/client/contract/group-tree.ts)；过程分组、整轮折叠和轮次输入判断都读取它们，外部 Definition 声明位置即可放置自己的 Chat 行。交互段起点移动时，只有进入或离开该交互段的轮次中的节点收到通知。Group 读取其首个成员的位置。待发送消息去重与收起判断仍由 Chat 视图处理，不进入 Builder。
+
+未声明位置的 Node 会并入周围的步骤组，因此插件贡献的活动行会参与运行中的过程组。Node 还可以声明 `processActivity: { running: true }`：组会把该 Node 的 `anchorSeq` 与原生运行中 Tool 或推理起点比较；当贡献更新时，在原生标题控件内渲染按键的 `conversation.chat.process.activity` Slot——按钮、图标、chevron、shimmer 与完成标题保持不变；该 Node kind 没有注册渲染器时使用原生标签。声明为 `tail` 的 Node 加入轮次最后一个过程段，位于该段其他成员之后、结束该段的回复之前，与 `anchorSeq` 无关；它不会开启、拆分或关闭已有段，随整轮折叠隐藏，回复仍留在外面。轮次没有任何过程段时，tail Node 自成一个段，位于轮次最终回复之前；没有回复时位于自身锚点。
 
 实时工具 delta 与推理共用按帧合并的发布节奏；持久调用和结果立即发布。原生与嵌套结果保留事件中的展示元数据，使历史文件与命令标签使用执行时的位置。当已读取参数的答案、锚点、位置及可见性均未变化时，重复 delta 保持 Tool 节点不变。Definition 向工具行和分组详情提供同一个懒计算参数读器，无需按工具注册。
 

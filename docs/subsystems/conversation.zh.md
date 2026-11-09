@@ -19,6 +19,8 @@ Session Controller 拥有连续的已加载逻辑 event window。每个 `Session
 | Group Definition | 业务包从物化后的 Node 派生一个目标的根引用和组快照，拥有成员归属、分段、摘要及增量缓存。 |
 | View | Chat 或 Trajectory 等 Slot entry 只读取自身 target snapshot，并渲染 target 自有 node。 |
 
+`ConversationNodeContext.sessionId` 给出正在展示的 Session，即使已加载窗口包含从 fork 继承的历史；未绑定 Session 的 detached assembler 会把它留为 undefined。`match` 只能看到当前事件，因此 Definition 应在 `start`、`update`、`buildLocationData` 或 `buildViewNode` 中读取它。
+
 Chat 与 Trajectory 可以识别同一个持久 event family，但各自保留自己的 Definition State 与最终 node payload。共享的 target-neutral 机制只包括 identity routing、有序 replay、Location data、predecessor dependency 与 publication cadence。
 
 ## Target 激活
@@ -263,6 +265,7 @@ Chat Node 还通过 `groupTree` 选择所在行的位置。位置由外到内排
 | 所在轮次的其他输入，如之后的人的输入或触发通知；位于过程之前时是开场输入，之后出现时整个轮次保持展开 | `input` |
 | 留在整轮折叠之外的轮次通知，如错误或已完成轮次页脚 | `turn` |
 | 整轮折叠仍会隐藏的独立行，如模型重试 | `process` |
+| 轮次流程末位：位于最后一个段的其余成员之后、结束该段的回复之前 | `tail` |
 | 并入相邻步骤组的普通过程内容 | 不声明 `groupTree` |
 
 各内置 Node 声明的位置见 [Chat 业务规则](../../packages/client/ui-chat/src/client/conversation-nodes/README.zh.md#process-grouping)。如果同一 target 的通用 Definition 也会匹配你的 Node 所呈现的事件，按上文用 `exclusive: true` 认领该事件。

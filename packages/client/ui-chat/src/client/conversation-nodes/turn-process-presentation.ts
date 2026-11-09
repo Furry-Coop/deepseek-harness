@@ -3,7 +3,7 @@ import type { ChatNode } from '../contract/chat-nodes.ts'
 import type {
   ChatLocationNodeIndex, ChatNodeStore, ChatTurnProcessPresentation,
 } from '../contract/snapshot.ts'
-import { isAtOrOutside } from '../contract/group-tree.ts'
+import { isAtOrOutside, isProcessTail } from '../contract/group-tree.ts'
 
 function nodeTurn(node: ChatNode | undefined): number | undefined {
   const location = node?.location
@@ -56,6 +56,12 @@ function derivePresentation(
     if (isAtOrOutside(node, 'input')
       && (openingHumanAnchor === undefined || node.anchorSeq > openingHumanAnchor)) {
       hasInterleavedInput = true
+    }
+    // A tail Node belongs to the disclosure whatever its anchor; a reply may sit between its anchor and the end.
+    if (isProcessTail(node)) {
+      hasExternalProcess = true
+      hasNonReplyProcess = true
+      continue
     }
     if (isAtOrOutside(node, 'turn')
       || node.anchorSeq < spec.processStartSeq

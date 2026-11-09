@@ -3,6 +3,7 @@ import { memo, type ReactElement } from 'react'
 import type { PendingSubmission } from '@deepseek-ai/dsh-api-session-controller/client'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 import type { ChatFlowSlotProps } from '../contract/slots.ts'
+import type { ChatNodeStore } from '../contract/snapshot.ts'
 import { ChatNodeSeat } from './ChatNodeSeat.tsx'
 import { ChatGroupSeat } from './ChatGroupSeat.tsx'
 import { PendingSteeringBubble, PendingSubmissionBubble } from './MessageItem.tsx'
@@ -20,6 +21,32 @@ function isLocalSubmission(item: PendingInput): item is PendingSubmission {
 /** Whether the echo is a local submission that opens a new Turn. */
 function isTranscriptEcho(item: PendingInput): boolean {
   return isLocalSubmission(item) && item.placement === 'transcript'
+}
+
+/**
+ * Locate the root row of the open Turn that a leading echo must precede.
+ * The row may no longer be the last entry once contributed process rows appear
+ * during the optimistic window, so find the latest open Turn's control instead.
+ * @param entries - ordered root rows.
+ * @param nodes - current Chat Node store.
+ * @param lastInputTurn - Turn whose admitted input the shell already placed.
+ * @returns the control's index, or -1 when no leading echo belongs before it.
+ */
+function openTurnControlIndex(
+  entries: ChatFlowSlotProps['entries'],
+  nodes: ChatNodeStore,
+  lastInputTurn: number | undefined,
+): number {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index]
+    if (entry?.kind !== 'node') continue
+    const node = nodes.get(entry.key)
+    if (node?.kind !== 'turn-process') continue
+    const location = node.location
+    if (location.kind !== 'turn' || location.turn.status !== 'open') continue
+    return location.turn.turn === lastInputTurn ? -1 : index
+  }
+  return -1
 }
 
 /** Render the flow without adding a DOM parent or changing keyed row positions. */
@@ -80,13 +107,11 @@ export const ChatFlow = memo(function ChatFlow({
     else if (isTranscriptEcho(item)) openingRows.push(row)
     else pendingRows.push(row)
   }
-  const tail = entries.at(-1)
-  const node = tail?.kind === 'node' ? nodeStore.get(tail.key) : undefined
-  // An empty opening control follows the echoes that lead its Turn.
-  // All rows share this keyed list so inserting the control keeps the echoes mounted.
-  if (node?.kind === 'turn-process' && node.location.kind === 'turn'
-    && node.location.turn.status === 'open' && node.location.turn.turn !== lastInputTurn) {
-    rows.splice(rows.length - 1, 0, ...leadingRows.splice(0))
+  // An opening echo leads its Turn, before the title and any process row that a
+  // contribution already materialized while the input is still optimistic.
+  if (leadingRows.length > 0) {
+    const control = openTurnControlIndex(entries, nodeStore, lastInputTurn)
+    if (control !== -1) rows.splice(control, 0, ...leadingRows.splice(0))
   }
   // Rows enter before the keyed status and echoes after it, so React never moves its DOM node. The
   // running bit and the Turn's end arrive separately: after the bit clears, an open latest Turn keeps

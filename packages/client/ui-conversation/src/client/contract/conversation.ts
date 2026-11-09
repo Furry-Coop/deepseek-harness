@@ -1,5 +1,5 @@
 import type { SessionEventLike } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
+import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session/types'
 import type {
   ConversationGroupData, ConversationGroupedView, ConversationGroupInput,
 } from './groups.ts'
@@ -169,6 +169,12 @@ export interface ConversationNodeContext<State = unknown> {
   readonly key: string
   readonly kind: string
   readonly id: string
+  /**
+   * Session whose Conversation binding assembles this Context. A fork keeps its
+   * own identity even while the loaded window holds inherited history. Absent
+   * only for a detached assembler constructed without a Session binding.
+   */
+  readonly sessionId?: SessionId | undefined
   readonly matches: readonly ConversationMatch[]
   readonly start: ConversationStartMatch | undefined
   readonly state: State | undefined

@@ -7,9 +7,10 @@ import {
   IconThinkOutlineRegular, TextShimmer,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { GroupKey, NodeReference } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import type { ProcessActivity } from '../contract/process-groups.ts'
+import type { ChatNode } from '../contract/chat-nodes.ts'
+import type { ProcessActivity, ProcessActivityContribution } from '../contract/process-groups.ts'
 import type { ChatStoreState } from '../contract/store.ts'
-import type { ChatFlowSlotProps } from '../contract/slots.ts'
+import type { ChatFlowSlotProps, ChatProcessActivityOwnerProps } from '../contract/slots.ts'
 import { turnProcessOpen } from '../stores.ts'
 import { ChatNodeSeat } from './ChatNodeSeat.tsx'
 import { hiddenOrCollapsing } from './flow-motion.ts'
@@ -33,6 +34,7 @@ interface LiveProcessTitle {
   readonly activity: ProcessTitleActivity
   readonly detail: string
   readonly preparing: boolean
+  readonly contribution?: ProcessActivityContribution | undefined
 }
 
 const PROCESS_ICONS: Record<ProcessTitleActivity, ReactNode> = {
@@ -54,6 +56,9 @@ const PROCESS_ICONS: Record<ProcessTitleActivity, ReactNode> = {
 
 function sameLiveProcessTitle(left: LiveProcessTitle, right: LiveProcessTitle): boolean {
   return left.activity === right.activity && left.detail === right.detail && left.preparing === right.preparing
+    && left.contribution?.key === right.contribution?.key
+    && left.contribution?.kind === right.contribution?.kind
+    && left.contribution?.anchorSeq === right.contribution?.anchorSeq
 }
 
 function useStableLiveProcessTitle(desired: LiveProcessTitle, active: boolean): LiveProcessTitle {
@@ -77,7 +82,8 @@ function useStableLiveProcessTitle(desired: LiveProcessTitle, active: boolean): 
     }
     const timer = setTimeout(commit, remaining)
     return () => { clearTimeout(timer) }
-  }, [active, desired.activity, desired.detail, desired.preparing])
+  }, [active, desired.activity, desired.detail, desired.preparing,
+    desired.contribution?.key, desired.contribution?.kind, desired.contribution?.anchorSeq])
   return active ? displayed : desired
 }
 
@@ -89,10 +95,33 @@ const GroupMembers = memo(function GroupMembers({ members, ...props }: SeatProps
     {...member.groupPart === undefined ? {} : { groupPart: member.groupPart }} />)
 })
 
-const ProcessGroupHeader = memo(function ProcessGroupHeader({ groupKey, useChatGroup, usePresentation, t, open, bodyId, toggle }: {
+/** Subscribe to one contributed activity Node only while that activity is the live title. */
+const ContributedProcessTitle = memo(function ContributedProcessTitle({
+  contribution, detailed, fallback, useChatNode, renderSlot,
+}: {
+  readonly contribution: ProcessActivityContribution
+  readonly detailed: boolean
+  readonly fallback: ReactNode
+  readonly useChatNode: ChatFlowSlotProps['useChatNode']
+  readonly renderSlot: ChatFlowSlotProps['renderSlot']
+}) {
+  const node = useChatNode(contribution.key) as ChatNode | undefined
+  if (node === undefined) return <>{fallback}</>
+  // Runtime dispatch owns the correlation between the keyed entry and its Node.
+  const routed = { node, detailed } as {
+    [Kind in ChatNode['kind']]: ChatProcessActivityOwnerProps & { readonly node: ChatNode<Kind> }
+  }[ChatNode['kind']]
+  return <>{renderSlot('conversation.chat.process.activity', routed, { entryKey: node.kind, fallback })}</>
+})
+
+const ProcessGroupHeader = memo(function ProcessGroupHeader({
+  groupKey, useChatGroup, useChatNode, usePresentation, renderSlot, t, open, bodyId, toggle,
+}: {
   readonly groupKey: GroupKey
   readonly useChatGroup: ChatFlowSlotProps['useChatGroup']
+  readonly useChatNode: ChatFlowSlotProps['useChatNode']
   readonly usePresentation: ChatFlowSlotProps['usePresentation']
+  readonly renderSlot: ChatFlowSlotProps['renderSlot']
   readonly t: ChatFlowSlotProps['t']
   readonly open: boolean
   readonly bodyId: string
@@ -104,25 +133,33 @@ const ProcessGroupHeader = memo(function ProcessGroupHeader({ groupKey, useChatG
     activity: data?.summary.running ?? 'thinking',
     detail: data?.summary.runningDetail ?? '',
     preparing: data?.summary.preparing === true,
+    ...data?.summary.contribution === undefined ? {} : { contribution: data.summary.contribution },
   }, data !== undefined && !data.closed)
+  const contribution = live.contribution
   if (data === undefined) return null
   const label = data.closed ? processTitle(data.summary, t)
     : live.preparing ? t(`message.stepProcess.prepare.${live.activity === 'thinking' ? 'tools' : live.activity}`)
       : t(`message.stepProcess.${live.activity}`)
   const detail = detailed && !data.closed ? live.detail : ''
-  const title = detail === '' ? label : `${label}${t('message.turnProcess.separator')}${detail}`
+  const nativeTitle = detail === '' ? label : `${label}${t('message.turnProcess.separator')}${detail}`
   const activity = data.closed ? data.summary.counts[0]?.kind ?? 'thinking' : live.activity
+  const contributed = !data.closed && contribution !== undefined
   return (
     <button type="button" className={css.title} aria-expanded={open} aria-controls={bodyId}
       data-process-activity={activity} onClick={(event) => { event.currentTarget.focus(); toggle() }}>
       <span className={css.leading} aria-hidden="true">
-        <span className={css.activityIcon} data-step-process-icon>{PROCESS_ICONS[activity]}</span>
+        <span className={css.activityIcon} data-step-process-icon>
+          {PROCESS_ICONS[activity]}
+        </span>
         <span className={css.chevron} data-step-process-chevron>
           {open ? <IconChevronUpOutlineRegular /> : <IconChevronDownOutlineRegular />}
         </span>
       </span>
       <TextShimmer active={!data.closed}>
-        <TextShimmer className={css.label}>{title}</TextShimmer>
+        <TextShimmer className={css.label}>
+          {contributed ? <ContributedProcessTitle contribution={contribution} detailed={detailed}
+            fallback={nativeTitle} useChatNode={useChatNode} renderSlot={renderSlot} /> : nativeTitle}
+        </TextShimmer>
       </TextShimmer>
     </button>
   )
@@ -192,8 +229,9 @@ export const ChatGroupSeat = memo(function ChatGroupSeat({ groupKey, useChatGrou
       data-chat-paging-anchor={grouped && !open || undefined}
       data-step-process data-group-expanded-mode={!grouped || undefined}>
       <div ref={headerRef}>
-        <ProcessGroupHeader groupKey={groupKey} useChatGroup={useChatGroup}
-          usePresentation={props.usePresentation} t={props.t} open={open} bodyId={bodyId} toggle={toggle} />
+        <ProcessGroupHeader groupKey={groupKey} useChatGroup={useChatGroup} useChatNode={props.useChatNode}
+          usePresentation={props.usePresentation} renderSlot={props.renderSlot} t={props.t}
+          open={open} bodyId={bodyId} toggle={toggle} />
       </div>
       <div ref={bodyRef} id={bodyId} className={classes.join(' ')} data-step-process-body
         data-scroll-up={edges.canScrollUp || undefined} data-scroll-down={edges.canScrollDown || undefined}

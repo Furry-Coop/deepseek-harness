@@ -2,7 +2,7 @@
 import { reasoningText } from '../reasoning-text.ts'
 import type { ToolArgs } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { ProcessActivity, ProcessActivitySummary } from '../contract/process-groups.ts'
-import type { ChatNode } from '../contract/chat-nodes.ts'
+import type { ChatNode, ChatNodeKind } from '../contract/chat-nodes.ts'
 import { isRunningTool } from '../contract/chat-nodes.ts'
 import type { ToolCallBlock } from '../contract/snapshot.ts'
 
@@ -93,7 +93,7 @@ function questionDetail(value: unknown): string {
   return ''
 }
 
-function liveReasoningDetail(nodes: readonly ChatNode[]): string {
+function liveReasoning(nodes: readonly ChatNode[]): { readonly detail: string; readonly anchorSeq: number } | undefined {
   for (let nodeIndex = nodes.length - 1; nodeIndex >= 0; nodeIndex--) {
     const node = nodes[nodeIndex]
     if (node?.kind !== 'assistant-step' || node.data.status !== 'running') continue
@@ -103,11 +103,11 @@ function liveReasoningDetail(nodes: readonly ChatNode[]): string {
       const paragraphs = reasoningText(block.text).split(/\r?\n[\t ]*\r?\n/)
       for (let paragraphIndex = paragraphs.length - 1; paragraphIndex >= 0; paragraphIndex--) {
         const detail = normalizeLiveToolDetail(paragraphs[paragraphIndex]?.replaceAll('**', ''))
-        if (detail !== '') return detail
+        if (detail !== '') return { detail, anchorSeq: node.anchorSeq }
       }
     }
   }
-  return ''
+  return undefined
 }
 
 /**
@@ -130,7 +130,7 @@ function liveToolDetail(name: string, args: ToolArgs): string {
 /**
  * Rank categories by distinct call count, breaking ties by first appearance.
  * @param nodes - process members, including recursive tools.
- * @returns all ranked categories and the latest running tool category and bounded task detail.
+ * @returns all ranked categories and the latest running activity, native or contributed.
  */
 export function processActivity(nodes: readonly ChatNode[]): ProcessActivitySummary {
   const counts = new Map<ProcessActivity, number>()
@@ -138,8 +138,11 @@ export function processActivity(nodes: readonly ChatNode[]): ProcessActivitySumm
   let running: ProcessActivity | undefined
   let runningDetail = ''
   let runningTime = -Infinity
+  let nativeAnchor: number | undefined
   let preparing: boolean | undefined
-  const visit = (tool: ToolCallBlock): void => {
+  let contribution: { readonly key: string; readonly kind: ChatNodeKind; readonly anchorSeq: number; readonly index: number }
+    | undefined
+  const visit = (tool: ToolCallBlock, anchorSeq: number): void => {
     if (seen.has(tool.callId)) return
     seen.add(tool.callId)
     const call = isRunningTool(tool) ? tool : tool.call
@@ -150,19 +153,32 @@ export function processActivity(nodes: readonly ChatNode[]): ProcessActivitySumm
         preparing = tool.phase === 'preparing'
         runningDetail = liveToolDetail(tool.name, tool.args)
         runningTime = tool.time
+        nativeAnchor = anchorSeq
       }
       counts.set(kind, (counts.get(kind) ?? 0) + 1)
     }
-    for (const child of tool.subCalls) visit(child)
+    for (const child of tool.subCalls) visit(child, anchorSeq)
   }
-  for (const node of nodes) {
-    if (node.kind === 'tool-call') visit(node.data.root)
+  for (const [index, node] of nodes.entries()) {
+    if (node.kind === 'tool-call') visit(node.data.root, node.anchorSeq)
+    if (node.processActivity?.running !== true) continue
+    if (contribution === undefined || node.anchorSeq > contribution.anchorSeq
+      || (node.anchorSeq === contribution.anchorSeq && index > contribution.index)) {
+      contribution = { key: node.key, kind: node.kind, anchorSeq: node.anchorSeq, index }
+    }
   }
-  if (running === undefined) runningDetail = liveReasoningDetail(nodes)
+  if (running === undefined) {
+    const reasoning = liveReasoning(nodes)
+    runningDetail = reasoning?.detail ?? ''
+    nativeAnchor = reasoning?.anchorSeq
+  }
   return {
     counts: [...counts].map(([kind, count]) => ({ kind, count })).sort((a, b) => b.count - a.count),
     running,
     runningDetail,
     ...preparing ? { preparing: true } : {},
+    ...contribution !== undefined && (nativeAnchor === undefined || contribution.anchorSeq > nativeAnchor)
+      ? { contribution: { key: contribution.key, kind: contribution.kind, anchorSeq: contribution.anchorSeq } }
+      : {},
   }
 }

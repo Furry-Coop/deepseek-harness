@@ -2,6 +2,7 @@ import type {
   SessionAssistantSettlementEntry, SessionEventLikeEntry, SessionTransientEventEntry,
 } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { LlmAttemptId } from '@deepseek-ai/dsh-llm/brand'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type {
   ConversationContextReader, ConversationLocationData, ConversationMatch, ConversationMatchResult,
   ConversationNodeContext, ConversationNodeDefinition, ConversationPreviousContext,
@@ -98,11 +99,12 @@ function insertionIndex(contexts: readonly InternalContext[], seq: number): numb
   return low
 }
 
-function contextSnapshot<State>(context: InternalContext): ConversationNodeContext<State> {
+function contextSnapshot<State>(context: InternalContext, sessionId: SessionId | undefined): ConversationNodeContext<State> {
   return {
     key: context.key,
     kind: context.kind,
     id: context.id,
+    sessionId,
     matches: context.matches,
     start: context.start,
     state: context.state as State | undefined,
@@ -197,11 +199,13 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
    * @param eventDefinitions - live Event Definition registry.
    * @param viewDefinitions - live view builder registry.
    * @param groupDefinitions - optional registered grouping rules, independent of presentation modes.
+   * @param sessionId - Session binding that owns this assembler; absent only in a detached test harness.
    */
   constructor(
     private readonly eventDefinitions: ConversationEventDefinitions,
     private readonly viewDefinitions: ConversationViewDefinitions,
     private readonly groupDefinitions: ConversationGroupDefinitions = NO_GROUPS,
+    private readonly sessionId?: SessionId,
   ) {
     this.resetViewBuilders()
   }
@@ -617,7 +621,7 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
     if (starting) {
       this.replayContext(context)
     } else if (context.state !== undefined) {
-      const typed = contextSnapshot(context) as ConversationNodeContext & { readonly state: unknown }
+      const typed = contextSnapshot(context, this.sessionId) as ConversationNodeContext & { readonly state: unknown }
       context.state = requireState(definition, 'update', definition.update(typed, match))
       context.revision++
       this.revised.add(context)
@@ -707,13 +711,13 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
     context.state = requireState(
       context.definition,
       'start',
-      context.definition.start(contextSnapshot(context), start, reader),
+      context.definition.start(contextSnapshot(context, this.sessionId), start, reader),
     )
     this.replaceDependencies(context, dependencies)
     for (let index = 1; index < context.matches.length; index++) {
       const match = context.matches[index]
       if (match === undefined) continue
-      const typed = contextSnapshot(context) as ConversationNodeContext & { readonly state: unknown }
+      const typed = contextSnapshot(context, this.sessionId) as ConversationNodeContext & { readonly state: unknown }
       context.state = requireState(
         context.definition,
         'update',
@@ -906,7 +910,7 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
 
   private buildNode(context: InternalContext, target: string): ConversationViewNode | null {
     if (context.definition.target !== target || context.definition.buildViewNode === undefined) return null
-    const node = context.definition.buildViewNode(contextSnapshot(context))
+    const node = context.definition.buildViewNode(contextSnapshot(context, this.sessionId))
     if (node === null) return null
     if (node.key !== context.key) {
       throw new Error(`conversation Definition "${context.kind}" returned unstable key "${node.key}"; expected "${context.key}"`)
@@ -1007,7 +1011,7 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
     previous: ConversationLocationData | null,
   ): ConversationLocationData | null {
     if (context.definition.buildLocationData === undefined) return null
-    const data = context.definition.buildLocationData(contextSnapshot(context), scope, previous)
+    const data = context.definition.buildLocationData(contextSnapshot(context, this.sessionId), scope, previous)
     if (data === null) return null
     if (data.kind !== scope) {
       throw new Error(

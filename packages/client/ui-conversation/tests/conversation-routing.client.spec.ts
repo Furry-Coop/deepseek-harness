@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { SessionEventLike } from '@deepseek-ai/dsh-api-session-controller/client'
-import { SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session/types'
+import { SessionSeq, type SessionEvent, type SessionId } from '@deepseek-ai/dsh-session/types'
 import {
   ConversationEventRegistry, ConversationNodeAssembler,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -178,5 +178,46 @@ describe('Conversation event routing', () => {
     assembler.append({ type: 'event', event: turn(1) })
     expect(matched).toEqual(targets)
     expect(fallback).toHaveBeenCalledTimes(target === 'unmatched' ? 1 : 0)
+  })
+
+  it('exposes the displayed Session to Definitions and omits it for a detached assembler', () => {
+    const events = registry()
+    const seen: (SessionId | undefined)[] = []
+    events.register({
+      kind: 'session-aware',
+      target: 'answer',
+      match: event => event.type === 'turn/start' ? { id: '1', role: 'start' } : null,
+      start: (context) => { seen.push(context.sessionId); return null },
+      update: context => context.state,
+      buildViewNode: (context) => { seen.push(context.sessionId); return null },
+    })
+    const views = {
+      entries: () => [{
+        target: 'answer',
+        create: () => ({ empty: null, replace: () => null, apply: () => null }),
+      }],
+    }
+    const displayed = 'displayed-session' as SessionId
+    const attached = new ConversationNodeAssembler(events, views, undefined, displayed)
+    attached.replaceWindow([{ type: 'event', event: turn(1) }], false)
+    attached.activateTarget('answer')
+    attached.flush()
+    attached.snapshot('answer')
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen.every(value => value === displayed)).toBe(true)
+    const switched = 'switched-session' as SessionId
+    const other = new ConversationNodeAssembler(events, views, undefined, switched)
+    other.replaceWindow([{ type: 'event', event: turn(2, 2) }], false)
+    other.activateTarget('answer')
+    other.flush()
+    other.snapshot('answer')
+    expect(seen.at(-1)).toBe(switched)
+    seen.length = 0
+    const detached = new ConversationNodeAssembler(events, views)
+    detached.replaceWindow([{ type: 'event', event: turn(1) }], false)
+    detached.activateTarget('answer')
+    detached.flush()
+    detached.snapshot('answer')
+    expect(seen.at(-1)).toBeUndefined()
   })
 })

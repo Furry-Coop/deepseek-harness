@@ -61,6 +61,12 @@ import { renderReasoningSlot } from './reasoning-component-fixture.tsx'
 import { createUserContentFixture } from './user-content-component-fixture.tsx'
 import { ConversationGroupStore } from '../../ui-conversation/src/client/conversation/group-store.ts'
 
+declare module '@deepseek-ai/dsh-client-ui-chat/client' {
+  interface ChatNodeDataMap {
+    'plugin-activity': { readonly label: string }
+  }
+}
+
 function installGroupedSnapshot(
   builder: ChatSnapshotBuilder, state: ProcessState, groups: ConversationGroupStore<ProcessGroupData>, source: ChatSnapshot,
 ): ChatSnapshot {
@@ -72,6 +78,33 @@ function installGroupedSnapshot(
   builder.publish()
   groups.publish()
   return snapshot
+}
+
+/** Install one group whose live title comes from a contributed Node activity. */
+function activityGroup(
+  source: ChatSnapshot,
+  nodeKey: NodeKey,
+  closed = false,
+): ConversationGroupStore<ProcessGroupData> {
+  const key = 'activity' as GroupKey
+  const store = new ConversationGroupStore<ProcessGroupData>()
+  store.prepareAndInstall({
+    entries: [{ kind: 'group', key }],
+    groups: { kind: 'replace', snapshots: [{
+      key,
+      members: [{ kind: 'node', key: nodeKey }],
+      data: {
+        turn: 1, closed,
+        summary: {
+          counts: closed ? [{ kind: 'commands', count: 1 }] : [],
+          running: undefined,
+          runningDetail: '',
+          contribution: { key: nodeKey, kind: 'user', anchorSeq: 1 },
+        },
+      },
+    }] },
+  }, id => source.nodes.get(id))
+  return store
 }
 
 // Every session-scope fixture carries the resource hook the resources plugin merges into GlobalStandardProps.
@@ -360,6 +393,8 @@ function HarnessChatNode({
         usePerformanceUsage={usePerformanceUsage} renderSlot={renderTurnTailSlot} />
     case 'unknown':
       return <UnknownNodeView {...nodeProps} node={owner.node} />
+    case 'plugin-activity':
+      return <span data-testid="contributed-activity">{owner.node.data.label}</span>
     case 'tool-call': {
       const block = owner.node.data.root
       const toolName = 'kind' in block ? block.call?.name ?? '' : block.name
@@ -446,6 +481,7 @@ function makeHarness(
   const useOriginRenderer = bindSnapshotSelector(originRenderer)
   let nodeSlotOverride: NodeRenderer | undefined
   let imageSlotOverride: ImageRenderer | undefined
+  let activitySlotOverride: ((owner: { readonly node: ChatNode; readonly detailed: boolean }) => React.ReactNode) | undefined
   const renderImages = (name: string, owner: object, options?: { fallback?: React.ReactNode }) => {
     if ((name !== 'conversation.chat.user.images' && name !== 'conversation.chat.message.images') || !isImageOwner(owner)) {
       throw new Error(`Unexpected Chat image Slot: ${name}`)
@@ -467,6 +503,10 @@ function makeHarness(
   }) => {
     if (key === 'conversation.chat.node') {
       return renderNodeSlot(key, owner as RoutedChatNodeOwner, opts as Parameters<NodeRenderer>[2])
+    }
+    if (key === 'conversation.chat.process.activity') {
+      return activitySlotOverride?.(owner as { readonly node: ChatNode; readonly detailed: boolean })
+        ?? opts?.fallback ?? null
     }
     throw new Error(`Undeclared flow child: ${key}`)
   }
@@ -588,6 +628,9 @@ function makeHarness(
     setFoldedReplies: (replies: FoldedReplies) => { foldedReplies.set(replies) },
     setNodeRenderer: (renderer: NodeRenderer) => { nodeSlotOverride = renderer },
     setImageRenderer: (renderer: ImageRenderer) => { imageSlotOverride = renderer },
+    setActivityRenderer: (renderer: ((owner: { readonly node: ChatNode; readonly detailed: boolean }) => React.ReactNode) | undefined) => {
+      activitySlotOverride = renderer
+    },
     setOriginRenderer: (renderer: UserChainRenderer | undefined) => { originRenderer.set({ renderer }) },
   }
 }
@@ -1316,6 +1359,93 @@ describe('ChatView', () => {
     expect(new Set(anchors).size).toBe(2)
     expect([...view.container.querySelectorAll('[data-chat-group-part]')]
       .map(element => element.getAttribute('data-chat-node-key'))).toEqual([nodeKey, nodeKey])
+  })
+
+  it('renders a contributed activity title inside the native group control', () => {
+    const snapshot = chatSnapshotFixture({ nodes: [user(1, 'member')] })
+    const h = makeHarness({}, {}, snapshot)
+    const nodeKey = snapshot.order[0] as NodeKey
+    h.setGrouped(activityGroup(snapshot, nodeKey))
+    h.setActivityRenderer(({ node, detailed }) => <span>{`contributed:${node.kind}:${detailed}`}</span>)
+    h.setTranscriptView('standard')
+    const view = render(<h.ChatView {...h.props} />)
+    const header = view.container.querySelector<HTMLButtonElement>('[data-process-activity]')!
+    expect(header.textContent).toContain('contributed:user:true')
+    expect(header.querySelector('[data-step-process-icon]')).not.toBeNull()
+    expect(header.querySelector('[data-step-process-chevron]')).not.toBeNull()
+    expect(header.textContent).not.toContain(h.props.t('message.stepProcess.thinking'))
+  })
+
+  it('falls back to the native activity label without a registered activity renderer', () => {
+    const snapshot = chatSnapshotFixture({ nodes: [user(1, 'member')] })
+    const h = makeHarness({}, {}, snapshot)
+    const nodeKey = snapshot.order[0] as NodeKey
+    h.setGrouped(activityGroup(snapshot, nodeKey))
+    const view = render(<h.ChatView {...h.props} />)
+    const header = view.container.querySelector<HTMLButtonElement>('[data-process-activity]')!
+    expect(header.textContent).toContain(h.props.t('message.stepProcess.thinking'))
+    expect(header.querySelector('[data-step-process-icon]')).not.toBeNull()
+  })
+
+  it('keeps the completed group title even when a closed group still carries a contribution', () => {
+    const snapshot = chatSnapshotFixture({ nodes: [user(1, 'member')] })
+    const h = makeHarness({}, {}, snapshot)
+    const nodeKey = snapshot.order[0] as NodeKey
+    h.setGrouped(activityGroup(snapshot, nodeKey, true))
+    h.setActivityRenderer(() => <span>stale contribution</span>)
+    const view = render(<h.ChatView {...h.props} />)
+    const header = view.container.querySelector<HTMLButtonElement>('[data-process-activity]')!
+    expect(header.textContent).toContain(h.props.t('message.stepProcess.done.commands'))
+    expect(header.textContent).not.toContain('stale contribution')
+  })
+
+  it('hides a Turn process tail Node with the completed disclosure while its reply stays outside', () => {
+    const source = chatSnapshotFixture({
+      nodes: [userInTurn(1, 'prompt', 1), assistant(3, 'answer', 1, 2)],
+      turnTimings: new Map([[1, { startTime: 0 }]]),
+      turnEnds: new Map([[1, 6]]),
+    })
+    const turn = source.timeline.turns.get(1)!
+    const control: ChatNode<'turn-process'> = {
+      key: 'control', id: '1', kind: 'turn-process', target: 'chat', anchorSeq: 0.9,
+      location: { kind: 'turn', turn }, visibility: 'visible', groupTree: 'turn',
+      data: {
+        turn: 1, controlAnchorSeq: 5, processStartSeq: 5, answerAnchorSeq: 3,
+        answerStep: 2, inlineReasoning: false, messageCount: 0, toolCallCount: 0, subagentCount: 0,
+      },
+    }
+    const tail: ChatNode<'plugin-activity'> = {
+      key: 'tail-row', id: 'tail', kind: 'plugin-activity', target: 'chat', anchorSeq: 7,
+      location: { kind: 'turn', turn }, visibility: 'visible', groupTree: 'tail',
+      data: { label: 'tail row' },
+    }
+    const builder = new ChatSnapshotBuilder()
+    const groups = new ConversationGroupStore<ProcessGroupData>()
+    const state = new ProcessState()
+    const snapshot = builder.replace({ nodes: [control, ...source.nodes.values(), tail], timeline: source.timeline })
+    const input = builder.groupInput()
+    state.accept(input)
+    const update = state.output()
+    if (update !== null) groups.prepareAndInstall(update, input.readNode)
+    builder.publish()
+    groups.publish()
+    const h = makeHarness({}, { running: false }, snapshot)
+    h.setGrouped(groups)
+    const view = render(<h.ChatView {...h.props} />)
+    const turnControl = turnProcessControl(view.container)!
+    expect(turnControl.disabled).toBe(false)
+    expect(turnControl.textContent).toContain(h.props.t('message.turnProcess.took'))
+    const tailRow = view.getByTestId('contributed-activity')
+    expect(tailRow.closest('[data-step-process-body]')).not.toBeNull()
+    expect(tailRow.closest('[hidden]')).not.toBeNull()
+    expect(view.getByText('answer').closest('[hidden]')).toBeNull()
+    fireEvent.click(turnControl)
+    expect(tailRow.closest('[hidden]')).not.toBeNull()
+    const groupHeader = [...view.container.querySelectorAll<HTMLButtonElement>('[data-process-activity]')]
+      .find(button => button.getAttribute('data-turn-process') === null)!
+    fireEvent.click(groupHeader)
+    expect(tailRow.closest('[hidden]')).toBeNull()
+    expect(view.getByText('answer').closest('[hidden]')).toBeNull()
   })
 
   it('rebinds grouped members when registry rebuilding replaces the Node store', () => {
@@ -2180,6 +2310,30 @@ describe('ChatView', () => {
       expect(view.getByText(opening.text).compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     },
   )
+
+  it('keeps an opening echo above a new Turn title that already has process content', () => {
+    const source = chatSnapshotFixture({
+      nodes: [reasoningAssistant(2, 'seed activity', 1, 1)],
+      turnTimings: new Map([[1, { startTime: 1_000 }]]),
+    })
+    const builder = new ChatSnapshotBuilder()
+    const groups = new ConversationGroupStore<ProcessGroupData>()
+    const state = new ProcessState()
+    const snapshot = installGroupedSnapshot(builder, state, groups, source)
+    const h = makeHarness({ chat: snapshot }, { pendingSubmissions: [{
+      requestId: 'opening' as never, placement: 'transcript' as const,
+      time: 5_000, text: 'opening input', attachments: [],
+    }] })
+    h.setGrouped(groups)
+    const view = render(<h.ChatView {...h.props} />)
+    const echo = view.getByText('opening input').closest('[data-submission-echo]')!
+    const title = view.container.querySelector('[data-chat-flow-kind="turn-process"]')!
+    const group = view.container.querySelector('[data-chat-group-key]')!
+    expect(title).not.toBeNull()
+    expect(group).not.toBeNull()
+    expect(echo.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(title.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
 
   it('hands off an opening echo when the Turn and input arrive in one render', () => {
     const h = makeHarness({}, { pendingSubmissions: [{

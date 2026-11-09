@@ -95,7 +95,7 @@ Trigger titles and icons use the recorded `source.kind`: `schedule`, `tool-jobs`
 | Neither start nor end is loaded | Keep process rows visible and withhold the whole-Turn control. |
 | A Turn control exists, but there is no process content | Retain its title, without a collapse action. |
 
-With the default [All replies](#folded-replies), every Assistant reply remains outside whole-Turn folding; with Final answer only, only the final answer's reply does. Reasoning remains process content in both cases. The final answer is the latest Step's settled Assistant reply, provided it has visible reply content and no tool-call block. A Node whose [group-tree position](../contract/group-tree.ts) is `turn` or outer remains independent of whole-Turn folding. Turn inputs stand at `input` or `exchange`: user and steering messages and trigger notices; an input after the process start keeps the whole Turn open. Terminal errors, max-token notices, the completed-turn footer, and the Turn control stand at `turn`. A `process` Node, such as a model retry, separates secondary groups but whole-Turn folding still includes it.
+With the default [All replies](#folded-replies), every Assistant reply remains outside whole-Turn folding; with Final answer only, only the final answer's reply does. Reasoning remains process content in both cases. The final answer is the latest Step's settled Assistant reply, provided it has visible reply content and no tool-call block. A Node whose [group-tree position](../contract/group-tree.ts) is `turn` or outer remains independent of whole-Turn folding. Turn inputs stand at `input` or `exchange`: user and steering messages and trigger notices; an input after the process start keeps the whole Turn open. Terminal errors, max-token notices, the completed-turn footer, and the Turn control stand at `turn`. A `process` Node, such as a model retry, separates secondary groups but whole-Turn folding still includes it. A `tail` Node belongs to the Turn's final segment, so whole-Turn folding hides it while the reply that ended that segment stays outside.
 
 Loading an older page preserves the reader's group-opening choices. Newly loaded process content follows the same Turn state while the final answer is unchanged and whole-Turn folding remains eligible. If the page reveals an intervening input, individual group disclosures replace whole-Turn hiding. When the real start arrives, the duration becomes available; loading all history is not an additional folding condition. When new content only extends an existing group at its beginning, that group and its old message rows retain their identities and opening choices. Replies, steering, and other real boundaries in the new page still separate groups; not every new row joins the old group.
 
@@ -178,6 +178,7 @@ The labels below describe recorded activity, not successful outcomes. For exampl
 | Group state | Title composition |
 |---|---|
 | Not closed, with a running tool | Use the live category, not the highest-count category. Standard appends nonempty detail with ` · `; Compact omits detail. |
+| Not closed, with a newer running contributed Node activity | Render the keyed `conversation.chat.process.activity` Slot inside the native title control; without a registered renderer, use the native analysis label. |
 | Not closed, without a running tool | Use the analysis label even when completed-tool counts are nonzero. Standard may append running reasoning detail. |
 | Closed, zero categories | Use the completed-analysis label. |
 | Closed, one category | Use its closed label without a count. |
@@ -211,6 +212,7 @@ Grouping reads each Node's [group-tree position](../contract/group-tree.ts), whi
 | Non-blank Assistant reasoning | Append one `reasoning` reference for that Assistant to the current group, creating a group if necessary. |
 | Assistant reply | End the preceding group and emit an independent `response` reference. If the same Node has reasoning, append that reasoning before ending the group. |
 | Node at `process` or an outer position: `model-retry`, Turn inputs, `turn-error`, `turn-max-tokens`, `turn-tail`, and the `turn-process` control | End the preceding group and retain the Node as an independent root. |
+| Node at `tail` | Join the Turn's final process segment as its last member, after its other members and before a reply that ended it, whatever its `anchorSeq`. It does not start, split, or close an existing segment; a Turn with no process segment gets a segment for the tail Node itself, before the Turn's final reply. |
 | Other visible Nodes owned by a Turn without a position, including tools | Append the whole Node to the current group, creating a group if necessary. |
 | Node from another Turn or without a Turn | Break the same-Turn sequence. A Node without a Turn remains independent, including an unsplit Assistant. |
 | Hidden Nodes, system prompts, ordinary Context injection, and `permission` commands | Excluded from the grouping input; they neither join nor split a group. |
@@ -302,6 +304,8 @@ The Tool Definition alone retains streamed argument fragments. Assistant blocks 
 TurnProcess and TurnTail retain tool-argument Matches as Location evidence when the Turn start is outside the loaded window, even when those fragments do not change their State.
 
 Among running calls, the greatest `time` selects the live category and detail; equal times select the later visited call. With no running call, the category is absent and detail comes from the last nonempty reasoning paragraph of the latest running Assistant with nonempty reasoning, in member order. Reasoning detail removes `**` markers and does not require a newline-terminated first line; the individual reasoning-row preview has separate rules.
+
+A Node may also contribute a live activity through `processActivity.running`. Contributions order by Node `anchorSeq` against the native selection's start (the selected running Tool's Node, otherwise the latest running Assistant's Node); a contribution wins only when it starts strictly later, so a tie keeps the native title. A stopped contribution and a closed group never select one. Closed groups keep their category title.
 
 Live selection uses call start `time`, not the latest output/progress time. A call is a running candidate while its projected tool value has no result; pending approval or waiting for a result does not receive a separate category.
 

@@ -8,7 +8,7 @@ import type { ChatConversationViewNode, ChatNode } from '../contract/chat-nodes.
 import type { ProcessActivitySummary, ProcessGroupData } from '../contract/process-groups.ts'
 import { hasAssistantReplyContent } from '../contract/assistant-content.ts'
 import { isVisibleChatNode } from '../contract/chat-visibility.ts'
-import { isAtOrOutside } from '../contract/group-tree.ts'
+import { isAtOrOutside, isProcessTail } from '../contract/group-tree.ts'
 import { processActivity } from './process-activity.ts'
 
 type ProcessInput = ConversationGroupInput<ChatConversationViewNode>
@@ -30,6 +30,9 @@ function reply(node: ChatNode): boolean {
 function sameSummary(left: ProcessActivitySummary, right: ProcessActivitySummary): boolean {
   return left.running === right.running && left.runningDetail === right.runningDetail
     && left.preparing === right.preparing
+    && left.contribution?.key === right.contribution?.key
+    && left.contribution?.kind === right.contribution?.kind
+    && left.contribution?.anchorSeq === right.contribution?.anchorSeq
     && left.counts.length === right.counts.length && left.counts.every((value, index) =>
     value.kind === right.counts[index]?.kind && value.count === right.counts[index].count)
 }
@@ -59,7 +62,13 @@ class ProcessGroup {
   private nodes: readonly ChatNode[] = []
   snapshot: GroupSnapshot<ProcessGroupData>
 
-  constructor(readonly key: GroupKey, readonly turn: number, readonly members: readonly NodeReference[]) {
+  constructor(
+    readonly key: GroupKey,
+    readonly turn: number,
+    readonly members: readonly NodeReference[],
+    /** Members appended from the Turn's process tail; always the final members. */
+    readonly tailCount = 0,
+  ) {
     this.snapshot = { key, members, data: { turn, closed: false, summary: { counts: [], running: undefined, runningDetail: '' } } }
   }
 
@@ -121,8 +130,9 @@ class TurnGroups {
     const roots = new Map<NodeKey, readonly RenderEntry[]>()
     const groups = new Map<GroupKey, ProcessGroup>()
     const membership = new Map<NodeKey, GroupKey>()
+    // Snapshot before this rebuild, captured before a reused group mutates its snapshot.
+    const baseline = new Map<GroupKey, GroupSnapshot<ProcessGroupData> | undefined>()
     let pending: NodeReference[] = []
-    const upserts: GroupSnapshot<ProcessGroupData>[] = []
     const emit = (key: NodeKey, entry: RenderEntry): void => {
       roots.set(key, [...roots.get(key) ?? [], entry])
     }
@@ -132,23 +142,36 @@ class TurnGroups {
       const retained = this.extendedGroup(pending, added)
       const key = retained?.key ?? brandString<GroupKey>(JSON.stringify(['process', first.key, first.groupPart ?? null]))
       const previous = this.groups.get(key)
-      const before = previous?.snapshot
+      if (!baseline.has(key)) baseline.set(key, previous?.snapshot)
       const group = previous !== undefined && sameMembers(previous.members, pending)
         ? previous : new ProcessGroup(key, this.turn, pending)
       group.refresh(input, closed || input.timeline.turns.get(this.turn)?.status === 'closed')
       groups.set(group.key, group)
       emit(first.key, { kind: 'group', key: group.key })
       for (const member of pending) membership.set(member.key, group.key)
-      if (group.snapshot !== before) upserts.push(group.snapshot)
       pending = []
     }
+    const turnKeys = input.readTurn(this.turn)
+    const tailKeys = new Set<NodeKey>()
+    const flowKeys: NodeKey[] = []
+    for (const key of turnKeys) {
+      if (isProcessTail(readNode(input, key))) tailKeys.add(key)
+      else flowKeys.push(key)
+    }
     let previous: NodeKey | undefined
-    let followed = false
-    for (const key of input.readTurn(this.turn)) {
+    let lastFlowKey: NodeKey | undefined
+    let lastResponseKey: NodeKey | undefined
+    for (const key of flowKeys) {
       const position = readPosition(input, key)
-      if (previous !== undefined && position.previous !== previous) flush(true)
+      // Tail Nodes are transparent to segmentation: compare against the nearest
+      // non-tail predecessor so a real separator between them still splits.
+      let predecessor = position.previous
+      while (predecessor !== undefined && tailKeys.has(predecessor)) {
+        predecessor = readPosition(input, predecessor).previous
+      }
+      if (previous !== undefined && predecessor !== previous) flush(true)
       previous = key
-      followed = position.next !== undefined
+      lastFlowKey = key
       const node = readNode(input, key)
       if (isAtOrOutside(node, 'process')) {
         flush(true)
@@ -159,15 +182,56 @@ class TurnGroups {
         if (reply(node)) {
           flush(true)
           emit(key, { kind: 'node', key, groupPart: 'response' })
+          lastResponseKey = key
         }
       } else pending.push({ kind: 'node', key })
     }
-    flush(followed)
+    // Tail Nodes join the trailing group, so only content outside the Turn closes it.
+    flush(lastFlowKey !== undefined && followedByOutside(input, lastFlowKey, tailKeys))
+    if (tailKeys.size > 0) this.appendTail(input, groups, membership, roots, baseline, tailKeys, lastResponseKey)
+    const upserts: GroupSnapshot<ProcessGroupData>[] = []
+    for (const group of groups.values()) {
+      if (group.snapshot !== baseline.get(group.key)) upserts.push(group.snapshot)
+    }
     const removes = [...this.groups.keys()].filter(key => !groups.has(key))
     this.groups = groups
     this.membership = membership
     this.roots = roots
     return { upserts, removes }
+  }
+
+  /**
+   * Append tail Nodes to the Turn's final segment; a Turn without one gets a
+   * segment of its own, placed before the Turn's final reply when there is one.
+   */
+  private appendTail(
+    input: ProcessInput,
+    groups: Map<GroupKey, ProcessGroup>,
+    membership: Map<NodeKey, GroupKey>,
+    roots: Map<NodeKey, readonly RenderEntry[]>,
+    baseline: Map<GroupKey, GroupSnapshot<ProcessGroupData> | undefined>,
+    tailKeys: ReadonlySet<NodeKey>,
+    lastResponseKey: NodeKey | undefined,
+  ): void {
+    const members: NodeReference[] = [...tailKeys].map(key => ({ kind: 'node', key }))
+    const first = members[0] as NodeReference
+    const last = [...groups.values()].at(-1)
+    if (last !== undefined) {
+      const appended = new ProcessGroup(last.key, this.turn, [...last.members, ...members], members.length)
+      appended.refresh(input, last.snapshot.data.closed)
+      groups.set(appended.key, appended)
+      for (const member of members) membership.set(member.key, appended.key)
+      return
+    }
+    const key = brandString<GroupKey>(JSON.stringify(['process', first.key, first.groupPart ?? null]))
+    if (!baseline.has(key)) baseline.set(key, this.groups.get(key)?.snapshot)
+    const group = new ProcessGroup(key, this.turn, members, members.length)
+    group.refresh(input, input.timeline.turns.get(this.turn)?.status === 'closed')
+    groups.set(key, group)
+    for (const member of members) membership.set(member.key, key)
+    const entry: RenderEntry = { kind: 'group', key }
+    if (lastResponseKey === undefined) roots.set(first.key, [entry])
+    else roots.set(lastResponseKey, [entry, ...roots.get(lastResponseKey) ?? []])
   }
 
   private extendedGroup(members: readonly NodeReference[], added: ReadonlySet<NodeKey>): ProcessGroup | undefined {
@@ -177,13 +241,15 @@ class TurnGroups {
     if (first === undefined) return undefined
     const key = this.membership.get(first.key)
     const previous = key === undefined ? undefined : this.groups.get(key)
-    if (previous === undefined || offset + previous.members.length > members.length) return undefined
-    for (let index = 0; index < previous.members.length; index++) {
-      const before = previous.members[index] as NodeReference
+    if (previous === undefined) return undefined
+    const before = previous.members.slice(0, previous.members.length - previous.tailCount)
+    if (offset + before.length > members.length) return undefined
+    for (let index = 0; index < before.length; index++) {
+      const retained = before[index] as NodeReference
       const after = members[offset + index] as NodeReference
-      if (before.key !== after.key || before.groupPart !== after.groupPart) return undefined
+      if (retained.key !== after.key || retained.groupPart !== after.groupPart) return undefined
     }
-    for (let index = offset + previous.members.length; index < members.length; index++) {
+    for (let index = offset + before.length; index < members.length; index++) {
       if (!added.has((members[index] as NodeReference).key)) return undefined
     }
     return previous
@@ -194,6 +260,17 @@ function readPosition(input: ProcessInput, key: NodeKey) {
   const position = input.readPosition(key)
   if (position === undefined) throw new Error(`Chat grouping order is missing position for Node ${key}`)
   return position
+}
+
+/** Whether content outside the Turn follows `key` once its own tail Nodes are skipped. */
+function followedByOutside(
+  input: ProcessInput,
+  key: NodeKey,
+  tailKeys: ReadonlySet<NodeKey>,
+): boolean {
+  let next = readPosition(input, key).next
+  while (next !== undefined && tailKeys.has(next)) next = readPosition(input, next).next
+  return next !== undefined
 }
 
 /** Session-local Turn results; ordinary updates never read other Turns' Node contents. */

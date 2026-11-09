@@ -34,7 +34,7 @@ kind: "package-reference"
 
 适配器把每个 `SessionEventLikeEntry` 直接交给 assembler。外层 `type` 区分持久事件与 Client-only transient event，内部 `event` 则统一公开 `type`、`seq`、`time` 与 `data`；Definition 接收这个内部 `SessionEventLike`。replacement window 可以包含两种 entry，历史 prepend 携带持久 entry，实时 append 则可以携带任一种。持久与瞬态事件使用同一组 match/start/update 接口。当前最早的 start 初始化 State；后续所有 Match，包括同一身份的其他 start，都用于更新。不消费 Assistant delta 的 Definition 对 `assistant/live-chunk` 返回 `null`。replace window 或 revision 断档从完整已加载窗口重建；连续 revision 的 append、prepend 与 Assistant settlement 使用增量组装。settlement 只删除具名 attempt 的 transient match，应用可选持久 entry，并从剩余最早的 start 重算受影响的 Context，刷新前序索引及 dependent，不替换无关 target node。没有剩余 start 的 Context 不保留 State，但其 key 和已发布节点仍保留，供后续证据复用，直到完整窗口重建；所属 Definition 可以隐藏这些节点。assembler 拥有 Context 匹配、Turn/Step location、target node 物化、target activity 和稳定 target source。`ConversationSnapshot` 只包含与 target 无关的 View 与 active-target 事实；Session lifecycle 状态仍属于 `SessionSnapshot`。
 
-多个 Definition 可以为同一输入和生命周期角色共享只读 Match 与 Location。各 Definition 仍持有独立的 Context、State 和有序 Match 列表；Match 对象不会跨 assembler 实例复用。
+多个 Definition 可以为同一输入和生命周期角色共享只读 Match 与 Location。各 Definition 仍持有独立的 Context、State 和有序 Match 列表；Match 对象不会跨 assembler 实例复用。Definition 可以在 `start`、`update`、`buildLocationData` 或 `buildViewNode` 中从 `ConversationNodeContext.sessionId` 读取正在展示的 Session；已加载窗口携带继承历史时，它仍是 fork 自身的身份，未绑定 Session 的 detached assembler 会把它留为 undefined。
 
 注册入口接受原有可调用的 `match`，或只读的事件类型到处理函数表。Registry 在注册关系变化时复制表条目并预计算有序候选 Set。函数形式的 Definition 保持原有可调用 API，接收全部事件；表中的处理函数只接收已声明类型。修改表需要注销后重新注册。只有 `entries()` 与 `fallbackEntry()` 的旧 assembler 适配器保留原有分发路径。
 
