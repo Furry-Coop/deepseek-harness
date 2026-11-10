@@ -3,7 +3,9 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ComposerChainProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { SubagentCatalogAction, SubagentHeaderLineage, type SubagentCatalogInjected } from './SubagentHeaderLineage.tsx'
+import type { SubagentCatalogInjection } from './SubagentHeaderLineage.tsx'
+import { SubagentCatalogPresentation } from './catalog-classification.ts'
+import { SubagentCatalogAction, SubagentHeaderLineage } from './SubagentHeaderLineage.tsx'
 import {
   SubagentReadOnlyComposer, type SubagentReadOnlyMatch,
 } from './SubagentReadOnlyComposer.tsx'
@@ -24,8 +26,19 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 export type {
-  SubagentCatalogActionProps, SubagentCatalogInjected, SubagentHeaderLineageProps,
+  SubagentCatalogActionProps, SubagentCatalogInjected, SubagentCatalogInjection, SubagentHeaderLineageProps,
 } from './SubagentHeaderLineage.tsx'
+export type {
+  SubagentCatalogClassification, SubagentCatalogClassificationInput, SubagentCatalogClassifier,
+  SubagentCatalogClassifierContribution, SubagentCatalogEntryFacts, SubagentCatalogPresentation,
+} from './catalog-classification.ts'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Business classification applied to the native subagent catalog menu. */
+    subagentMenu: SubagentCatalogPresentation
+  }
+}
 export type {
   SubagentReadOnlyComposerProps, SubagentReadOnlyMatch,
 } from './SubagentReadOnlyComposer.tsx'
@@ -54,10 +67,11 @@ function selectReadOnlySubagent(owner: ComposerChainProps): SubagentReadOnlyMatc
  */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en, ja, es, fr, de, ru, pt }), 'ui-subagent: dictionaries')
+  const subagentMenu = new SubagentCatalogPresentation(ctx)
   ctx.inject(['resources', 'sidebarRightTabs'], (scope) => {
     registerSidebarChat(scope, ctx.locale.bind(NS))
   })
-  const catalogActions = (_parentSessionId: SessionId): SubagentCatalogInjected => ({
+  const catalogActions = (_parentSessionId: SessionId): SubagentCatalogInjection => ({
     openChild(address: SubagentAddress) {
       ctx.uiWorkspace.openSession(address)
     },
@@ -70,6 +84,8 @@ export function apply(ctx: ClientContext): void {
     refreshProjection(parentSessionId: SessionId) {
       void ctx.sessions.refreshProjections(parentSessionId)
     },
+    classifyCatalog: input => subagentMenu.classify(input),
+    hooks: { catalogClassification: subagentMenu.revision },
   })
   ctx.slots.inject(
     'conversation.session.header.lineage',

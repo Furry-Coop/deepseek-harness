@@ -23,7 +23,7 @@ import type {
 import type {
   ConversationGroupedView,
   ConversationSnapshot, ConversationViewSnapshotStore, GroupKey, GroupSnapshot,
-  MessageImagesOwnerProps, NodeKey, TurnLocation,
+  ConversationAttachment, MessageImagesOwnerProps, NodeKey, TurnLocation,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { SessionSeq, type SessionId } from '@deepseek-ai/dsh-session/types'
@@ -319,12 +319,13 @@ const renderCommandSlot: React.ComponentProps<typeof CommandNodeView>['renderSlo
   (_key, _owner, opts) => opts?.fallback ?? null
 const renderTurnTailSlot: React.ComponentProps<typeof TurnTailNodeView>['renderSlot'] = () => null
 
-function HarnessChatFlow({ standard, owner, hookContext, renderSlot, useConnectionState }: {
+function HarnessChatFlow({ standard, owner, hookContext, renderSlot, useConnectionState, useAttachments }: {
   readonly standard: HarnessStandardProps
   readonly owner: ChatFlowOwnerProps
   readonly hookContext: ChatFlowHookContext
   readonly renderSlot: ChatFlowSlotProps['renderSlot']
   readonly useConnectionState: ChatFlowSlotProps['useConnectionState']
+  readonly useAttachments: ChatFlowSlotProps['useAttachments']
 }) {
   const hooks = useMemo(() => ({
     useGroupAction: CHAT_FLOW_INJECT.hooks.groupAction(standard, hookContext),
@@ -332,7 +333,7 @@ function HarnessChatFlow({ standard, owner, hookContext, renderSlot, useConnecti
   }), [standard, hookContext])
   const { renderSlot: _rootRenderSlot, __renders: _rootRenders, ...shared } = standard
   return <ChatFlow {...shared} {...owner} {...hooks} renderSlot={renderSlot}
-    useConnectionState={useConnectionState} />
+    useConnectionState={useConnectionState} useAttachments={useAttachments} />
 }
 
 function HarnessUserOrigin({ useRenderer, owner, options }: {
@@ -525,12 +526,14 @@ function makeHarness(
       throw new Error('Flow owner data must not replace its rendering or store authority')
     }
     return <HarnessChatFlow standard={props} owner={owner} hookContext={opts.hookContext} renderSlot={renderFlowSlot}
-      useConnectionState={useConnectionState} />
+      useConnectionState={useConnectionState} useAttachments={useAttachments} />
   }
   // SessionProvider seat arrives with the session-scope child declaration;
   // ChatView never invokes it (pass-through stub).
   const connection = createSnapshotStore<ConnectionState | undefined>('connected')
   const useConnectionState = bindSnapshotSelector(connection)
+  const attachments = createSnapshotStore<readonly ConversationAttachment[]>([])
+  const useAttachments = bindSnapshotSelector(attachments)
   const SessionProviderStub: ChatViewSlotProps['SessionProvider'] = ({ children }) => <>{children}</>
   const props: HarnessStandardProps = {
     fileDrag,

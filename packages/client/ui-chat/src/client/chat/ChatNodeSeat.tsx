@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { JsonBlock } from '@deepseek-ai/dsh-client-ui-primitives'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ConversationLocationDataStore, ConversationTurnDataMap } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { ChatAttachmentPlacement } from './attachments.ts'
 import type { ChatNodeHookContext, ChatNodeOwnerProps, ChatFlowSlotProps, UsePresentation } from '../contract/slots.ts'
 import { hasAssistantReplyContent } from '../contract/assistant-content.ts'
 import type { ChatNode } from '../contract/chat-nodes.ts'
@@ -9,6 +10,7 @@ import type { ChatNodeStore } from '../contract/snapshot.ts'
 import { isAtOrOutside, isProcessTail } from '../contract/group-tree.ts'
 import { turnProcessAlwaysOpen } from '../contract/turn-process.ts'
 import { turnProcessOpen } from '../stores.ts'
+import { ChatAttachmentRow } from './ChatAttachmentRow.tsx'
 import { hiddenOrCollapsing } from './flow-motion.ts'
 import css from './ChatView.module.css'
 
@@ -26,6 +28,10 @@ interface ChatNodeSeatProps extends ChatNodeOwnerProps {
   readonly useChatNodeBottom: ChatFlowSlotProps['useChatNodeBottom']
   readonly deferCollapse: boolean
   readonly useGroupAction: ChatFlowSlotProps['useGroupAction']
+  /** Precise tool-row attachment cards for this displayed Session. */
+  readonly rowAttachments?: readonly ChatAttachmentPlacement[]
+  /** Whether this row's visible body may render its precise tool cards. */
+  readonly rowCardsEnabled?: boolean
 }
 
 type RoutedChatNodeOwner = {
@@ -51,6 +57,7 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
   nodeKey, groupPart, useChatNode, useChatNodeProcess, usePresentation,
   cwd, openFile, inspectCall, forkAt,
   loadImage, useStore, actions, renderSlot, t, useChatNodeBottom, deferCollapse, useGroupAction,
+  rowAttachments = [], rowCardsEnabled = true,
 }: ChatNodeSeatProps) {
   const bottom = useChatNodeBottom(nodeKey)
   const node = useChatNode(nodeKey)
@@ -115,6 +122,23 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
   const controllerInactive = routedNode?.kind === 'turn-process'
     && foldCompleted && !foldable
   const processHidden = controllerInactive || (foldable && processMember && !processOpen)
+  // A card hosted by this row — a Tool call's own row, a Step's visible entry,
+  // or that Step's process control — renders only for the exact rendered part
+  // the resolved entry names, and only while this row's body is visible; the
+  // group or Turn entry owns it when this row is hidden.
+  const rowCards = routedNode !== undefined && rowCardsEnabled
+    ? rowAttachments.filter(placement => placement.targetNodeKey === routedNode.key
+      && (placement.targetPart ?? '') === (groupPart ?? ''))
+    : []
+  /** A folded whole Turn exposes only its process control, so the same cards
+   * stand at that visible Turn entry instead. */
+  const foldedTurnCards = routedNode?.kind === 'turn-process'
+    && turnProcess?.foldable === true && !turnProcess.open && turn !== undefined
+    ? rowAttachments.filter(placement => placement.turn === turn)
+    : []
+  const cards = routedNode?.kind === 'turn-process' && foldedTurnCards.length > 0
+    ? foldedTurnCards
+    : rowCards
   const revealProcess = useCallback(() => {
     if (processMember) setOpen(true)
   }, [processMember, setOpen])
@@ -174,6 +198,7 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
           />
         ),
       })}
+      {cards.length > 0 && <ChatAttachmentRow placements={cards} renderSlot={renderSlot} />}
     </div>
   )
 })

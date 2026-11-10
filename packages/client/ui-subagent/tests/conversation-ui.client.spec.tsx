@@ -14,6 +14,7 @@ import {
   type SubagentCatalogActionProps, type SubagentHeaderLineageProps,
 } from '../src/client/SubagentHeaderLineage.tsx'
 import { SubagentReadOnlyComposer } from '../src/client/SubagentReadOnlyComposer.tsx'
+import type { SubagentCatalogClassificationInput } from '../src/client/catalog-classification.ts'
 import { en, zh } from '../src/client/locales.ts'
 
 afterEach(() => {
@@ -57,6 +58,7 @@ function props(
   nested: Readonly<Record<SessionId, CatalogFixture>> = {},
   summaries?: Readonly<Record<SessionId, SessionSummary>>,
   boundAddress?: SubagentAddress,
+  classifyCatalog: SubagentHeaderLineageProps['classifyCatalog'] = () => new Map(),
 ) {
   const catalogs = value === undefined ? nested : { [PARENT]: value, ...nested }
   const statuses: SessionStatusSnapshot = new Map()
@@ -123,6 +125,8 @@ function props(
     openChild: vi.fn(),
     openChildAside: vi.fn(),
     refreshProjection: vi.fn(),
+    classifyCatalog,
+    useCatalogClassification: <T,>(select: (revision: number) => T): T => select(0),
     lineageSessionId: PARENT,
     displayTitle: 'Parent title',
     t,
@@ -294,6 +298,75 @@ describe('SubagentHeaderLineage', () => {
 
     expect(translate).toHaveBeenCalledWith('count.running.one', { count: 1 })
     expect(translate).toHaveBeenCalledWith('count.total.one', { count: 1 })
+  })
+
+  it('splits classified support children from native menu rows, totals, and running count', () => {
+    const classifyCatalog = vi.fn((input: SubagentCatalogClassificationInput) => {
+      expect(input.parentSessionId).toBe(PARENT)
+      expect(input.entries).toEqual([
+        { id: CHILD, mode: 'continuable', activity: 'running' },
+        { id: 'child-2', mode: 'one-shot', activity: 'inactive' },
+      ])
+      return new Map([[CHILD, 'support' as const]])
+    })
+    const view = render(<HeaderCatalog {...props(catalog(), {}, undefined, undefined, classifyCatalog)} />)
+
+    const trigger = screen.getByRole('button', { name: '1 个子智能体' })
+    expect(trigger.querySelector('[data-state="ongoing"]')).toBeNull()
+    hoverCatalog(trigger)
+    expect(screen.getAllByRole('treeitem')).toHaveLength(1)
+    expect(screen.queryByRole('treeitem', { name: /worker/ })).toBeNull()
+    expect(screen.getByRole('treeitem', { name: /reviewer/ })).toBeTruthy()
+
+    // A withdrawn classification (empty map) restores every native row.
+    view.rerender(<HeaderCatalog {...props(catalog())} />)
+    const restored = screen.getByRole('button', { name: '1 个子智能体，正在运行' })
+    expect(restored.querySelector('[data-state="ongoing"]')).not.toBeNull()
+    hoverCatalog(restored)
+    expect(screen.getAllByRole('treeitem')).toHaveLength(2)
+    expect(screen.getByRole('treeitem', { name: /worker/ })).toBeTruthy()
+  })
+
+  it('hides the native menu when every direct child is classified', () => {
+    const classify = () => new Map<SessionId, 'support'>([[CHILD, 'support'], ['child-2' as SessionId, 'support']])
+    const view = render(<HeaderCatalog {...props(catalog(), {}, undefined, undefined, classify)} />)
+    expect(screen.queryByRole('button', { name: /个子智能体/ })).toBeNull()
+
+    view.rerender(<HeaderCatalog {...props(catalog())} />)
+    expect(screen.getByRole('button', { name: '1 个子智能体，正在运行' })).toBeTruthy()
+  })
+
+  it('keeps complete native addresses and entry facts while splitting support rows', () => {
+    const classifications: SubagentCatalogClassificationInput[] = []
+    const input = props(catalog(), {}, undefined, undefined, (value) => {
+      classifications.push(value)
+      return new Map([[CHILD, 'support' as const]])
+    })
+    render(<HeaderCatalog {...input} />)
+    const trigger = screen.getByRole('button', { name: '1 个子智能体' })
+    hoverCatalog(trigger)
+    fireEvent.click(screen.getByRole('treeitem', { name: /reviewer/ }))
+    expect(input.openChild).toHaveBeenCalledWith({
+      parentSessionId: PARENT, childSessionId: 'child-2', mode: 'one-shot',
+    })
+    expect(classifications[0]?.entries.map(entry => entry.id)).toEqual([CHILD, 'child-2'])
+  })
+
+  it('classifies a nested catalog level by that level parent identity', () => {
+    const nested = {
+      [CHILD]: catalog({
+        entries: [{ id: GRANDCHILD, mode: 'one-shot', label: 'helper', activity: 'inactive' }],
+      }),
+    }
+    const classify = (value: SubagentCatalogClassificationInput) =>
+      value.parentSessionId === CHILD
+        ? new Map<SessionId, 'support'>([[GRANDCHILD, 'support']])
+        : new Map<SessionId, 'support'>()
+    render(<HeaderCatalog {...props(catalog(), nested, undefined, undefined, classify)} />)
+    hoverCatalog(screen.getByRole('button', { name: '1 个子智能体，正在运行' }))
+    fireEvent.click(screen.getByRole('button', { name: /展开 worker/ }))
+    expect(screen.getByRole('treeitem', { name: /worker/ })).toBeTruthy()
+    expect(screen.queryByRole('treeitem', { name: /helper/ })).toBeNull()
   })
 
   it('removes the disclosure column from branchless catalog levels', () => {

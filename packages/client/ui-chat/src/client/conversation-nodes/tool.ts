@@ -7,7 +7,7 @@ import { isAppendSurfaceEvent } from '@deepseek-ai/dsh-session/surface'
 import type {} from '@deepseek-ai/dsh-tool-executor-ptc/client'
 import { PartialArguments } from '@deepseek-ai/dsh-util-values'
 import type { ChatNode, ToolChatData } from '../contract/chat-nodes.ts'
-import { CHAT_SYNTHETIC_SEQ_OFFSETS, chatNode, contextLocation } from './common.ts'
+import { CHAT_SYNTHETIC_SEQ_OFFSETS, chatNode, contextLocation, durableSeq } from './common.ts'
 
 declare module '../contract/chat-nodes.ts' {
   interface ChatNodeDataMap {
@@ -347,8 +347,11 @@ export const toolDefinition: ConversationNodeDefinition<ToolState> = {
     const location = contextLocation(context)
     const data = current?.data.root === projected ? current.data : { root: projected } satisfies ToolChatData
     if (current?.data === data && current.anchorSeq === anchor
-      && current.visibility === visibility && current.location === location) return current
-    return chatNode(context, 'tool-call', anchor, data, { visibility, location })
+      && current.visibility === visibility && current.location === location
+      && current.sourceSeq === durableSeq('kind' in projected ? projected.seq : undefined)) return current
+    return chatNode(context, 'tool-call', anchor, data, {
+      visibility, location, sourceSeq: durableSeq('kind' in projected ? projected.seq : undefined),
+    })
   },
 }
 

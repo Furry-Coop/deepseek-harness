@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-11-10-session-attachment-cards.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-10-session-attachment-cards.md
+/agent-note-session-attachment-cards-and-subagent-catalog-classification:
+  en: 5368cefa69c4832c
+  zh: def55dc53bdaf807
+/agent-note-session-attachment-cards-and-subagent-catalog-classification/problem:
+  en: 562623524e6cc377
+  zh: bd83d9672e301205
+/agent-note-session-attachment-cards-and-subagent-catalog-classification/decision:
+  en: 50c75d8f0d0f3dd2
+  zh: 50d8735b55e4a26b
+/agent-note-session-attachment-cards-and-subagent-catalog-classification/alternatives-considered:
+  en: 94a5e9dd841b378e
+  zh: 938824f7f9d244bb
+/agent-note-session-attachment-cards-and-subagent-catalog-classification/verification:
+  en: 74e86c585dfd3128
+  zh: 336814ecfd02537b
+/agent-note-session-attachment-cards-and-subagent-catalog-classification/consequences:
+  en: 3420c0a273b704f8
+  zh: 54da0841669c0372

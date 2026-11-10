@@ -113,11 +113,15 @@ async function bench(snapshot: ChatSnapshot) {
   const views = new ConversationViewRegistry(ctx)
   ctx.provide('connection', { state: createSnapshotStore('connected') } as never)
   ctx.provide('configForms', { developerTools: { enabled: createSnapshotStore(true) }, get: () => stubConfigForm().scope } as never)
+  const noAttachments: readonly never[] = []
   ctx.provide('uiConversation', {
     events,
     views,
     interactions: new ConversationInteractionRegistry(ctx),
     groups: { register: () => () => {} },
+    attachments: {
+      source: () => ({ getSnapshot: () => noAttachments, subscribe: () => () => {} }),
+    },
     binding: () => ({ target: () => chat, snapshot: conversation }),
   } as never)
   ctx.uiSession.provide({

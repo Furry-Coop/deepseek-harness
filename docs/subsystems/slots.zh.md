@@ -146,6 +146,7 @@ Factory: conversation.content [ConversationContent]
 │     │  ├─ conversation.chat.text-interaction [list]
 │     │  └─ conversation.chat.flow [ChatFlow]
 │     │     ├─ conversation.chat.process.activity [ChatGroupSeat]
+│     │     ├─ conversation.chat.attachment [keyed; ChatFlow, ChatNodeSeat, ChatGroupSeat]
 │     │     └─ conversation.chat.node [ChatNodeSeat dispatch]
 │     │        ├─ key=user [UserMessageNodeView]
 │     │        │  ├─ conversation.chat.user.before [chain]
@@ -203,6 +204,8 @@ Factory: conversation.chat.reasoning.content [ReasoningContent / MarkdownText]
 ```
 
 四个图片 Slot 默认均填入 `MessageImages`，由它携带调用者的图片引用和授权 loader 调用 `conversation.images.content`。用户与输出图片的替换互不影响。`conversation.user.text` Factory 由用户内容、Queue 和 Goal 共用；其 `inline: true` keyed Slot 使用 span 锚点及行内错误占位，而不是块级包装。
+
+`conversation.chat.attachment` 以卡片的稳定 ID 作为键。其会话级 owner 数据携带卡片身份、优先侧别、解析后的 `site`、真实数字轮次、在所解析行声明耐久 `seq` 时给出该值，以及精确工具行的目标 callId。解析后的位置由 Chat 决定：根级卡片保留自己的根行；精确卡片由目标行的座位、所属过程组入口或轮次过程入口按可见性渲染——`step/start` 锚点同样以该步第一条可见行为目标——侧边布局把同一挂载点移到内容列旁测量出的留白中。[Chat](../../packages/client/ui-chat/README.zh.md#session-attachments) 拥有锚点解析与布局判定。
 
 生成的 [Client inspect catalog](../../packages/extensions/cordis-client-runner/src/client/slot-catalog.ts) 是包含所有外壳分支及每个 key 的完整参考，包含 cardinality、scope、owner props、标准 props、当前 occupant、声明 owner 与替换风险。运行中的动态包可以用 `cordis_inspect what:"client"` 查询实时树与某个精确 key；源码 catalog 由 `pnpm run gen-client-catalog` 根据 `SlotMap` 声明和 `slots.register()` 调用点生成。
 

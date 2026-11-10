@@ -1,0 +1,15 @@
+/* A card row is one flow position; the cards at that position stack. */
+.row {
+  min-width: 0;
+}
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.card {
+  min-width: 0;
+}

@@ -3,7 +3,7 @@ import type {
   CompactionSummaryNode, ConversationMatch, ConversationNodeContext, ConversationNodeDefinition,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-compaction/types'
-import { chatNode } from './common.ts'
+import { chatNode, durableSeq } from './common.ts'
 import { compactSource, compactSummary, updateCompactionState } from './command.ts'
 
 declare module '../contract/chat-nodes.ts' {
@@ -52,7 +52,7 @@ export const compactionDefinition: ConversationNodeDefinition<CompactionState> =
     const state = context.state ?? fallbackState(context)
     if (state.checkpoint === undefined) return null
     const marker = compactSummary(state.summary, state.checkpoint)
-    return chatNode(context, 'compaction', marker.seq, marker)
+    return chatNode(context, 'compaction', marker.seq, marker, { sourceSeq: durableSeq(marker.seq) })
   },
 }
 

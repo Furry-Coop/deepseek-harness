@@ -6,6 +6,10 @@
   flex: 1 1 auto;
   /* Floating controls query this frame outside the clipped transcript. */
   container-type: inline-size;
+  /* Side attachment card geometry; the measured layout only decides whether the
+     blank fits, so the card itself is never shrunk to an unreadable width. */
+  --dsh-chat-attachment-side-width: 200px;
+  --dsh-chat-attachment-side-gap: 32px;
 }
 
 .root {
@@ -75,9 +79,9 @@
    Seats do not contribute spacing. The older-history control precedes the anchor;
    an ancestor :has() here also invalidates the history on unrelated descendant edits. */
 :is(.column, :global([data-slot="conversation.chat.flow"])) > :not([hidden]):not(.textInteraction):not(.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty)))
-  ~ :not([hidden]):not(.textInteraction):not(.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty))),
+  ~ :not([hidden]):not([data-chat-attachment-row]):not(.textInteraction):not(.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty))),
 .column > .older + :global([data-slot="conversation.chat.flow"])
-  > :not([hidden]):not(.textInteraction):not(.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty))) {
+  > :not([hidden]):not([data-chat-attachment-row]):not(.textInteraction):not(.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty))) {
   margin-top: var(--dsh-chat-flow-gap, 4px);
 }
 
@@ -85,6 +89,42 @@
    neighbours by 12px. */
 .flowItem[data-chat-group-part="response"] {
   --dsh-chat-flow-gap: 12px;
+}
+
+/* A Session-attached card is a row of its own: 8px from the user input it
+   sits above, or from the reply it follows at a real Turn end. */
+[data-chat-attachment-row] {
+  --dsh-chat-flow-gap: 8px;
+}
+
+/* Side layout: a card assigned to the measured blank leaves the flow and stands
+   in that blank at its resolved position. The card is absolutely positioned
+   against the content column, so the horizontal inset is the column edge rather
+   than a narrower nested row, while `top: auto` keeps it at its own in-flow
+   position inside the row. A row keeps zero height only when every card in it
+   uses the blank; an in-Turn card next to one keeps the row in place. A side
+   card marks its blank as occupied, so a wide Markdown table cannot break out
+   under it. */
+.column:has([data-chat-attachment][data-chat-attachment-host="side"]) {
+  --dsh-chat-side-cards: 1;
+}
+
+[data-chat-attachment-row][data-chat-attachment-host="side"] {
+  margin-top: 0;
+}
+
+[data-chat-attachment-row] > [data-chat-attachment-stack] > [data-chat-attachment][data-chat-attachment-host="side"] {
+  position: absolute;
+  top: auto;
+  width: var(--dsh-chat-attachment-side-width);
+}
+
+[data-chat-attachment-row][data-chat-attachment-side="left"] > [data-chat-attachment-stack] > [data-chat-attachment][data-chat-attachment-host="side"] {
+  right: calc(100% + var(--dsh-chat-attachment-side-gap));
+}
+
+[data-chat-attachment-row][data-chat-attachment-side="right"] > [data-chat-attachment-stack] > [data-chat-attachment][data-chat-attachment-host="side"] {
+  left: calc(100% + var(--dsh-chat-attachment-side-gap));
 }
 
 :is(.column, :global([data-slot="conversation.chat.flow"])) > [data-chat-group-part="response"]:not([hidden]):not(:empty)
@@ -156,8 +196,11 @@
 }
 
 /* A completed Turn's actions row owns the tail slot; the status can trail it
-   for one frame before the Session stops running, or between queued Turns. */
-.flowItem[data-chat-flow-kind="turn-tail"] + .running {
+   for one frame before the Session stops running, or between queued Turns.
+   Root attachment rows stand between the two, one row per side. */
+.flowItem[data-chat-flow-kind="turn-tail"] + .running,
+.flowItem[data-chat-flow-kind="turn-tail"] + [data-chat-attachment-row] + .running,
+.flowItem[data-chat-flow-kind="turn-tail"] + [data-chat-attachment-row] + [data-chat-attachment-row] + .running {
   display: none;
 }
 
@@ -232,7 +275,7 @@
 /* The last visible row before the status must contain output, not an input.
    Hidden and empty seats do not separate a user message from the status, and
    the steering/Inbox echoes after the status are outside the count. */
-:is(.column, :global([data-slot="conversation.chat.flow"])) > :nth-last-child(2 of :not([hidden]):not([data-pending-steering]):not(.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty)))):is(
+:is(.column, :global([data-slot="conversation.chat.flow"])) > :nth-last-child(2 of :not([hidden]):not([data-pending-steering]):not([data-chat-attachment-row]):not(.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty)))):is(
   .flowItem:not([data-chat-flow-kind="user"]):not([data-chat-flow-kind="steering"]):not([data-chat-flow-kind="turn-trigger"]),
   [data-chat-group-key]
 ) ~ .running > .runningDivider {

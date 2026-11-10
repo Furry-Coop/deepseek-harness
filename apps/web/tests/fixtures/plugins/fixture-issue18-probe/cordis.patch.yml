@@ -1,0 +1,3 @@
+- insert:
+    - id: fixture-issue18-probe
+      name: '@fixture/issue18-probe'

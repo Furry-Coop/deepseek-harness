@@ -65,6 +65,8 @@ The existing semantic `DraftSnapshot` retains quote text and clipboard-coordinat
 
 `UiConversation.interactions` owns plugin registrations for selected-text and context-menu gestures. A registration supplies a synchronous handler whose ID selects its keyed Slot component; plugins use the Slot injection mechanism for rendering. Handlers call `open()` to display and call `preventDefault()` separately when replacing a browser default. Chat supplies DOM selections and local layout; original source data and Markdown offsets are not inferred from DOM positions.
 
+`UiConversation.attachments` owns cards a plugin attaches to a position in a displayed Session. A registration carries a stable card id, the displayed `SessionId`, a preferred side, an optional `presentation` layout request (`auto` by default, or `inline` for an entry the plugin keeps inside its Turn), and one durable anchor (`turn-start`, `event` with a Session seq, `turn-end`, or `tool-call` with a callId); `register` returns the disposer its owning effect runs, rejects a duplicate id in the same Session and a malformed anchor, and publishes one identity-stable source per Session. The [Chat target](../ui-chat/README.md#session-attachments) resolves the anchor against its own loaded timeline and renders the card through the keyed `conversation.chat.attachment` Slot, so this package owns registration and per-Session publication, never a rendered position. A card registered for another Session, such as the source of a fork, does not appear in the displayed one.
+
 <a id="shell-and-standard-props"></a>
 ## Shell and standard props
 

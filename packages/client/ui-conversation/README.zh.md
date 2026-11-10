@@ -65,6 +65,8 @@ Queue 预览启用空白折叠和文档边缘 trim，保留 emoji，并使用 CS
 
 `UiConversation.interactions` 拥有插件对文本选择和右键手势的注册。每个注册项提供同步处理函数，其 ID 选择对应的 keyed Slot 组件；插件通过 Slot injection 机制渲染。处理函数调用 `open()` 展示，需要替代浏览器默认行为时单独调用 `preventDefault()`。Chat 提供 DOM 选区和区域内布局；机制不从 DOM 位置推断原始来源数据或 Markdown 偏移。
 
+`UiConversation.attachments` 拥有插件挂在当前展示 Session 某个位置上的卡片。注册项携带稳定卡片 ID、实际展示的 `SessionId`、优先侧别、可选的 `presentation` 布局请求（默认 `auto`，`inline` 表示插件要求留在轮内），以及一个耐久锚点（`turn-start`；带 Session seq 的 `event`；`turn-end`；或带 callId 的 `tool-call`）；`register` 返回由所属 effect 执行的撤回函数，拒绝同一 Session 内重复 ID 和格式错误的锚点，并按 Session 发布身份稳定的来源。[Chat 目标](../ui-chat/README.zh.md#session-attachments)把锚点解析到自身已加载的时间线，并通过按键的 `conversation.chat.attachment` Slot 渲染卡片，因此本包只负责注册与按 Session 发布，从不持有渲染位置。为其他 Session（例如 fork 的来源）注册的卡片不会出现在当前展示的会话中。
+
 <a id="shell-and-standard-props"></a>
 ## Shell 与标准 props
 

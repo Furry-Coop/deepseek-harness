@@ -29,6 +29,11 @@ export type { Config as ConversationConfig } from './apply.ts'
 export { UiConversation } from './conversation/assembly.ts'
 export type { ConversationBinding } from './conversation/assembly.ts'
 export type { ConversationGroupRegistry } from './conversation/group-registry.ts'
+export type { ConversationAttachmentRegistry } from './conversation/attachment-registry.ts'
+export type {
+  ConversationAttachment, ConversationAttachmentAnchor, ConversationAttachmentPresentation,
+  ConversationAttachmentSide,
+} from './contract/attachments.ts'
 export type {
   ConversationGroupContext, ConversationGroupData, ConversationGroupDataMap,
   ConversationGroupDefinition, ConversationGroupedView, ConversationGroupInput,

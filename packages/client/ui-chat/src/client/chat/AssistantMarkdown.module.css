@@ -31,7 +31,9 @@
    Percentages resolve against the wrapper's containing block, so a table
    indented inside a list still reaches the same transcript edges. */
 .body :global(.md-table-wide) {
-  --dsh-table-spare: max(0px, calc((100cqw - var(--dsh-chat-content-width)) / 2));
+  /* A side attachment card occupies the blank, so the breakout is clamped to
+     the content column while one is present (0 = no spare). */
+  --dsh-table-spare: calc(max(0px, calc((100cqw - var(--dsh-chat-content-width)) / 2)) * (1 - var(--dsh-chat-side-cards, 0)));
   --dsh-table-lead: calc(var(--dsh-table-spare) + min(var(--dsh-chat-content-width), 100cqw) - 100%);
   box-sizing: border-box;
   width: calc(100% + var(--dsh-table-lead) + var(--dsh-table-spare));

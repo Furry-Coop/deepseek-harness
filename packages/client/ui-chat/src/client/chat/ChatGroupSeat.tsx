@@ -12,6 +12,7 @@ import type { ProcessActivity, ProcessActivityContribution } from '../contract/p
 import type { ChatStoreState } from '../contract/store.ts'
 import type { ChatFlowSlotProps, ChatProcessActivityOwnerProps } from '../contract/slots.ts'
 import { turnProcessOpen } from '../stores.ts'
+import { ChatAttachmentRow } from './ChatAttachmentRow.tsx'
 import { ChatNodeSeat } from './ChatNodeSeat.tsx'
 import { hiddenOrCollapsing } from './flow-motion.ts'
 import { chatRenderKey } from './render-entry.ts'
@@ -88,10 +89,12 @@ function useStableLiveProcessTitle(desired: LiveProcessTitle, active: boolean): 
 }
 
 
-const GroupMembers = memo(function GroupMembers({ members, ...props }: SeatProps & {
+const GroupMembers = memo(function GroupMembers({ members, rowCardsEnabled, ...props }: SeatProps & {
   readonly members: readonly NodeReference[]
+  readonly rowCardsEnabled: boolean
 }) {
-  return members.map(member => <ChatNodeSeat {...props} key={chatRenderKey(member)} nodeKey={member.key}
+  return members.map(member => <ChatNodeSeat {...props} rowCardsEnabled={rowCardsEnabled}
+    key={chatRenderKey(member)} nodeKey={member.key}
     {...member.groupPart === undefined ? {} : { groupPart: member.groupPart }} />)
 })
 
@@ -192,6 +195,21 @@ export const ChatGroupSeat = memo(function ChatGroupSeat({ groupKey, useChatGrou
   const storedOpen = props.useStore(selectOpen)
   const outerHidden = foldCompleted && presentation?.turnClosed === true && spec !== undefined
     && !alwaysOpen && !storedOpen
+  const groupRowCards = outerHidden || members === undefined
+    ? []
+    : (props.rowAttachments ?? []).filter(placement => placement.targetGroupKey === groupKey
+      || members.some(member => member.key === placement.targetNodeKey
+        && (placement.targetPart ?? '') === (member.groupPart ?? '')))
+  // Cards targeting a member row stay at that row while the body is open; the
+  // group's own visible entry hosts them while it is folded, and always hosts a
+  // Step entry that resolved to this group.
+  const entryCards = groupRowCards.filter(placement => placement.targetGroupKey === groupKey
+    || (grouped && !open))
+  const memberCardsEnabled = !outerHidden && (!grouped || open)
+  // A side card stands in the blank beside its row. The capped body is a scroll
+  // container, so it would clip that blank; a group hosting a side card drops
+  // the height cap and keeps the card at its member row.
+  const sideCardHost = groupRowCards.some(placement => placement.host === 'side')
   const revealOuter = useCallback(() => {
     if (spec !== undefined && !alwaysOpen) props.actions.setTurnProcessOpen(spec.turn, spec.answerStep ?? 0, true)
   }, [props.actions, spec, alwaysOpen])
@@ -220,7 +238,7 @@ export const ChatGroupSeat = memo(function ChatGroupSeat({ groupKey, useChatGrou
   const [closingCap, setClosingCap] = useState(shownCap ?? true)
   if (shownCap !== undefined && shownCap !== closingCap) setClosingCap(shownCap)
   if (members === undefined) return null
-  const capped = grouped && (!deferCompletedTurns || (shownCap ?? closingCap))
+  const capped = grouped && (!deferCompletedTurns || (shownCap ?? closingCap)) && !sideCardHost
   const classes = [css.body, !capped ? css.expandedBody : '',
     capped && edges.canScrollUp ? css.fadeTop : '', capped && edges.canScrollDown ? css.fadeBottom : '']
   return (
@@ -233,11 +251,12 @@ export const ChatGroupSeat = memo(function ChatGroupSeat({ groupKey, useChatGrou
           usePresentation={props.usePresentation} renderSlot={props.renderSlot} t={props.t}
           open={open} bodyId={bodyId} toggle={toggle} />
       </div>
+      {entryCards.length > 0 && <ChatAttachmentRow placements={entryCards} renderSlot={props.renderSlot} />}
       <div ref={bodyRef} id={bodyId} className={classes.join(' ')} data-step-process-body
         data-scroll-up={edges.canScrollUp || undefined} data-scroll-down={edges.canScrollDown || undefined}
         {...events}>
         <div ref={contentRef} className={css.content} data-step-process-content data-chat-flow="">
-          <GroupMembers {...props} members={members} />
+          <GroupMembers {...props} members={members} rowCardsEnabled={memberCardsEnabled} />
         </div>
       </div>
     </div>

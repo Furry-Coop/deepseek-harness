@@ -25,6 +25,7 @@ import { HistoricalImageCache } from './historical-images.ts'
 import { ConversationViewRegistry } from './view-registry.ts'
 import { ConversationGroupRegistry } from './group-registry.ts'
 import { ConversationInteractionRegistry } from './interaction-registry.ts'
+import { ConversationAttachmentRegistry } from './attachment-registry.ts'
 import { UserTextRegistry } from './user-text-registry.ts'
 
 /** Observable faces published for one Session's Conversation assembly. */
@@ -196,6 +197,8 @@ export class UiConversation extends Service {
   readonly userText: UserTextRegistry
   /** Plugin-owned handlers for selection and context-menu gestures. */
   readonly interactions: ConversationInteractionRegistry
+  /** Plugin-owned cards attached to a durable Turn or event position. */
+  readonly attachments: ConversationAttachmentRegistry
   private readonly bindings = new WeakMapWithValues<SessionBinding, BindingRecord>()
   private readonly images: HistoricalImageCache
 
@@ -210,6 +213,7 @@ export class UiConversation extends Service {
     this.groups = new ConversationGroupRegistry(ctx, this.views)
     this.userText = new UserTextRegistry(ctx)
     this.interactions = new ConversationInteractionRegistry(ctx)
+    this.attachments = new ConversationAttachmentRegistry(ctx)
     this.images = new HistoricalImageCache(ctx, sessions)
     const rebuild = (): void => {
       for (const record of this.bindings.values) record.binding.rebuild()

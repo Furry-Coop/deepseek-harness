@@ -3,6 +3,8 @@ import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { ChatScrollPosition } from '../contract/slots.ts'
 import type { ChatSnapshot } from '../contract/snapshot.ts'
 import { createFlowMotion, type InputFoldBox, type InputFoldDriver } from './flow-motion.ts'
+import { measureChatAttachmentLayout } from './attachment-layout.ts'
+import type { ChatAttachmentLayout } from '../contract/attachment-layout.ts'
 import { scrollMetrics, ScrollFollow, type ViewportMetrics } from './use-scroll-follow.ts'
 export type { ViewportMetrics } from './use-scroll-follow.ts'
 
@@ -86,6 +88,8 @@ export class ChatViewport {
   private closingFrame: number | null = null
   /** Content height without fold room at the latest size observation: the content that frame painted. */
   private settledContent = 0
+  /** Where the current blank can host Session attachment cards. */
+  private layout: ChatAttachmentLayout = 'inline'
   /** The pending or running fold batch lands at the tail. */
   private tailRequested = false
   /** The tail request came from the reader's own input rather than from a content change. */
@@ -123,6 +127,7 @@ export class ChatViewport {
         // Read while layout is still clean, before this callback writes room or scroll positions. Those writes
         // leave the content height unchanged, so it is also the content this frame paints.
         this.settledContent = elements.scroller.scrollHeight - this.spacerHeight()
+        this.publishAttachmentLayout(elements)
         this.keepAboveClosing()
         this.reclaimBelow()
         this.invalidate()
@@ -132,6 +137,22 @@ export class ChatViewport {
       this.observer.observe(scroller)
       if (composer !== null) this.observer.observe(composer)
     }
+    this.publishAttachmentLayout(elements)
+  }
+
+  /**
+   * Read the layout derived from the latest observed geometry.
+   * @returns where the current blank can host Session attachment cards.
+   */
+  attachmentLayout(): ChatAttachmentLayout {
+    return this.layout
+  }
+
+  /** Recompute the attachment layout and publish it to the content column. */
+  private publishAttachmentLayout(elements: ViewportElements): void {
+    const layout = measureChatAttachmentLayout(elements.scroller, elements.column)
+    this.layout = layout
+    elements.column.dataset['chatAttachmentLayout'] = layout
   }
 
   /** Disconnect DOM resources and clear observations for the detached view. */
@@ -152,6 +173,7 @@ export class ChatViewport {
     this.retarget = null
     this.turns = []
     this.observation = { top: 0, landing: null }
+    this.layout = 'inline'
   }
 
   /**

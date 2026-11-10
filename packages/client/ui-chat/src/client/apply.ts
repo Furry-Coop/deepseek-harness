@@ -226,11 +226,19 @@ export function apply(ctx: Context): void {
     children: {
       'conversation.chat.node': { kind: 'keyed', scope: 'session', inject: CHAT_NODE_INJECT },
       'conversation.chat.process.activity': { kind: 'keyed', scope: 'session' },
+      'conversation.chat.attachment': { kind: 'keyed', scope: 'session' },
     },
     inject: (sessionId: SessionId): ChatFlowDataInjected => {
       const binding = ctx.sessions.binding(sessionId)
       if (binding === undefined) throw new Error(`ui-chat: unknown session "${sessionId}"`)
-      return { ...nodeSources(binding), hooks: { presentation, connectionState } }
+      return {
+        ...nodeSources(binding),
+        hooks: {
+          presentation,
+          connectionState,
+          attachments: ctx.uiConversation.attachments.source(sessionId),
+        },
+      }
     },
   }, ChatFlow))
 

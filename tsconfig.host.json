@@ -220,6 +220,7 @@
     "apps/web/tests/skill-tool-row.e2e.ts",
     "apps/web/tests/tool-details.e2e.ts",
     "apps/web/tests/turn-tail-actions.e2e.ts",
+    "apps/web/tests/issue-18-host-probe.e2e.ts",
     "apps/web/tests/goal-multi-turn-actions.e2e.ts",
     "apps/web/tests/agent-team-panel.e2e.ts",
     "apps/web/tests/client-ui-stats-panel.e2e.ts",

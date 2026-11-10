@@ -9,8 +9,13 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import {
   IconChevronDownOutlineRegular, IconChevronRightOutlineRegular, IconRefreshOutlineRegular, StateDot, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { PropsLocale, PropsRuntime, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
+import type {
+  HostObservable, InjectFace, PropsLocale, PropsRuntime, SnapshotSelectorHook, TranslateNS,
+} from '@deepseek-ai/dsh-client-ui-slots'
 import { NS } from './locales.ts'
+import {
+  type SubagentCatalogClassification, type SubagentCatalogClassificationInput,
+} from './catalog-classification.ts'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-token-meter/client'
 import css from './SubagentHeaderLineage.module.css'
@@ -26,11 +31,27 @@ export interface SubagentCatalogInjected {
   openChild: (address: SubagentAddress) => void
   openChildAside: (address: SubagentAddress) => void
   refreshProjection: (parentSessionId: SessionId) => void
+  /**
+   * Classify one parent's complete native entries.
+   * @param input - actual parent identity and native entries.
+   * @returns entries split out of the native menu.
+   */
+  classifyCatalog: (input: SubagentCatalogClassificationInput) => SubagentCatalogClassification
 }
+
+/** Reactive classification evidence supplied by the slot registration. */
+export interface SubagentCatalogHooks {
+  hooks: {
+    catalogClassification: HostObservable<number>
+  }
+}
+
+/** Complete registration injection for the native catalog menu. */
+export type SubagentCatalogInjection = SubagentCatalogInjected & SubagentCatalogHooks
 
 /** Full props for the session-header lineage renderer. */
 export type SubagentHeaderLineageProps =
-  PropsRuntime<'conversation.session.header.lineage'> & SubagentCatalogInjected & PropsLocale<typeof NS>
+  PropsRuntime<'conversation.session.header.lineage'> & InjectFace<SubagentCatalogInjection> & PropsLocale<typeof NS>
 
 interface CatalogRowsProps {
   parentSessionId: SessionId
@@ -45,6 +66,11 @@ interface CatalogRowsProps {
   refreshProjection: (parentSessionId: SessionId) => void
   toggleBranch: (childSessionId: SessionId) => void
   closeCatalog: () => void
+  /** Applied classification for this menu; undefined keeps the native lineage tree. */
+  classifyCatalog: SubagentCatalogInjected['classifyCatalog'] | undefined
+  /** Classification already computed for this level from the complete native entries. */
+  classification: SubagentCatalogClassification | undefined
+  useCatalogClassification: SnapshotSelectorHook<number>
 }
 
 function treeItems(root: HTMLDivElement | null): HTMLElement[] {
@@ -200,17 +226,35 @@ function isKnownLeaf(catalog: SubagentCatalogSnapshot | undefined): boolean {
 /** Render one catalog level and recurse only through explicitly expanded rows. */
 function CatalogRows({
   parentSessionId, currentSessionId, catalog, catalogs, summaries, expanded, level,
-  openChild, openChildAside, refreshProjection, toggleBranch, closeCatalog, t,
+  openChild, openChildAside, refreshProjection, toggleBranch, closeCatalog, classifyCatalog, t,
+  classification: resolvedClassification, useCatalogClassification,
 }: CatalogRowsProps & { t: TranslateNS<typeof NS> }) {
   const [now, setNow] = useState(() => Date.now())
-  const running = catalog.entries.some(entry => entry.activity === 'running')
+  const revision = useCatalogClassification(value => value)
+  // The count menu already classified this level from the complete native
+  // entries; only a nested level derives its own answer here.
+  const computed = useMemo(() => resolvedClassification !== undefined || classifyCatalog === undefined
+    ? undefined
+    : classifyCatalog({
+      parentSessionId,
+      entries: catalog.entries.map(entry => ({
+        id: entry.id,
+        mode: entry.mode,
+        activity: entry.activity,
+      })),
+    }), [classifyCatalog, catalog.entries, parentSessionId, revision, resolvedClassification])
+  const classification = resolvedClassification ?? computed
+  const entries = useMemo(() => classification === undefined
+    ? catalog.entries
+    : catalog.entries.filter(entry => !classification.has(entry.id)), [catalog.entries, classification])
+  const running = entries.some(entry => entry.activity === 'running')
   useEffect(() => {
     if (!running) return
     const timer = setInterval(() => { setNow(Date.now()) }, 1_000)
     return () => { clearInterval(timer) }
   }, [running])
-  const emptyLoading = catalog.state === 'loading' && catalog.entries.length === 0
-  const reserveDisclosure = catalog.entries.some(entry =>
+  const emptyLoading = catalog.state === 'loading' && entries.length === 0
+  const reserveDisclosure = entries.some(entry =>
     entry.mode !== 'external' && !isKnownLeaf(catalogs[entry.id])
     && summaries[entry.id]?.formatStatus !== 'migration-required'
     && catalogs[entry.id]?.state !== 'migration-required')
@@ -232,7 +276,7 @@ function CatalogRows({
           </button>
         </div>
       )}
-      {catalog.entries.map((entry) => {
+      {entries.map((entry) => {
         const external = entry.mode === 'external'
         const childCatalog = catalogs[entry.id]
         const isCurrent = entry.id === currentSessionId
@@ -397,6 +441,9 @@ function CatalogRows({
                       refreshProjection={refreshProjection}
                       toggleBranch={toggleBranch}
                       closeCatalog={closeCatalog}
+                      classifyCatalog={classifyCatalog}
+                      classification={undefined}
+                      useCatalogClassification={useCatalogClassification}
                       t={t}
                     />
                   )}
@@ -414,6 +461,7 @@ interface CatalogDropdownSharedProps extends SubagentCatalogInjected {
   rootSessionId: SessionId
   useSessions: SubagentHeaderLineageProps['useSessions']
   useSessionStatus: SubagentHeaderLineageProps['useSessionStatus']
+  useCatalogClassification: SnapshotSelectorHook<number>
   t: TranslateNS<typeof NS>
 }
 
@@ -455,12 +503,14 @@ function catalogMenuPosition(trigger: HTMLButtonElement): CSSProperties {
 /** One trigger-plus-tree dropdown over the catalog rooted at `rootSessionId`. */
 function CatalogDropdown({
   rootSessionId, currentSessionId, displayTitle, openTitle, variant,
-  useSessions, useSessionStatus, openChild, openChildAside, refreshProjection, t,
+  useSessions, useSessionStatus, openChild, openChildAside, refreshProjection, classifyCatalog, t,
+  useCatalogClassification,
 }: CatalogDropdownProps) {
   const ancestorSwitcher = variant === 'switcher' && openTitle !== undefined
   const projections = useSessions(state => state.projectionsBySession)
   const summaries = useSessions(state => state.byId)
   const statuses = useSessionStatus(value => value)
+  const classificationRevision = useCatalogClassification(value => value)
   const catalogs = useMemo<Catalogs>(() => {
     return Object.fromEntries(Object.entries(projections).map(([id, snapshot]) => {
       const projected = snapshot.values.subagentCatalog
@@ -496,13 +546,34 @@ function CatalogDropdown({
     ? currentEntry.label ?? currentEntry.id
     : displayTitle
   const directChildren = catalog?.entries ?? []
-  const directCount = directChildren.length
-  const runningCount = directChildren.filter(entry => entry.activity === 'running').length
+  // Only the descendant-count menu splits business-classified entries out; the
+  // breadcrumb switcher keeps the complete native catalog for lineage and for
+  // opening parent/child addresses.
+  const classification = useMemo(() => variant === 'switcher'
+    ? undefined
+    : classifyCatalog({
+      parentSessionId: rootSessionId,
+      entries: directChildren.map(entry => ({
+        id: entry.id,
+        mode: entry.mode,
+        activity: entry.activity,
+      })),
+    }), [classifyCatalog, directChildren, rootSessionId, variant, classificationRevision])
+  const shownChildren = classification === undefined
+    ? directChildren
+    : directChildren.filter(entry => !classification.has(entry.id))
+  const directCount = shownChildren.length
+  const runningCount = shownChildren.filter(entry => entry.activity === 'running').length
   const totalCountKey = directCount === 1 ? 'count.total.one' : 'count.total.other'
   const runningCountKey = runningCount === 1 ? 'count.running.one' : 'count.running.other'
+  // The tree receives every native entry plus the one classification computed
+  // from them, so a nested level is never classified from a filtered view.
   const presentedCatalog: SubagentCatalogSnapshot | undefined = catalog ?? (variant === 'switcher'
     ? { entries: [], state: 'loading', error: null }
     : undefined)
+  const visibleCatalog = presentedCatalog === undefined || classification === undefined
+    ? presentedCatalog
+    : { ...presentedCatalog, entries: shownChildren }
 
   const cancelHoverClose = (): void => {
     if (hoverCloseTimer.current === undefined) return
@@ -616,10 +687,10 @@ function CatalogDropdown({
 
   // Visibility needs catalog evidence of children or a failed load worth retrying.
   // An empty loading catalog is not evidence of children.
-  const visible = presentedCatalog !== undefined
+  const visible = visibleCatalog !== undefined
     && (variant === 'switcher'
-      || presentedCatalog.state === 'error'
-      || presentedCatalog.entries.length > 0)
+      || visibleCatalog.state === 'error'
+      || visibleCatalog.entries.length > 0)
   useEffect(() => {
     if (visible) return
     cancelHoverOpen()
@@ -631,6 +702,8 @@ function CatalogDropdown({
   }, [visible, open])
 
   if (!visible) return null
+  // Visibility above proves the tree source exists.
+  if (presentedCatalog === undefined) return null
 
   const focusAt = (index: number): void => {
     const items = treeItems(menuRef.current)
@@ -742,6 +815,9 @@ function CatalogDropdown({
               refreshProjection={refreshProjection}
               toggleBranch={toggleBranch}
               closeCatalog={() => { changeOpen(false) }}
+              classifyCatalog={variant === 'count' ? classifyCatalog : undefined}
+              classification={variant === 'count' ? classification : undefined}
+              useCatalogClassification={useCatalogClassification}
               t={t}
             />
           </div>
@@ -753,7 +829,7 @@ function CatalogDropdown({
 
 /** Full props for the root-session catalog entry in the header actions band. */
 export type SubagentCatalogActionProps =
-  PropsRuntime<'conversation.session.header.actions'> & SubagentCatalogInjected & PropsLocale<typeof NS>
+  PropsRuntime<'conversation.session.header.actions'> & InjectFace<SubagentCatalogInjection> & PropsLocale<typeof NS>
 
 /**
  * Session-header catalog action for root sessions: the descendant count and
@@ -764,7 +840,8 @@ export type SubagentCatalogActionProps =
  * @returns The count dropdown, or null on a child session.
  */
 export function SubagentCatalogAction({
-  sessionId, useSessions, useSessionStatus, openChild, openChildAside, refreshProjection, t,
+  sessionId, useSessions, useSessionStatus, openChild, openChildAside, refreshProjection, classifyCatalog, t,
+  useCatalogClassification,
 }: SubagentCatalogActionProps) {
   const isChild = useSessions(state => state.byId[sessionId]?.origin === 'subagent')
   if (isChild) return null
@@ -778,6 +855,8 @@ export function SubagentCatalogAction({
       openChild={openChild}
       openChildAside={openChildAside}
       refreshProjection={refreshProjection}
+      classifyCatalog={classifyCatalog}
+      useCatalogClassification={useCatalogClassification}
       t={t}
     />
   )
@@ -790,7 +869,8 @@ export function SubagentCatalogAction({
  */
 export function SubagentHeaderLineage({
   lineageSessionId, displayTitle, openTitle,
-  useSessions, useSession, useSessionStatus, openChild, openChildAside, refreshProjection, t,
+  useSessions, useSession, useSessionStatus, openChild, openChildAside, refreshProjection, classifyCatalog, t,
+  useCatalogClassification,
 }: SubagentHeaderLineageProps) {
   const address = useSession(session => session.subagent?.address)
   const parentId = useSessions((state) => {
@@ -801,7 +881,10 @@ export function SubagentHeaderLineage({
     const summary = state.byId[lineageSessionId]
     return summary?.origin === 'subagent' ? summary.parentId : undefined
   })
-  const shared = { useSessions, useSessionStatus, openChild, openChildAside, refreshProjection, t }
+  const shared = {
+    useSessions, useSessionStatus, openChild, openChildAside, refreshProjection,
+    classifyCatalog, useCatalogClassification, t,
+  }
   // Root sessions carry no breadcrumb; their descendant count lives in the
   // header actions band (SubagentCatalogAction).
   if (parentId === undefined) return null

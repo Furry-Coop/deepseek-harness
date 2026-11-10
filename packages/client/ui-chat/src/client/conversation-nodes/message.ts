@@ -6,7 +6,7 @@ import type {
 import { isAppendSurfaceEvent, isReplacementSurfaceEvent } from '@deepseek-ai/dsh-session/surface'
 import type { InboxState } from './inbox.ts'
 import type { ProcessEvidenceState } from './turn-process.ts'
-import { chatNode, contextLocation } from './common.ts'
+import { chatNode, contextLocation, durableSeq } from './common.ts'
 import { contextForm, contextProducer } from './event-projection.ts'
 
 interface ReferencedUserMessageNode extends UserMessageNode {
@@ -149,7 +149,8 @@ export const messageDefinition: ConversationNodeDefinition<MessageNode> = {
       waking ? 'turn-trigger' : context.state.kind,
       context.state.seq,
       context.state,
-      { location, groupTree: opensExchange ? 'exchange' : (human || waking) ? 'input' : undefined },
+      { location, groupTree: opensExchange ? 'exchange' : (human || waking) ? 'input' : undefined,
+        sourceSeq: durableSeq(context.state.seq) },
     )
   },
 }

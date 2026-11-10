@@ -59,6 +59,8 @@ The header lineage renderer reads `projectionsBySession` through the standard `u
 
 Opening a catalog dropdown does not request its root catalog. Child-catalog expansion and failed-read retries call `refreshProjection`; shared projection-value changes update the display automatically.
 
+`ctx.subagentMenu.register({ id, revision, classify })` lets a business split entries it already presents elsewhere out of the descendant-count menu. The classifier receives the actual parent `SessionId` and the complete native entries (`id`, `mode`, `activity`) and returns a map of the entries it owns; `revision` is the observable that republishes the menu when its evidence changes, and disposal restores every native row. The same answer filters that menu's rows, total, running count, and empty state, so the trigger hides only when every direct child is classified; the breadcrumb switcher, entry addresses, opening a child, and the workspace-wide running indicator keep the complete native catalog. A classifier that throws or answers `undefined` is unavailable for that render and contributes nothing, leaving the native rows in place. Nested levels classify through the same contract with their own parent identity.
+
 Breadcrumb addresses derive from the Provider-bound Session address, loaded parent catalogs, or already-listed subagent lineage, including never-selected ancestors.
 
 ### Duration, completion, and tokens

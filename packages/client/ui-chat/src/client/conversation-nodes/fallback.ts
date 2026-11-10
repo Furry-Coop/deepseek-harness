@@ -3,7 +3,7 @@ import type {
   ConversationNodeDefinition, UnknownSurfaceNode,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { isAppendSurfaceEvent } from '@deepseek-ai/dsh-session/surface'
-import { chatNode } from './common.ts'
+import { chatNode, durableSeq } from './common.ts'
 
 declare module '../contract/chat-nodes.ts' {
   interface ChatNodeDataMap {
@@ -29,7 +29,9 @@ export const unknownFallbackDefinition: ConversationNodeDefinition<UnknownSurfac
   update: context => context.state,
   buildViewNode: context => context.state === undefined
     ? null
-    : chatNode(context, 'unknown', context.state.seq, context.state),
+    : chatNode(context, 'unknown', context.state.seq, context.state, {
+      sourceSeq: durableSeq(context.state.seq),
+    }),
 }
 
 /**

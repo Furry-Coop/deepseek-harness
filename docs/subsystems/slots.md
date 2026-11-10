@@ -144,6 +144,7 @@ Factory: conversation.content [ConversationContent]
 │     │  ├─ conversation.chat.text-interaction [list]
 │     │  └─ conversation.chat.flow [ChatFlow]
 │     │     ├─ conversation.chat.process.activity [ChatGroupSeat]
+│     │     ├─ conversation.chat.attachment [keyed; ChatFlow, ChatNodeSeat, ChatGroupSeat]
 │     │     └─ conversation.chat.node [ChatNodeSeat dispatch]
 │     │        ├─ key=user [UserMessageNodeView]
 │     │        │  ├─ conversation.chat.user.before [chain]
@@ -201,6 +202,8 @@ Factory: conversation.chat.reasoning.content [ReasoningContent / MarkdownText]
 ```
 
 All four image Slots default to `MessageImages`, which calls `conversation.images.content` with the caller's image references and authorized loader. User and output image replacements are independent. The `conversation.user.text` Factory is shared by user content, Queue, and Goal; its `inline: true` keyed Slot renders span anchors and inline error placeholders rather than block wrappers.
+
+`conversation.chat.attachment` is keyed by a card's stable id. Its Session-scoped owner data carries the card identity, its preferred side, the resolved `site`, the real numeric Turn, the durable `seq` when the resolved row declares one, and the target callId for a precise tool row. Chat owns the resolved position: a root card keeps its own root row, a precise card is rendered by the target row's seat, its process group entry, or the Turn process entry as those surfaces are visible — a `step/start` anchor targets the Step's first visible row the same way — and the side layout moves that same mount into the measured blank beside the content column. [Chat](../../packages/client/ui-chat/README.md#session-attachments) owns the anchor resolution and layout decision.
 
 The generated [Client inspect catalog](../../packages/extensions/cordis-client-runner/src/client/slot-catalog.ts) covers all shell branches and is the exhaustive contract for each key: cardinality, scope, owner props, standard props, current occupants, declaration owner, and replacement risk. A running dynamic package can query the live tree and an exact key with `cordis_inspect what:"client"`; the source catalog is generated from `SlotMap` declarations and `slots.register()` call sites by `pnpm run gen-client-catalog`.
 

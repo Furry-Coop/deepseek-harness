@@ -7,7 +7,7 @@ import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-llm-retry/types'
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
 import type { AssistantChatData } from '../contract/chat-nodes.ts'
-import { CHAT_SYNTHETIC_SEQ_OFFSETS, chatNode } from './common.ts'
+import { CHAT_SYNTHETIC_SEQ_OFFSETS, chatNode, durableSeq } from './common.ts'
 import {
   emptyAssistantBlock, isTokenDelta, toAssistantBlock, toAssistantBlocks,
 } from './event-projection.ts'
@@ -362,6 +362,7 @@ export const assistantDefinition: ConversationNodeDefinition<AssistantState> = {
       ?? context.matches[0]?.event.seq ?? 0
     return chatNode(context, 'assistant-step', anchorSeq, data, {
       visibility: settled?.interrupted === true || visible ? 'visible' : 'hidden',
+      sourceSeq: durableSeq(settled?.seq),
     })
   },
 }

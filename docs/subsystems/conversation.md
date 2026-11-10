@@ -255,6 +255,8 @@ A match result with `exclusive: true` claims that event on the Definition's targ
 
 `target` and `buildViewNode(context)` declare one target-owned rendering contribution and must appear together. Preserve `context.key` as the React-facing identity, choose `anchorSeq` from the matched event ordering, and return only renderer-ready data. Once a target Node has been published, keep returning the same key; use `visibility: 'hidden'` when it must temporarily leave the visible flow rather than withdrawing it with `null`.
 
+A Chat Node also reports `sourceSeq` when its row presents one durable Session event, such as the user message it renders, the finalized Assistant message, the tool result, or the `turn/end` of the footer. Chat addresses that row by this seq when a Session attachment names a durable event, while `anchorSeq` remains a sortable render position that may be a transient or synthetic fraction; a row that presents no single durable event omits `sourceSeq`, and a reader never falls back to `anchorSeq` as if it were durable.
+
 A Chat Node also chooses where its row stands through `groupTree`. Positions are ordered from the outermost inward, and a Node at a position also has the effect of every inner one. Chat process grouping, whole-Turn folding, and Turn-input detection read only this position; [group-tree.ts](../../packages/client/ui-chat/src/client/contract/group-tree.ts) holds the complete contract.
 
 | The Node is | Declare |

@@ -1,6 +1,7 @@
 /** Composes viewport operations, reading policy, and history navigation for Chat. */
-import { useCallback, useLayoutEffect, useMemo, useRef, type RefObject } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import type { TranscriptViewMode } from '../../chat-settings.ts'
+import type { ChatAttachmentLayout } from '../contract/attachment-layout.ts'
 import type { ChatSnapshot } from '../contract/snapshot.ts'
 import type { ChatViewSlotProps } from '../contract/slots.ts'
 import { useChatNavigation, type ChatNavigation, type ChatNavigationInput } from './use-chat-navigation.ts'
@@ -35,6 +36,8 @@ interface ChatScrollState extends ChatReadingState {
   readonly loadEarlier: ChatNavigation['loadEarlier']
   readonly returnToBottom: () => void
   readonly motion: FlowMotionRows
+  /** Where the current blank can host Session attachment cards. */
+  readonly attachmentLayout: ChatAttachmentLayout
 }
 
 /**
@@ -50,6 +53,9 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
     deferCompletedTurns, loadedTurns, chatScroll, hasMore, loadingOlder, loadOlder, loadThrough, transcriptView,
   } = input
   const { viewport, listRef, columnRef } = useChatViewport()
+  // The viewport's size observation owns the blank measurement; this state is
+  // only its render-time mirror for the flow's owner data.
+  const [attachmentLayout, setAttachmentLayout] = useState<ChatAttachmentLayout>(viewport.attachmentLayout())
   const { reading, state } = useChatReading(viewport, chatScroll, loadedTurns.at(-1)?.turn ?? null)
   const navigationInput = useMemo(() => ({
     firstSeq, loadingOlder, hasMore, loadOlder, loadThrough,
@@ -117,6 +123,7 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
       interact: () => { navigation.cancel() },
       intent: () => { cancelPendingFollow(); reading.interruptFollow() },
       resize: () => {
+        setAttachmentLayout(viewport.attachmentLayout())
         if (!content.current.opened) return
         if (navigation.contentCommitted()) {
           navigation.reconcile()
@@ -179,7 +186,7 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
   }, [navigation, reading, cancelPendingFollow])
 
   return {
-    listRef, columnRef, ...state, busyTurn, motion: viewport.motion,
+    listRef, columnRef, ...state, busyTurn, motion: viewport.motion, attachmentLayout,
     navigateToTurn: navigation.navigateToTurn,
     loadEarlier: navigation.loadEarlier,
     returnToBottom,

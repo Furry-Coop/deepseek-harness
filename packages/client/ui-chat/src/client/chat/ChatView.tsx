@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
-  NodeKey, RenderEntry,
+  ConversationGroupData, ConversationGroupedView, NodeKey, NodeReference, RenderEntry,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { InboxState } from '@deepseek-ai/dsh-agent/types'
 import type { PendingSubmission } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -24,6 +24,44 @@ import css from './ChatView.module.css'
 function openFailureMessage(error: unknown, fallback: string): string {
   const message = error instanceof Error ? error.message : String(error)
   return message === '' ? fallback : message
+}
+
+/** Group identity to its rendered members for the displayed grouped view. */
+function groupedMemberships(
+  view: ConversationGroupedView<ConversationGroupData<'chat'>> | undefined,
+): ReadonlyMap<string, readonly NodeReference[]> | undefined {
+  if (view === undefined) return undefined
+  const memberships = new Map<string, readonly NodeReference[]>()
+  for (const entry of view.entries) {
+    if (entry.kind !== 'group') continue
+    const members = view.groupSource(entry.key).getSnapshot()?.members
+    if (members !== undefined) memberships.set(entry.key, members)
+  }
+  return memberships
+}
+
+/**
+ * Compare two membership maps by group, member order, and rendered part.
+ * @param left - previous memberships.
+ * @param right - next memberships.
+ * @returns whether every group keeps the same members.
+ */
+function sameGroupMemberships(
+  left: ReadonlyMap<string, readonly NodeReference[]> | undefined,
+  right: ReadonlyMap<string, readonly NodeReference[]> | undefined,
+): boolean {
+  if (left === right) return true
+  if (left === undefined || right === undefined || left.size !== right.size) return false
+  for (const [key, members] of left) {
+    const other = right.get(key)
+    if (other === undefined || other.length !== members.length) return false
+    for (const [index, member] of members.entries()) {
+      const candidate = other[index]
+      if (candidate === undefined || candidate.key !== member.key
+        || candidate.groupPart !== member.groupPart) return false
+    }
+  }
+  return true
 }
 
 /**
@@ -80,6 +118,14 @@ export function ChatView({
   const groupedEntries = useConversation(snapshot => snapshot.views.grouped('chat')?.entries)
   const entries = useMemo<readonly RenderEntry[]>(() => groupedEntries
     ?? order.map(key => ({ kind: 'node', key: key as NodeKey })), [groupedEntries, order])
+  // Group membership answers which rendered entry owns a Step's first row; an
+  // attachment card may target a group entry instead of a bare Node key.
+  const groupMemberships = useConversation(
+    snapshot => groupedMemberships(snapshot.views.grouped('chat')),
+    sameGroupMemberships,
+  )
+  const groupMembers = useCallback((key: string): readonly NodeReference[] | undefined =>
+    groupMemberships?.get(key), [groupMemberships])
   const nodeStore = useChat(s => s.nodes)
   const deferCompletedTurns = usePresentation(policy => policy.collapseTiming === 'next-input')
   const transcriptView = usePresentation(policy => policy.mode)
@@ -209,6 +255,10 @@ export function ChatView({
     loadedTurns: turnNavigationItems,
     transcriptView,
   })
+  // A card stands in the blank beside the content when that blank fits one, and
+  // keeps its in-Turn position otherwise. The same decision reaches CSS through
+  // the column attribute the viewport publishes with its geometry.
+  const attachmentLayout = scroll.attachmentLayout
   const interactionSurfaceRef = useRef<HTMLDivElement>(null)
   const interactionIds = useInteractionIds(ids => ids)
   const textInteraction = useTextInteraction(scroll.columnRef, interactionSurfaceRef, dispatchInteraction, interactionIds)
@@ -250,7 +300,7 @@ export function ChatView({
               fileImages={fileImages}
             >
               {renderSlot('conversation.chat.flow', {
-                entries, pendingInputs, lastInputTurn, deferCollapse,
+                entries, pendingInputs, lastInputTurn, deferCollapse, attachmentLayout, groupMembers,
                 cwd, openFile: requestOpenFile, inspectCall, forkAt, loadImage,
               }, { hookContext: flowContext })}
             </MarkdownDelegateProvider>

@@ -9,6 +9,15 @@ import type { ChatGroupTree } from './group-tree.ts'
 export interface ChatConversationViewNode extends ConversationViewNode {
   readonly target: 'chat'
   readonly anchorSeq: number
+  /**
+   * Durable Session event seq this row presents, when its own evidence names one.
+   *
+   * `anchorSeq` is only a sortable render position and may be a transient or
+   * synthetic fraction. This field is set from a durable event seq, so a reader
+   * that must address the row by a logged event compares against it and never
+   * against `anchorSeq`.
+   */
+  readonly sourceSeq?: number
   readonly location: ConversationLocation
   readonly visibility: 'visible' | 'hidden'
   /**

@@ -21,6 +21,7 @@ File-mention providers receive the viewed Session ID with the closing-turn owner
 - [Command and failure rows](#command-and-failure-rows)
 - [Turn token usage](#turn-token-usage)
 - [Completed-turn footer](#completed-turn-footer)
+- [Session attachments](#session-attachments)
 - [Turn Process Folding](#turn-process-folding)
 - [Grouped rendering](#grouped-rendering)
 - [Scroll ownership](#scroll-ownership)
@@ -90,6 +91,19 @@ Preference menus restore focus to their trigger without scrolling before publish
 Artifact extensions can subscribe to one Turn and Node kind through `ChatNodeStore.turnDataSource`. The source includes hidden Nodes and exposes their business data in anchor order. Membership updates incrementally; only observed collections materialize ordered arrays, and unrelated Turns or kinds do not notify them.
 
 The completed-turn action footer follows the recorded Turn end. Its action row starts 20px below preceding prose or extension content. Actions remain visible only on the latest Turn when its final visible content is a reply; other endings and historical Turns reveal actions on hover or keyboard focus. Devices without hover keep actions visible. An unavailable branch action opens its explanation on click or tap without creating a branch.
+
+-----
+
+<a id="session-attachments"></a>
+## Session attachments
+
+A business plugin registers a card through `ctx.uiConversation.attachments.register({ id, sessionId, side, anchor })`. `id` is the card identity that survives a move; `sessionId` is the Session actually on display, so a fork that inherited the same events does not receive the card; `side` selects the blank the card prefers; `anchor` names the real numeric Turn plus its start, a durable event seq, its real `turn/end`, or one loaded top-level Tool callId. The renderer is the keyed `conversation.chat.attachment` Slot: the registration owns data and lifetime, the Slot owns presentation, and disposing the registration removes the card.
+
+Chat resolves each anchor against the loaded Chat timeline rather than a stored row index, so paging, folding, and moving are the same decision. A Turn outside the loaded window has no place to mount, and the card appears with the page that supplies it. `turn-start` mounts before that Turn's first loaded row. `turn-end` mounts after the Turn's last loaded row only when the real `turn/end` is loaded and the Turn is closed, including a Turn that ended without a final reply. `event` mounts before the one loaded root row that declares that durable seq as its `sourceSeq`; when the seq is a loaded `step/start` recorded by `StepLocation.start`, it mounts at that Step's visible entry — the first rendered row of the Step, or the owning process group's entry when the Step's rows are grouped — and the group and whole-Turn disclosures keep it reachable while folded; without either boundary it keeps the Turn's start entry instead of approximating from row order, and a transient or synthetic row position is never treated as a durable seq. A row presented twice, such as an Assistant reply's reasoning run and response row, never hosts the card twice: the resolved entry names the exact rendered part, or the card keeps the Turn entry. A `tool-call` mounts at that callId's own row, at that row's process group entry when the group is folded, or at the visible Turn process entry when the whole Turn is folded. A callId that is unloaded, belongs to another Turn, or is carried by more than one loaded row falls back to the Turn's start entry; ordinal adjacency never stands in for the call identity. The owner data reports the resolved `site`, `turn`, the durable `seq` when the row declares one, and the target callId for a precise site.
+
+The viewport measures the blank beside the content column and publishes `data-chat-attachment-layout` on the column: `side` when a 200px card and its clearance fit, otherwise `inline`. A side card leaves the flow and stands in the blank at its resolved position, so the transcript does not shift and the card shares the native timeline's scrolling; a row whose cards all use the blank keeps zero height. A side uses the blank for at most one `auto` card: while that side has more than one `auto` card resolved, none of them uses it and all keep their in-Turn position, because a second side card would stand at a nearby anchor without a measured gap and could cover the first. A card registered with `presentation: 'inline'` always keeps its in-Turn position and does not consume that side's capacity, so a business can keep its historical entries inside their Turns while the active card (the default `auto`) uses the blank; omission of `presentation` is the same as `auto`. The same mount serves both layouts: changing width keeps one card, its DOM node, and focus inside it. Registering, moving, or withdrawing a card writes no scroll position, so the reader's Turn and reading line stay where they were. Cards resolved at one site are split by side, so a card on each side keeps its own blank and its own stack, and each card keeps its own layout: an active `auto` card still reaches the blank when a historical `inline` card resolves to the same side and site. The `inline` layout keeps the card at that same position inside the flow, which is the narrow entry the contributed card renders for itself.
+
+The layout attribute is a measured decision rather than a media breakpoint: the content width is a `clamp()` of the conversation width and a user preference, so CSS cannot compare the two dynamic lengths. The viewport publishes the same decision to the flow's `attachmentLayout` owner datum. A side card also marks its blank as occupied: a wide Markdown table in the anchored row then stays inside the content column instead of breaking out beneath the card, and a process group that hosts a side card drops its height cap because the capped body is a scroll container that would clip the blank.
 
 -----
 
@@ -204,6 +218,8 @@ None; Chat presentation does not assemble or mutate provider requests.
 ## Known Limitations and Deferred Work
 
 <a id="known-limitations-and-deferred-work"></a>
+
+- **Session attachment boundaries** — an `event` anchor addresses a loaded root row that declares that durable seq as its `sourceSeq`, or a loaded Step whose `step/start` declares it; an event owned by a nested tool row, by no row, or by no Step boundary keeps the Turn's start entry, and a precise tool row is addressed through the `tool-call` anchor instead. Side placement needs the measured blank to fit a 200px card plus its clearance, and a side uses it for at most one `auto` card: with more than one, all of them stay in the Turn, so cards the host cannot place apart by measurement never risk mutual occlusion. A business that keeps its own historical entries inside their Turns marks them `presentation: 'inline'`, which removes them from that capacity. A side card clamps wide-table breakout in its blank, which keeps such a table at the content-column width while the card is present.
 
 - **Running-icon resolution** — the animated whale uses a 28×28 image at a default 14×14 CSS size. Larger content fonts or device pixel ratios above 2 can soften the raster stroke; the static fallback remains vector-based. Browser image caching owns the animation clock, so remounting does not guarantee playback restarts at the first frame.
 

@@ -6,10 +6,10 @@ import type { PendingSubmission } from '@deepseek-ai/dsh-api-session-controller/
 import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { InboxState } from '@deepseek-ai/dsh-agent/types'
 import type {
-  CommandNode, CompactionSummaryNode, ConversationLocationDataStore, ConversationTurnDataMap,
+  CommandNode, CompactionSummaryNode, ConversationAttachment, ConversationLocationDataStore, ConversationTurnDataMap,
   TextInteractionGesture, TextInteractionSurface,
   ConversationGroupData, GroupSnapshot,
-  MessageImageLoader, MessageImageSource, MessageImagesOwnerProps, RenderEntry, TurnLocation, UserTextFacts, UserTextInput,
+  MessageImageLoader, MessageImageSource, MessageImagesOwnerProps, NodeReference, RenderEntry, TurnLocation, UserTextFacts, UserTextInput,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {
   HostObservable, InjectFace, KeyedSnapshotSelectorHook, LocaleNamespaceMap, PropsLocale, PropsRenderSlots, PropsRuntime,
@@ -18,6 +18,7 @@ import type {
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import type { ConnectionStateSource } from '@deepseek-ai/dsh-client-connection/client'
 import type { FileDragActions, MarkdownFileMentions, MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { ChatAttachmentLayout } from './attachment-layout.ts'
 import type { ContextMenuTriggerProps } from '@deepseek-ai/dsh-client-ui-context-menu/client'
 import type { ChatKey } from '../locale.ts'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
@@ -61,6 +62,39 @@ export interface TurnTailOwnerProps {
   turn: TurnLocation
   seq: number
   openFile: (path: string) => void
+}
+
+/** Site where one Session attachment card enters the Chat row sequence. */
+export type ChatAttachmentSite = 'turn-start' | 'event' | 'turn-end' | 'tool-call'
+
+/** Where the view lays out one attachment card. */
+export type ChatAttachmentHost = 'side' | 'inline'
+
+/**
+ * Owner currency of one Session-attached card mounted by the Chat target.
+ *
+ * A `tool-call` site is mounted by the target Tool Node, its owning process
+ * group, or the Turn process entry as those surfaces are visible, so the card
+ * appears at exactly one of them. Root `turn-start`, `event`, and `turn-end`
+ * sites keep their own root row. In the side layout all four sites stand in
+ * the blank beside the content column at their resolved position; in the
+ * in-Turn layout they keep that position inside the flow.
+ */
+export interface ChatAttachmentOwnerProps {
+  /** Card identity, side, and requested anchor; the same id survives a move. */
+  readonly attachment: Readonly<ConversationAttachment>
+  /** Resolved site inside the card's Turn. */
+  readonly site: ChatAttachmentSite
+  /** Real numeric Turn identity of the resolved site. */
+  readonly turn: number
+  /**
+   * Durable sequence of the resolved Turn boundary or anchor event. A precise
+   * tool row supplies it only when that row declares its own durable source
+   * event; a transient row position is never reported as a durable seq.
+   */
+  readonly seq?: SessionSeq
+  /** Target tool call for a precise tool-row site. */
+  readonly targetCallId?: string
 }
 
 /** Owner currency of finalized-assistant actions. */
@@ -375,6 +409,8 @@ export type ChatFlowDataInjected = Pick<ChatViewInjected, 'keyedHooks'> & {
   hooks: Pick<ChatViewInjected['hooks'], 'presentation'> & {
     /** Client connection lifecycle; the running clock pauses while it is not connected. */
     connectionState: ConnectionStateSource
+    /** Cards registered for the displayed Session, in registration order. */
+    attachments: ObservableSnapshot<readonly ConversationAttachment[]>
   }
 }
 
@@ -385,12 +421,26 @@ export interface ChatFlowOwnerProps extends Pick<ChatNodeOwnerProps,
   readonly pendingInputs: readonly (PendingSubmission | InboxState['next-step'][number])[]
   readonly lastInputTurn: number | undefined
   readonly deferCollapse: boolean
+  /**
+   * Where the viewport's remaining blank can host Session attachment cards.
+   * `side` places a card in the blank beside the content column at its
+   * resolved position; `inline` keeps that position inside the flow.
+   */
+  readonly attachmentLayout: ChatAttachmentLayout
+  /**
+   * Members of one grouped root entry in the displayed view.
+   * @param key - group identity from `entries`.
+   * @returns that group's rendered members, or undefined for an unknown group.
+   */
+  readonly groupMembers: (key: string) => readonly NodeReference[] | undefined
 }
 
 /** Full props of the Chat-owned flow renderer. */
 export type ChatFlowSlotProps =
   PropsRuntime<'conversation.chat.flow'>
-  & PropsRenderSlots<'conversation.chat.node' | 'conversation.chat.process.activity'>
+  & PropsRenderSlots<
+    'conversation.chat.node' | 'conversation.chat.process.activity' | 'conversation.chat.attachment'
+  >
   & PropsRenderFactories
   & PropsStore<ChatStore>
   & InjectFace<ChatFlowDataInjected>
@@ -510,6 +560,14 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * adds an entry; entries without content return null.
      */
     'conversation.chat.turnTail': { kind: 'list'; scope: 'session'; owner: TurnTailOwnerProps }
+    /**
+     * Session-attached card keyed by its stable card id. The Chat target
+     * resolves the card's requested anchor and renders this entry at the
+     * resolved Turn-start, event, or real Turn-end position. Reusing a key
+     * replaces that card's renderer; a card without a registered key renders
+     * no content.
+     */
+    'conversation.chat.attachment': { kind: 'keyed'; scope: 'session'; owner: ChatAttachmentOwnerProps }
     /**
      * Ordered actions for one finalized assistant message. Each entry receives
      * the durable message id; a fresh `id` adds an action and reusing one replaces

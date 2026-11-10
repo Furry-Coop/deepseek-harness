@@ -1,9 +1,13 @@
 /** Ordered Chat rows, local echoes, and running status share the flow slot's parent. */
-import { memo, type ReactElement } from 'react'
+import { memo, useMemo, type ReactElement } from 'react'
 import type { PendingSubmission } from '@deepseek-ai/dsh-api-session-controller/client'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 import type { ChatFlowSlotProps } from '../contract/slots.ts'
 import type { ChatNodeStore } from '../contract/snapshot.ts'
+import { resolveChatAttachmentPlacements, sameChatAttachmentPlacements,
+  type ChatAttachmentPlacement } from './attachments.ts'
+import { assignAttachmentHosts } from './attachment-layout.ts'
+import { ChatAttachmentRow } from './ChatAttachmentRow.tsx'
 import { ChatNodeSeat } from './ChatNodeSeat.tsx'
 import { ChatGroupSeat } from './ChatGroupSeat.tsx'
 import { PendingSteeringBubble, PendingSubmissionBubble } from './MessageItem.tsx'
@@ -12,6 +16,12 @@ import { RunningStatus } from './RunningStatus.tsx'
 
 /** A local submission echo, or a Host-pending steering item without a local submission. */
 type PendingInput = ChatFlowSlotProps['pendingInputs'][number]
+
+/** Cards at one root position, in registration order. */
+interface RootAttachmentGroup {
+  readonly index: number
+  readonly placements: readonly ChatAttachmentPlacement[]
+}
 
 /** Whether the echo is a local submission rather than a Host-pending steering item. */
 function isLocalSubmission(item: PendingInput): item is PendingSubmission {
@@ -49,16 +59,74 @@ function openTurnControlIndex(
   return -1
 }
 
+/**
+ * Group root-hosted cards by insertion position.
+ *
+ * One group per position renders one row component, which splits its own
+ * cards by side, so cards that resolve to the same anchor never cover each
+ * other and each side keeps its own stack.
+ * @param placements - resolved placements for this Session, in registration order.
+ * @returns groups in insertion order.
+ */
+function rootAttachmentGroups(
+  placements: readonly ChatAttachmentPlacement[],
+): readonly RootAttachmentGroup[] {
+  const groups = new Map<number, ChatAttachmentPlacement[]>()
+  for (const placement of placements) {
+    if (placement.index === null) continue
+    const group = groups.get(placement.index)
+    if (group === undefined) {
+      groups.set(placement.index, [placement])
+      continue
+    }
+    group.push(placement)
+  }
+  return [...groups.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([index, group]) => ({ index, placements: group }))
+}
+
 /** Render the flow without adding a DOM parent or changing keyed row positions. */
 export const ChatFlow = memo(function ChatFlow({
-  entries, pendingInputs, lastInputTurn, deferCollapse,
+  entries, pendingInputs, lastInputTurn, deferCollapse, attachmentLayout, groupMembers,
   useSession, useChat, useChatNode, useChatNodeBottom, useChatNodeProcess, useChatGroup, usePresentation, useConnectionState,
+  useAttachments,
   useStore, actions, renderSlot, renderFactorySlot, t, useGroupAction, useGroupHeaderAction,
   cwd, openFile, inspectCall, forkAt, loadImage,
 }: ChatFlowSlotProps) {
   const nodeStore = useChat(snapshot => snapshot.nodes)
   const running = useSession(snapshot => snapshot.running)
   const disconnected = useConnectionState(state => state === 'disconnected' || state === 'connecting')
+  const attachments = useAttachments(list => list)
+  // A card's anchor is resolved against the displayed Turn timeline, never a
+  // stored row index, so paging, folding, and moving are the same decision.
+  const placements = useChat(
+    snapshot => resolveChatAttachmentPlacements({
+      attachments,
+      entries,
+      turns: snapshot.timeline.turns,
+      nodes: snapshot.nodes.values(),
+      nodeOf: key => snapshot.nodes.get(key),
+      groupMembers,
+    }),
+    sameChatAttachmentPlacements,
+  )
+  // One auto card per side uses the measured blank; an explicit inline card
+  // never consumes that capacity. A second auto card on that side would stand
+  // at a nearby anchor without a measured gap, so auto cards on that side stay
+  // in the flow and never cover each other.
+  const hostedPlacements = useMemo(
+    () => assignAttachmentHosts(placements, attachmentLayout),
+    [placements, attachmentLayout],
+  )
+  // Cards hosted by a native row — a Tool call's own row, a Step's visible
+  // entry, or its owning process group — are rendered by that native seat.
+  const rowAttachments = useMemo(
+    () => hostedPlacements.filter(placement => placement.targetNodeKey !== undefined
+      || placement.targetGroupKey !== undefined),
+    [hostedPlacements],
+  )
+  const rootGroups = useMemo(() => rootAttachmentGroups(hostedPlacements), [hostedPlacements])
   const latestTurnAnchor = useChat(snapshot => snapshot.navigation.items().at(-1)?.anchorKey)
   const runningStartTime = useChatNode(latestTurnAnchor ?? '', (node) => {
     const location = node?.location
@@ -74,9 +142,10 @@ export const ChatFlow = memo(function ChatFlow({
   const seatProps = {
     nodeStore, useChatNode, useChatNodeBottom, useChatNodeProcess, usePresentation,
     useStore, actions, renderSlot, t, useGroupAction, deferCollapse,
-    cwd, openFile, inspectCall, forkAt, loadImage,
+    cwd, openFile, inspectCall, forkAt, loadImage, rowAttachments,
+    rowCardsEnabled: true,
   }
-  const rows = entries.map((entry) => {
+  const entryRows = entries.map((entry) => {
     switch (entry.kind) {
       case 'node':
         return <ChatNodeSeat {...seatProps} key={chatRenderKey(entry)} nodeKey={entry.key}
@@ -88,6 +157,25 @@ export const ChatFlow = memo(function ChatFlow({
         return assertNever(entry)
     }
   })
+  // Root attachment rows stand before the root entry their resolved site names.
+  // Precise row- and group-hosted cards are owned by their native seats.
+  const groupsByIndex = new Map<number, ReactElement[]>()
+  for (const group of rootGroups) {
+    const rows = groupsByIndex.get(group.index) ?? []
+    rows.push(<ChatAttachmentRow key={`attachment:${group.placements[0]?.attachment.id ?? group.index}`}
+      placements={group.placements} renderSlot={renderSlot} />)
+    groupsByIndex.set(group.index, rows)
+  }
+  const rows: ReactElement[] = []
+  const rowPosition = new Map<number, number>()
+  for (let index = 0; index <= entries.length; index += 1) {
+    const before = groupsByIndex.get(index)
+    if (before !== undefined) rows.push(...before)
+    if (index === entries.length) break
+    rowPosition.set(index, rows.length)
+    const row = entryRows[index]
+    if (row !== undefined) rows.push(row)
+  }
   // Transcript echoes open the running Turn and precede the status; steering
   // and Inbox echoes follow it, so the status stays on the running Turn's tail.
   // The first transcript echo opens the next Turn, whose first claim takes the
@@ -111,7 +199,7 @@ export const ChatFlow = memo(function ChatFlow({
   // contribution already materialized while the input is still optimistic.
   if (leadingRows.length > 0) {
     const control = openTurnControlIndex(entries, nodeStore, lastInputTurn)
-    if (control !== -1) rows.splice(control, 0, ...leadingRows.splice(0))
+    if (control !== -1) rows.splice(rowPosition.get(control) ?? rows.length, 0, ...leadingRows.splice(0))
   }
   // Rows enter before the keyed status and echoes after it, so React never moves its DOM node. The
   // running bit and the Turn's end arrive separately: after the bit clears, an open latest Turn keeps

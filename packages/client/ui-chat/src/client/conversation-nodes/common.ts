@@ -46,7 +46,7 @@ export function locationCoordinates(location: ConversationLocation): { turn?: nu
  * @param kind - Chat renderer dispatch key.
  * @param anchorSeq - sortable render position.
  * @param data - renderer-owned payload.
- * @param options - optional Location, visibility, and group-tree overrides.
+ * @param options - optional Location, visibility, group-tree, and durable source seq.
  * @returns final Chat view Node.
  */
 export function chatNode<Kind extends ChatNodeKind>(
@@ -58,6 +58,7 @@ export function chatNode<Kind extends ChatNodeKind>(
     readonly location?: ConversationLocation
     readonly visibility?: 'visible' | 'hidden'
     readonly groupTree?: ChatGroupTree | undefined
+    readonly sourceSeq?: number | undefined
   } = {},
 ): ChatNode<Kind> {
   return {
@@ -66,6 +67,7 @@ export function chatNode<Kind extends ChatNodeKind>(
     id: context.id,
     target: 'chat',
     anchorSeq,
+    ...options.sourceSeq === undefined ? {} : { sourceSeq: options.sourceSeq },
     location: options.location ?? contextLocation(context),
     visibility: options.visibility ?? 'visible',
     groupTree: options.groupTree,
@@ -80,4 +82,13 @@ export function chatNode<Kind extends ChatNodeKind>(
  */
 export function coordinate(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+}
+
+/**
+ * Accept a Session seq only when it is durable.
+ * @param value - candidate seq from a durable event or record.
+ * @returns the seq when it is a non-negative safe integer, otherwise undefined.
+ */
+export function durableSeq(value: number | undefined): number | undefined {
+  return coordinate(value)
 }

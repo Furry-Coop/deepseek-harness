@@ -7,7 +7,7 @@ import type {} from '@deepseek-ai/dsh-compaction/types'
 import type {} from '@deepseek-ai/dsh-commands/types'
 import { isReplacementSurfaceEvent } from '@deepseek-ai/dsh-session/surface'
 import type { ManualCompactionChatData } from '../contract/chat-nodes.ts'
-import { chatNode } from './common.ts'
+import { chatNode, durableSeq } from './common.ts'
 
 declare module '../contract/chat-nodes.ts' {
   interface ChatNodeDataMap {
@@ -205,13 +205,17 @@ export const commandDefinition: ConversationNodeDefinition<CommandState> = {
     const state = context.state ?? fallbackState(context)
     if (state === undefined) return null
     if (state.command.name !== 'compact') {
-      return chatNode(context, 'command', state.command.seq, state.command)
+      return chatNode(context, 'command', state.command.seq, state.command, {
+        sourceSeq: durableSeq(state.command.seq),
+      })
     }
     const compaction = state.checkpoint === undefined
       ? null
       : compactSummary(state.summary, state.checkpoint)
     const data: ManualCompactionChatData = { command: state.command, compaction }
-    return chatNode(context, 'manual-compaction', compaction?.seq ?? state.command.seq, data)
+    return chatNode(context, 'manual-compaction', compaction?.seq ?? state.command.seq, data, {
+      sourceSeq: durableSeq(compaction?.seq ?? state.command.seq),
+    })
   },
 }
 

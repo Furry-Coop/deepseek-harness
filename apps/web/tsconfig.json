@@ -247,7 +247,8 @@
     "tests/window-drag-coverage.e2e.ts",
     "tests/complex-history.perf.ts",
     "tests/pwsh-terminal.e2e.ts",
-    "tests/workflow-run.e2e.ts"
+    "tests/workflow-run.e2e.ts",
+    "tests/issue-18-host-probe.e2e.ts"
   ],
   "references": [
     { "path": "../../packages/experimental/auto-review" },

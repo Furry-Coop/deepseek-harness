@@ -3,7 +3,7 @@ import type {
   ConversationMatch, ConversationNodeContext, ConversationNodeDefinition, TurnErrorNode,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { TurnEndReason } from '@deepseek-ai/dsh-session/types'
-import { chatNode } from './common.ts'
+import { chatNode, durableSeq } from './common.ts'
 import { displayFailure } from './event-projection.ts'
 
 declare module '../contract/chat-nodes.ts' {
@@ -107,7 +107,10 @@ export const turnErrorDefinition: ConversationNodeDefinition<TurnErrorState> = {
       message: failure.message,
       ...failure.code === undefined ? {} : { code: failure.code },
     }
-    return chatNode(context, 'turn-error', node.seq, node, { groupTree: 'turn' })
+    return chatNode(context, 'turn-error', node.seq, node, {
+      groupTree: 'turn',
+      sourceSeq: durableSeq(node.seq),
+    })
   },
 }
 

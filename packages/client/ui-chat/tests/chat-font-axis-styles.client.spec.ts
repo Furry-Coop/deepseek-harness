@@ -162,7 +162,8 @@ describe('chat flow font-size axis', () => {
     expect(empty).toContain('height: 0')
     expect(empty).not.toContain('display: none')
     expect(css).toContain(`:is(.column, :global([data-slot="conversation.chat.flow"])) > :not([hidden]):not(.textInteraction):not(${emptySelector})`)
-    expect(css).toContain(`~ :not([hidden]):not(.textInteraction):not(${emptySelector})`)
+    // Attachment rows own their own spacing, so the sibling gap rule skips them.
+    expect(css).toContain(`~ :not([hidden]):not([data-chat-attachment-row]):not(.textInteraction):not(${emptySelector})`)
   })
 
   it('the interrupted-turn tag stays fixed like the dense token variants', () => {
