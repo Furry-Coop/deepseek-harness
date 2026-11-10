@@ -640,6 +640,24 @@ describe('Definition-owned Chat process groups', () => {
       .toEqual({ key: 'material', kind: 'plugin-activity', anchorSeq: 2 })
   })
 
+  it('prepares settled reasoning text only when a candidate needs the gap bound', () => {
+    const long = '思考'.repeat(600)
+    const first = settledThought(long, 4)
+    const second = settledThought(long, 6)
+    const segment = vi.spyOn(Intl.Segmenter.prototype, 'segment')
+    try {
+      // No candidate: the streaming hot path must not read settled reasoning text.
+      expect(processActivity([first, second]).contribution).toBeUndefined()
+      expect(segment).not.toHaveBeenCalled()
+      // A candidate stops the search at the first member able to block it.
+      segment.mockClear()
+      expect(processActivity([contributed('material', 2), first, second]).contribution).toBeUndefined()
+      expect(segment).toHaveBeenCalledTimes(1)
+    } finally {
+      segment.mockRestore()
+    }
+  })
+
   it('does not let a step start before its first block outrank the material that precedes it', () => {
     const material = contributed('material', 2)
     // `step/start` materializes an Assistant row whose reasoning is still empty.

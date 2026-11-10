@@ -148,20 +148,9 @@ export function processActivity(nodes: readonly ChatNode[]): ProcessActivitySumm
   let runningTime = -Infinity
   /** Start of the running native selection; the title ordering has always used it. */
   let nativeAnchor: number | undefined
-  /**
-   * Latest start among visible native activity that already appeared — a Tool
-   * row or Assistant reasoning with display text, settled or running. It becomes
-   * the lower bound only once nothing native is running, so a Node from before
-   * an already-visible Step cannot reclaim the title in the gap before the next
-   * Step's first visible block.
-   */
-  let nativeFloor = Number.NEGATIVE_INFINITY
   let preparing: boolean | undefined
   let contribution: { readonly key: string; readonly kind: ChatNodeKind; readonly anchorSeq: number; readonly index: number }
     | undefined
-  const noteNativeActivity = (anchorSeq: number): void => {
-    nativeFloor = Math.max(nativeFloor, anchorSeq)
-  }
   const visit = (tool: ToolCallBlock, anchorSeq: number): void => {
     if (seen.has(tool.callId)) return
     seen.add(tool.callId)
@@ -180,14 +169,7 @@ export function processActivity(nodes: readonly ChatNode[]): ProcessActivitySumm
     for (const child of tool.subCalls) visit(child, anchorSeq)
   }
   for (const [index, node] of nodes.entries()) {
-    if (node.kind === 'tool-call') {
-      visit(node.data.root, node.anchorSeq)
-      noteNativeActivity(node.anchorSeq)
-    } else if (reasoningDetail(node) !== '') {
-      // `step/start` alone and signature-only reasoning show no text, so the
-      // material before this Step's first visible block keeps the title.
-      noteNativeActivity(node.anchorSeq)
-    }
+    if (node.kind === 'tool-call') visit(node.data.root, node.anchorSeq)
     if (node.processActivity?.running !== true) continue
     if (contribution === undefined || node.anchorSeq > contribution.anchorSeq
       || (node.anchorSeq === contribution.anchorSeq && index > contribution.index)) {
@@ -199,13 +181,32 @@ export function processActivity(nodes: readonly ChatNode[]): ProcessActivitySumm
     runningDetail = reasoning?.detail ?? ''
     nativeAnchor = reasoning?.anchorSeq
   }
-  const lowerBound = nativeAnchor ?? nativeFloor
+  /**
+   * With no running native activity, a contribution only titles the group while it
+   * starts after every visible native activity that already appeared. Members are
+   * checked in order and the first one able to block ends the search, so settled
+   * reasoning text is prepared only in that gap and only up to that member.
+   */
+  let contributionWins = contribution !== undefined && nativeAnchor !== undefined
+    && contribution.anchorSeq > nativeAnchor
+  if (contribution !== undefined && nativeAnchor === undefined) {
+    contributionWins = true
+    for (const node of nodes) {
+      if (node.anchorSeq < contribution.anchorSeq) continue
+      // `step/start` alone and signature-only reasoning show no text, so the
+      // material before this Step's first visible block keeps the title.
+      if (node.kind === 'tool-call' || reasoningDetail(node) !== '') {
+        contributionWins = false
+        break
+      }
+    }
+  }
   return {
     counts: [...counts].map(([kind, count]) => ({ kind, count })).sort((a, b) => b.count - a.count),
     running,
     runningDetail,
     ...preparing ? { preparing: true } : {},
-    ...contribution !== undefined && contribution.anchorSeq > lowerBound
+    ...contribution !== undefined && contributionWins
       ? { contribution: { key: contribution.key, kind: contribution.kind, anchorSeq: contribution.anchorSeq } }
       : {},
   }
