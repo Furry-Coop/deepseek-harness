@@ -74,6 +74,24 @@ function contributed(
   }
 }
 
+/** A Tool row that already appeared and settled; the group keeps showing the row. */
+function settledTool(key: string, seq: number, name = 'bash'): ChatNode<'tool-call'> {
+  return {
+    ...tool(key, seq, name),
+    data: { root: {
+      kind: 'tool-result', callId: key, seq: seq + 1, time: seq + 1, callTime: seq, name,
+      args: PartialArguments.fromText('{"command":"pwd"}'),
+      call: { name, argsRaw: '{"command":"pwd"}' }, content: [], isError: false, subCalls: [],
+    } },
+  }
+}
+
+/** Reasoning-only Assistant of a settled step; the visible activity stays after the step ends. */
+function settledThought(text: string, anchorSeq = 2): ChatNode<'assistant-step'> {
+  const node = assistant(text)
+  return { ...node, anchorSeq, data: { ...node.data, status: 'settled' } }
+}
+
 function harness(nodes: readonly ChatConversationViewNode[], currentTimeline = timeline) {
   const builder = new ChatSnapshotBuilder()
   const state = new ProcessState()
@@ -585,6 +603,51 @@ describe('Definition-owned Chat process groups', () => {
     expect(processActivity([running, contributed('later', 5)]).contribution?.key).toBe('later')
     expect(processActivity([running, contributed('earlier', 1)]).contribution).toBeUndefined()
     expect(processActivity([running, contributed('tie', 2)]).contribution).toBeUndefined()
+  })
+
+  it('keeps an earlier contribution behind the visible step activity across a settled gap', () => {
+    const material = contributed('material', 2)
+    const stepTool = settledTool('call', 4)
+    const stepThought = settledThought('step thought', 6)
+    // Between two steps no Tool runs and no reasoning streams, but the step's own rows stay visible.
+    expect(processActivity([material, stepTool, stepThought])).toEqual({
+      counts: [{ kind: 'commands', count: 1 }], running: undefined, runningDetail: '',
+    })
+    expect(processActivity([material, stepTool, stepThought, contributed('tie', 6)]).contribution).toBeUndefined()
+    expect(processActivity([material, stepTool, stepThought, contributed('zero', 0)]).contribution).toBeUndefined()
+    expect(processActivity([material, stepTool, stepThought, contributed('new', 8)]).contribution)
+      .toEqual({ key: 'new', kind: 'plugin-activity', anchorSeq: 8 })
+  })
+
+  it('keeps the running native selection as the only bound while it still runs', () => {
+    const material = contributed('material', 2)
+    const running = tool('call', 4)
+    const settled = settledTool('done', 6)
+    // A settled row later in the Step does not outrank a contribution that starts after the running Tool.
+    expect(processActivity([material, running, settled, contributed('between', 5)]).contribution?.key)
+      .toBe('between')
+  })
+
+  it('ignores signature-only reasoning in the activity bound', () => {
+    const material = contributed('material', 2)
+    const placeholder = settledThought('<signature>opaque</signature>', 6)
+    expect(processActivity([material, placeholder]).runningDetail).toBe('')
+    expect(processActivity([material, placeholder]).contribution)
+      .toEqual({ key: 'material', kind: 'plugin-activity', anchorSeq: 2 })
+    // The same reservation applies while that Assistant is still streaming.
+    const streaming: ChatNode<'assistant-step'> = { ...assistant('<signature>opaque</signature>'), anchorSeq: 6 }
+    expect(processActivity([material, streaming]).contribution)
+      .toEqual({ key: 'material', kind: 'plugin-activity', anchorSeq: 2 })
+  })
+
+  it('does not let a step start before its first block outrank the material that precedes it', () => {
+    const material = contributed('material', 2)
+    // `step/start` materializes an Assistant row whose reasoning is still empty.
+    const starting: ChatNode<'assistant-step'> = { ...assistant(''), anchorSeq: 3 }
+    expect(processActivity([starting, material]).contribution)
+      .toEqual({ key: 'material', kind: 'plugin-activity', anchorSeq: 2 })
+    const thought: ChatNode<'assistant-step'> = { ...assistant('first thought'), anchorSeq: 3 }
+    expect(processActivity([thought, material]).contribution).toBeUndefined()
   })
 
   it('appends a tail Node to the final process segment without a root row', () => {

@@ -9,7 +9,7 @@ export interface ProcessActivityContribution {
   /** Chat Node whose keyed renderer supplies the localized title. */
   readonly key: string
   readonly kind: ChatNodeKind
-  /** Node start position compared against the native selection's start. */
+  /** Node start position compared against the running native selection or the latest visible native activity. */
   readonly anchorSeq: number
 }
 
@@ -20,7 +20,7 @@ export interface ProcessActivitySummary {
   readonly runningDetail: string
   /** Present only while the selected live activity has not reached tool/call. */
   readonly preparing?: true
-  /** Latest running Node contribution, when it starts after the native selection. */
+  /** Latest running Node contribution, when it starts after the running native selection or the latest visible native activity. */
   readonly contribution?: ProcessActivityContribution | undefined
 }
 

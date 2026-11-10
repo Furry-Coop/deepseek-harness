@@ -21,8 +21,9 @@ export interface ChatConversationViewNode extends ConversationViewNode {
   /**
    * Optional live activity this Node contributes to its process disclosure
    * title. Only a running contribution competes with native Tools and reasoning;
-   * candidates order by this Node's `anchorSeq` against the native selection's
-   * start, and a stopped or absent contribution leaves the native title.
+   * candidates order by this Node's `anchorSeq` against the running native
+   * selection's start or, once nothing native runs, the latest visible native
+   * activity's start, and a stopped or absent contribution leaves the native title.
    */
   readonly processActivity?: ChatProcessActivity | undefined
 }

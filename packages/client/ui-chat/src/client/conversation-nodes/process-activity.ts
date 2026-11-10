@@ -93,19 +93,27 @@ function questionDetail(value: unknown): string {
   return ''
 }
 
+/** Display text of one Assistant Node's reasoning; empty when it shows none. */
+function reasoningDetail(node: ChatNode): string {
+  if (node.kind !== 'assistant-step') return ''
+  for (let blockIndex = node.data.blocks.length - 1; blockIndex >= 0; blockIndex--) {
+    const block = node.data.blocks[blockIndex]
+    if (block?.kind !== 'reasoning') continue
+    const paragraphs = reasoningText(block.text).split(/\r?\n[\t ]*\r?\n/)
+    for (let paragraphIndex = paragraphs.length - 1; paragraphIndex >= 0; paragraphIndex--) {
+      const detail = normalizeLiveToolDetail(paragraphs[paragraphIndex]?.replaceAll('**', ''))
+      if (detail !== '') return detail
+    }
+  }
+  return ''
+}
+
 function liveReasoning(nodes: readonly ChatNode[]): { readonly detail: string; readonly anchorSeq: number } | undefined {
   for (let nodeIndex = nodes.length - 1; nodeIndex >= 0; nodeIndex--) {
     const node = nodes[nodeIndex]
     if (node?.kind !== 'assistant-step' || node.data.status !== 'running') continue
-    for (let blockIndex = node.data.blocks.length - 1; blockIndex >= 0; blockIndex--) {
-      const block = node.data.blocks[blockIndex]
-      if (block?.kind !== 'reasoning') continue
-      const paragraphs = reasoningText(block.text).split(/\r?\n[\t ]*\r?\n/)
-      for (let paragraphIndex = paragraphs.length - 1; paragraphIndex >= 0; paragraphIndex--) {
-        const detail = normalizeLiveToolDetail(paragraphs[paragraphIndex]?.replaceAll('**', ''))
-        if (detail !== '') return { detail, anchorSeq: node.anchorSeq }
-      }
-    }
+    const detail = reasoningDetail(node)
+    if (detail !== '') return { detail, anchorSeq: node.anchorSeq }
   }
   return undefined
 }
@@ -138,10 +146,22 @@ export function processActivity(nodes: readonly ChatNode[]): ProcessActivitySumm
   let running: ProcessActivity | undefined
   let runningDetail = ''
   let runningTime = -Infinity
+  /** Start of the running native selection; the title ordering has always used it. */
   let nativeAnchor: number | undefined
+  /**
+   * Latest start among visible native activity that already appeared — a Tool
+   * row or Assistant reasoning with display text, settled or running. It becomes
+   * the lower bound only once nothing native is running, so a Node from before
+   * an already-visible Step cannot reclaim the title in the gap before the next
+   * Step's first visible block.
+   */
+  let nativeFloor = Number.NEGATIVE_INFINITY
   let preparing: boolean | undefined
   let contribution: { readonly key: string; readonly kind: ChatNodeKind; readonly anchorSeq: number; readonly index: number }
     | undefined
+  const noteNativeActivity = (anchorSeq: number): void => {
+    nativeFloor = Math.max(nativeFloor, anchorSeq)
+  }
   const visit = (tool: ToolCallBlock, anchorSeq: number): void => {
     if (seen.has(tool.callId)) return
     seen.add(tool.callId)
@@ -160,7 +180,14 @@ export function processActivity(nodes: readonly ChatNode[]): ProcessActivitySumm
     for (const child of tool.subCalls) visit(child, anchorSeq)
   }
   for (const [index, node] of nodes.entries()) {
-    if (node.kind === 'tool-call') visit(node.data.root, node.anchorSeq)
+    if (node.kind === 'tool-call') {
+      visit(node.data.root, node.anchorSeq)
+      noteNativeActivity(node.anchorSeq)
+    } else if (reasoningDetail(node) !== '') {
+      // `step/start` alone and signature-only reasoning show no text, so the
+      // material before this Step's first visible block keeps the title.
+      noteNativeActivity(node.anchorSeq)
+    }
     if (node.processActivity?.running !== true) continue
     if (contribution === undefined || node.anchorSeq > contribution.anchorSeq
       || (node.anchorSeq === contribution.anchorSeq && index > contribution.index)) {
@@ -172,12 +199,13 @@ export function processActivity(nodes: readonly ChatNode[]): ProcessActivitySumm
     runningDetail = reasoning?.detail ?? ''
     nativeAnchor = reasoning?.anchorSeq
   }
+  const lowerBound = nativeAnchor ?? nativeFloor
   return {
     counts: [...counts].map(([kind, count]) => ({ kind, count })).sort((a, b) => b.count - a.count),
     running,
     runningDetail,
     ...preparing ? { preparing: true } : {},
-    ...contribution !== undefined && (nativeAnchor === undefined || contribution.anchorSeq > nativeAnchor)
+    ...contribution !== undefined && contribution.anchorSeq > lowerBound
       ? { contribution: { key: contribution.key, kind: contribution.kind, anchorSeq: contribution.anchorSeq } }
       : {},
   }
