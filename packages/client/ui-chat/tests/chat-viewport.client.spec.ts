@@ -560,3 +560,150 @@ it('releases a removed paging row without navigating to unrelated content', () =
   expect(h.viewport.preserving).toBe(false)
   expect(h.scroller.scrollTop).toBe(80)
 })
+
+const SIDE_TOP = '--dsh-chat-attachment-card-top'
+const SIDE_MAX = '--dsh-chat-attachment-card-max-block-size'
+const SIDE_OVERFLOW = '--dsh-chat-attachment-card-overflow-y'
+
+function sideCardFixture() {
+  const column = document.createElement('div')
+  column.dataset.chatFlow = ''
+  const row = document.createElement('div')
+  row.dataset.chatAttachmentRow = ''
+  row.dataset.chatAttachmentHost = 'side'
+  const card = document.createElement('div')
+  card.dataset.chatAttachment = 'side-card'
+  card.dataset.chatAttachmentHost = 'side'
+  const content = document.createElement('div')
+  card.append(content)
+  row.append(card)
+  column.append(row)
+  document.body.append(column)
+  let anchorTop = 500
+  let cardHeight = 200
+  const containerHeight = 600
+  Object.defineProperties(column, {
+    clientHeight: { configurable: true, value: containerHeight },
+    clientTop: { configurable: true, value: 0 },
+    clientWidth: { configurable: true, value: 0 },
+  })
+  vi.spyOn(column, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 100, 500, containerHeight))
+  Object.defineProperties(row, {
+    getClientRects: { configurable: true, value: () => [new DOMRect(0, 100 + anchorTop, 500, 0)] },
+  })
+  vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 100 + anchorTop, 500, 0))
+  const renderedHeight = () => card.style.getPropertyValue(SIDE_MAX) === ''
+    ? cardHeight
+    : Math.min(cardHeight, containerHeight)
+  Object.defineProperties(card, {
+    offsetHeight: { configurable: true, get: renderedHeight },
+    clientHeight: { configurable: true, get: renderedHeight },
+    scrollHeight: { configurable: true, get: () => cardHeight },
+    getClientRects: { configurable: true, value: () => [new DOMRect(0, 100 + anchorTop, 200, renderedHeight())] },
+  })
+  vi.spyOn(card, 'getBoundingClientRect').mockImplementation(() =>
+    new DOMRect(0, 100 + anchorTop, 200, renderedHeight()))
+  const callbacks: ResizeObserverCallback[] = []
+  class Observer implements ResizeObserver {
+    constructor(callback: ResizeObserverCallback) { callbacks.push(callback) }
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  vi.stubGlobal('ResizeObserver', Observer)
+  const viewport = new ChatViewport()
+  viewport.attach(column, column)
+  onTestFinished(() => {
+    viewport.detach()
+    column.remove()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+  return {
+    column, row, card, viewport,
+    resize: () => { for (const callback of callbacks) callback([], undefined as never) },
+    setAnchor: (value: number) => { anchorTop = value },
+    setCardHeight: (value: number) => { cardHeight = value },
+  }
+}
+
+it('clamps a side card to the content column and caps a card taller than it', () => {
+  const h = sideCardFixture()
+  expect(h.card.style.getPropertyValue(SIDE_TOP)).toBe('400px')
+  expect(h.card.style.getPropertyValue(SIDE_MAX)).toBe('')
+  expect(h.card.style.getPropertyValue(SIDE_OVERFLOW)).toBe('')
+
+  h.setCardHeight(700)
+  h.resize()
+  expect(h.card.style.getPropertyValue(SIDE_TOP)).toBe('0px')
+  expect(h.card.style.getPropertyValue(SIDE_MAX)).toBe('600px')
+  expect(h.card.style.getPropertyValue(SIDE_OVERFLOW)).toBe('auto')
+
+  h.setCardHeight(300)
+  h.resize()
+  expect(h.card.style.getPropertyValue(SIDE_TOP)).toBe('300px')
+  expect(h.card.style.getPropertyValue(SIDE_MAX)).toBe('')
+  expect(h.card.style.getPropertyValue(SIDE_OVERFLOW)).toBe('')
+})
+
+it('clears the side card box when the same card returns to the flow', async () => {
+  const h = sideCardFixture()
+  expect(h.card.style.getPropertyValue(SIDE_TOP)).not.toBe('')
+
+  h.card.dataset.chatAttachmentHost = 'inline'
+  await new Promise<void>((resolve) => { setTimeout(resolve, 0) })
+  expect(h.card.style.getPropertyValue(SIDE_TOP)).toBe('')
+  expect(h.card.style.getPropertyValue(SIDE_MAX)).toBe('')
+  expect(h.card.style.getPropertyValue(SIDE_OVERFLOW)).toBe('')
+
+  h.card.dataset.chatAttachmentHost = 'side'
+  await new Promise<void>((resolve) => { setTimeout(resolve, 0) })
+  expect(h.card.style.getPropertyValue(SIDE_TOP)).toBe('400px')
+})
+
+it('forgets a side card when its row leaves the transcript', async () => {
+  const h = sideCardFixture()
+  h.row.remove()
+  await new Promise<void>((resolve) => { setTimeout(resolve, 0) })
+  expect(h.card.style.getPropertyValue(SIDE_TOP)).toBe('')
+})
+
+it('clamps side cards without a ResizeObserver available', () => {
+  vi.stubGlobal('ResizeObserver', undefined)
+  const column = document.createElement('div')
+  column.dataset.chatFlow = ''
+  const row = document.createElement('div')
+  row.dataset.chatAttachmentRow = ''
+  row.dataset.chatAttachmentHost = 'side'
+  const card = document.createElement('div')
+  card.dataset.chatAttachment = 'side-card'
+  card.dataset.chatAttachmentHost = 'side'
+  row.append(card)
+  column.append(row)
+  document.body.append(column)
+  Object.defineProperties(column, {
+    clientHeight: { configurable: true, value: 600 },
+    clientTop: { configurable: true, value: 0 },
+  })
+  vi.spyOn(column, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 100, 500, 600))
+  Object.defineProperties(row, {
+    getClientRects: { configurable: true, value: () => [new DOMRect(0, 600, 500, 0)] },
+  })
+  vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 600, 500, 0))
+  Object.defineProperties(card, {
+    offsetHeight: { configurable: true, value: 200 },
+    clientHeight: { configurable: true, value: 200 },
+    scrollHeight: { configurable: true, value: 200 },
+    getClientRects: { configurable: true, value: () => [new DOMRect(0, 600, 200, 200)] },
+  })
+  vi.spyOn(card, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 600, 200, 200))
+  const viewport = new ChatViewport()
+  viewport.attach(column, column)
+  onTestFinished(() => {
+    viewport.detach()
+    column.remove()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+  expect(card.style.getPropertyValue(SIDE_TOP)).toBe('400px')
+})

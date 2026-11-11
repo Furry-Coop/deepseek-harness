@@ -3,6 +3,40 @@ import type { ConversationAttachmentSide } from '@deepseek-ai/dsh-client-ui-conv
 import type { ChatAttachmentLayout } from '../contract/attachment-layout.ts'
 import type { ChatAttachmentPlacement } from './attachments.ts'
 
+/** Resolved box of one side card inside the content column. */
+export interface ChatSideAttachmentGeometry {
+  /** Distance from the column's padding edge to the card's border-box top. */
+  readonly top: number
+  /** Block-size cap for a card taller than the column; `null` keeps its natural size. */
+  readonly maxBlockSize: number | null
+}
+
+/**
+ * Place one side card inside the column's content box.
+ *
+ * A card whose bottom would pass the content end moves up until that end holds
+ * it; the natural anchor is where its attachment row sits, never the previous
+ * clamped top. A card taller than the content box keeps its top at the content
+ * start and reports the cap its consumer applies for internal scrolling. The
+ * clamp stays inside the column, which lies inside the root's content-sized
+ * clip, so a side card never crosses the transcript's clipped bottom.
+ * @param anchorTop - attachment row top relative to the column's padding edge.
+ * @param cardHeight - natural border-box height of the card.
+ * @param containerHeight - height of the column's content box.
+ * @returns the card's top and, when it must scroll internally, its block-size cap.
+ */
+export function resolveSideAttachmentGeometry(
+  anchorTop: number,
+  cardHeight: number,
+  containerHeight: number,
+): ChatSideAttachmentGeometry {
+  const top = Math.min(Math.max(anchorTop, 0), Math.max(0, containerHeight - cardHeight))
+  return {
+    top,
+    maxBlockSize: cardHeight > containerHeight ? Math.max(0, containerHeight) : null,
+  }
+}
+
 /** Width one side card needs in the blank beside the content column. */
 export const ATTACHMENT_SIDE_CARD_WIDTH = 200
 /** Clearance between the content column and a side card. */

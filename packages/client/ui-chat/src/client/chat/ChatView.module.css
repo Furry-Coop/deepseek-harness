@@ -115,8 +115,13 @@
 
 [data-chat-attachment-row] > [data-chat-attachment-stack] > [data-chat-attachment][data-chat-attachment-host="side"] {
   position: absolute;
-  top: auto;
+  /* The viewport clamps the top to the content column and caps a card taller
+     than it; before that measurement the card rests at its own row. */
+  top: var(--dsh-chat-attachment-card-top, auto);
+  box-sizing: border-box;
   width: var(--dsh-chat-attachment-side-width);
+  max-block-size: var(--dsh-chat-attachment-card-max-block-size, none);
+  overflow-y: var(--dsh-chat-attachment-card-overflow-y, visible);
 }
 
 [data-chat-attachment-row][data-chat-attachment-side="left"] > [data-chat-attachment-stack] > [data-chat-attachment][data-chat-attachment-host="side"] {

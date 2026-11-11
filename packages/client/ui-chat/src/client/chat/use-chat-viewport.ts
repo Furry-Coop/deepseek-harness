@@ -3,7 +3,7 @@ import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { ChatScrollPosition } from '../contract/slots.ts'
 import type { ChatSnapshot } from '../contract/snapshot.ts'
 import { createFlowMotion, type InputFoldBox, type InputFoldDriver } from './flow-motion.ts'
-import { measureChatAttachmentLayout } from './attachment-layout.ts'
+import { measureChatAttachmentLayout, resolveSideAttachmentGeometry } from './attachment-layout.ts'
 import type { ChatAttachmentLayout } from '../contract/attachment-layout.ts'
 import { scrollMetrics, ScrollFollow, type ViewportMetrics } from './use-scroll-follow.ts'
 export type { ViewportMetrics } from './use-scroll-follow.ts'
@@ -72,6 +72,11 @@ interface PagingPosition {
 
 const READING_INTENTS = ['wheel', 'touchstart', 'pointerdown', 'keydown', 'beforematch'] as const
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '])
+const SIDE_ATTACHMENT_SELECTOR = '[data-chat-attachment][data-chat-attachment-host="side"]'
+/** Viewport-owned box values `ChatView.module.css` reads on a side card. */
+const SIDE_ATTACHMENT_TOP = '--dsh-chat-attachment-card-top'
+const SIDE_ATTACHMENT_MAX_BLOCK_SIZE = '--dsh-chat-attachment-card-max-block-size'
+const SIDE_ATTACHMENT_OVERFLOW = '--dsh-chat-attachment-card-overflow-y'
 
 /** Owns one Chat scrollport's DOM operations, event listeners, and size observer. */
 export class ChatViewport {
@@ -90,6 +95,10 @@ export class ChatViewport {
   private settledContent = 0
   /** Where the current blank can host Session attachment cards. */
   private layout: ChatAttachmentLayout = 'inline'
+  /** Side cards whose own size and row position drive their in-column clamp. */
+  private sideCards = new Set<HTMLElement>()
+  /** Card registration, removal, and side/inline host changes. */
+  private cardMutations: MutationObserver | null = null
   /** The pending or running fold batch lands at the tail. */
   private tailRequested = false
   /** The tail request came from the reader's own input rather than from a content change. */
@@ -122,12 +131,19 @@ export class ChatViewport {
     scroller.addEventListener('scrollend', this.onScrollEnd, { passive: true, capture: true })
     for (const type of READING_INTENTS) scroller.addEventListener(type, this.onIntent, { passive: true, capture: true })
     if (typeof ResizeObserver !== 'undefined') {
-      this.observer = new ResizeObserver(() => {
+      this.observer = new ResizeObserver((entries) => {
         if (this.elements !== elements) return
+        // A side card's own growth changes no flow height and no scroll range;
+        // only its in-column box needs the new size.
+        if (entries.length > 0 && entries.every(entry => this.sideCards.has(entry.target as HTMLElement))) {
+          this.refreshSideAttachmentGeometry(elements)
+          return
+        }
         // Read while layout is still clean, before this callback writes room or scroll positions. Those writes
         // leave the content height unchanged, so it is also the content this frame paints.
         this.settledContent = elements.scroller.scrollHeight - this.spacerHeight()
         this.publishAttachmentLayout(elements)
+        this.refreshSideAttachmentGeometry(elements)
         this.keepAboveClosing()
         this.reclaimBelow()
         this.invalidate()
@@ -138,6 +154,7 @@ export class ChatViewport {
       if (composer !== null) this.observer.observe(composer)
     }
     this.publishAttachmentLayout(elements)
+    this.startSideAttachmentObservation(elements)
   }
 
   /**
@@ -155,6 +172,160 @@ export class ChatViewport {
     elements.column.dataset['chatAttachmentLayout'] = layout
   }
 
+  /**
+   * Track side cards independently of transcript size.
+   *
+   * A side card is absolutely positioned and its row keeps zero height, so the
+   * column's size observation cannot see the card appear, grow, or move. The
+   * same size observer watches each card for content growth, and the mutation
+   * observer covers registration, removal, and the side/inline host switch.
+   * Clamped `top` and block-size values are published as custom properties on
+   * the card, so a card that returns to the flow carries none of them.
+   * @param elements - attached viewport elements whose column hosts the cards.
+   */
+  private startSideAttachmentObservation(elements: ViewportElements): void {
+    this.trackSideCards(elements.column)
+    if (typeof MutationObserver !== 'undefined') {
+      this.cardMutations = new MutationObserver((records) => {
+        if (this.elements !== elements) return
+        let attributesChanged = false
+        for (const record of records) {
+          if (record.type === 'attributes') {
+            attributesChanged = true
+            continue
+          }
+          for (const node of record.addedNodes) this.trackSideCards(node)
+          for (const node of record.removedNodes) this.forgetDetachedSideCards(node)
+        }
+        if (attributesChanged) this.reconcileSideCards(elements.column)
+        this.refreshSideAttachmentGeometry(elements)
+      })
+      this.cardMutations.observe(elements.column, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['data-chat-attachment-host', 'hidden'],
+      })
+    }
+    this.refreshSideAttachmentGeometry(elements)
+  }
+
+  /** Drop card observers and the box values they published. */
+  private stopSideAttachmentObservation(): void {
+    this.cardMutations?.disconnect()
+    this.cardMutations = null
+    for (const card of this.sideCards) {
+      this.observer?.unobserve(card)
+      this.clearSideAttachmentGeometry(card)
+    }
+    this.sideCards.clear()
+  }
+
+  /** Observe one card's own size while it stays in the side layout. */
+  private observeSideCard(card: HTMLElement): void {
+    if (this.sideCards.has(card)) return
+    this.sideCards.add(card)
+    this.observer?.observe(card)
+  }
+
+  /** Stop observing one card and remove the box values it no longer uses. */
+  private forgetSideCard(card: HTMLElement): void {
+    this.observer?.unobserve(card)
+    this.sideCards.delete(card)
+    this.clearSideAttachmentGeometry(card)
+  }
+
+  /** Observe every side card in an inserted subtree, including its root. */
+  private trackSideCards(node: Node): void {
+    if (!(node instanceof HTMLElement)) return
+    if (node.matches(SIDE_ATTACHMENT_SELECTOR)) this.observeSideCard(node)
+    for (const card of node.querySelectorAll<HTMLElement>(SIDE_ATTACHMENT_SELECTOR)) this.observeSideCard(card)
+  }
+
+  /** Forget cards removed with a subtree, including cards detached in place. */
+  private forgetDetachedSideCards(node: Node): void {
+    for (const card of this.sideCards) {
+      if (node.contains(card) || !card.isConnected) this.forgetSideCard(card)
+    }
+  }
+
+  /** Reconcile the observed set after a card or row changed its layout host. */
+  private reconcileSideCards(column: HTMLElement): void {
+    for (const card of this.sideCards) {
+      if (card.getAttribute('data-chat-attachment-host') !== 'side' || !column.contains(card)) {
+        this.forgetSideCard(card)
+      }
+    }
+    this.trackSideCards(column)
+  }
+
+  /**
+   * Recompute every side card's in-column box.
+   *
+   * The anchor is the card's attachment row in the column's content
+   * coordinates, so a previous clamp never feeds back as the next anchor.
+   * A normally sized card stays at the row; one whose bottom would pass the
+   * column end moves up, and one taller than the column is capped and scrolls
+   * internally so its lowest controls remain reachable. Writing these values
+   * changes neither flow height nor scroll position.
+   * @param elements - attached viewport elements whose column hosts the cards.
+   */
+  private refreshSideAttachmentGeometry(elements: ViewportElements): void {
+    if (this.elements !== elements || this.sideCards.size === 0) return
+    const column = elements.column
+    const columnTop = column.getBoundingClientRect().top + column.clientTop
+    const containerHeight = column.clientHeight
+    for (const card of [...this.sideCards]) {
+      if (!card.isConnected || card.getAttribute('data-chat-attachment-host') !== 'side') {
+        this.forgetSideCard(card)
+        continue
+      }
+      const row = card.closest<HTMLElement>('[data-chat-attachment-row]')
+      if (row === null || row.getClientRects().length === 0 || card.getClientRects().length === 0) continue
+      const anchorTop = row.getBoundingClientRect().top - columnTop
+      const clamped = card.style.getPropertyValue(SIDE_ATTACHMENT_MAX_BLOCK_SIZE) !== ''
+      const naturalHeight = clamped
+        ? Math.max(card.getBoundingClientRect().height,
+          card.scrollHeight + card.offsetHeight - card.clientHeight)
+        : card.getBoundingClientRect().height
+      this.applySideAttachmentGeometry(
+        card,
+        resolveSideAttachmentGeometry(anchorTop, naturalHeight, containerHeight),
+      )
+    }
+  }
+
+  /** Publish one card's resolved top and internal-scroll box. */
+  private applySideAttachmentGeometry(
+    card: HTMLElement,
+    geometry: ReturnType<typeof resolveSideAttachmentGeometry>,
+  ): void {
+    this.setCardBoxValue(card, SIDE_ATTACHMENT_TOP, `${geometry.top}px`)
+    if (geometry.maxBlockSize === null) {
+      this.setCardBoxValue(card, SIDE_ATTACHMENT_MAX_BLOCK_SIZE, '')
+      this.setCardBoxValue(card, SIDE_ATTACHMENT_OVERFLOW, '')
+      return
+    }
+    this.setCardBoxValue(card, SIDE_ATTACHMENT_MAX_BLOCK_SIZE, `${geometry.maxBlockSize}px`)
+    this.setCardBoxValue(card, SIDE_ATTACHMENT_OVERFLOW, 'auto')
+  }
+
+  /** Remove every viewport-owned box value from a card returning to the flow. */
+  private clearSideAttachmentGeometry(card: HTMLElement): void {
+    for (const property of [SIDE_ATTACHMENT_TOP, SIDE_ATTACHMENT_MAX_BLOCK_SIZE, SIDE_ATTACHMENT_OVERFLOW]) {
+      card.style.removeProperty(property)
+    }
+  }
+
+  /** Write a custom property only when its value changes. */
+  private setCardBoxValue(card: HTMLElement, property: string, value: string): void {
+    if (value === '') {
+      if (card.style.getPropertyValue(property) !== '') card.style.removeProperty(property)
+      return
+    }
+    if (card.style.getPropertyValue(property) !== value) card.style.setProperty(property, value)
+  }
+
   /** Disconnect DOM resources and clear observations for the detached view. */
   detach(): void {
     this.stopPreserving()
@@ -166,6 +337,7 @@ export class ChatViewport {
     for (const type of READING_INTENTS) this.elements?.scroller.removeEventListener(type, this.onIntent, true)
     this.observer?.disconnect()
     this.observer = null
+    this.stopSideAttachmentObservation()
     this.elements = null
     this.events = null
     this.tailRequested = false

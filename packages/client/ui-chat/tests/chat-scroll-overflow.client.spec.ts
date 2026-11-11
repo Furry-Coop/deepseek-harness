@@ -21,4 +21,13 @@ describe('Transcript scroll overflow', () => {
     expect(rule(css, '.scroll')).toMatch(/overflow-x:\s*clip/)
     expect(rule(css, ':global([data-conversation-scroll]) .scroll')).toMatch(/overflow-x:\s*clip/)
   })
+
+  it('lets the viewport clamp and cap a side card inside the content column', () => {
+    const css = read('ChatView.module.css')
+    const side = rule(css, '[data-chat-attachment-row] > [data-chat-attachment-stack] > [data-chat-attachment][data-chat-attachment-host="side"]')
+    expect(side).toMatch(/top:\s*var\(--dsh-chat-attachment-card-top, auto\)/)
+    expect(side).toMatch(/box-sizing:\s*border-box/)
+    expect(side).toMatch(/max-block-size:\s*var\(--dsh-chat-attachment-card-max-block-size, none\)/)
+    expect(side).toMatch(/overflow-y:\s*var\(--dsh-chat-attachment-card-overflow-y, visible\)/)
+  })
 })

@@ -6,7 +6,7 @@ import type { ConversationAttachment } from '@deepseek-ai/dsh-client-ui-conversa
 import type { ChatAttachmentHost } from '../src/client/contract/slots.ts'
 import {
   ATTACHMENT_SIDE_CARD_WIDTH, ATTACHMENT_SIDE_GAP, assignAttachmentHosts,
-  attachmentLayoutFor, measureChatAttachmentLayout,
+  attachmentLayoutFor, measureChatAttachmentLayout, resolveSideAttachmentGeometry,
 } from '../src/client/chat/attachment-layout.ts'
 import type { ChatAttachmentPlacement } from '../src/client/chat/attachments.ts'
 
@@ -71,6 +71,28 @@ describe('Chat attachment layout', () => {
     Object.defineProperty(scrollport, 'clientWidth', { configurable: true, value: 1_000 })
     Object.defineProperty(column, 'offsetWidth', { configurable: true, value: 520 })
     expect(measureChatAttachmentLayout(scrollport, column)).toBe('side')
+  })
+})
+
+describe('Chat side attachment geometry', () => {
+  it('keeps a card at its row while the content end still holds it', () => {
+    expect(resolveSideAttachmentGeometry(120, 200, 600)).toEqual({ top: 120, maxBlockSize: null })
+  })
+
+  it('moves a card up only as far as its bottom needs', () => {
+    expect(resolveSideAttachmentGeometry(500, 200, 600)).toEqual({ top: 400, maxBlockSize: null })
+  })
+
+  it('does not let an anchor past the content end place the card below it', () => {
+    expect(resolveSideAttachmentGeometry(700, 100, 600)).toEqual({ top: 500, maxBlockSize: null })
+  })
+
+  it('caps a card taller than the content so the card scrolls inside', () => {
+    expect(resolveSideAttachmentGeometry(400, 700, 600)).toEqual({ top: 0, maxBlockSize: 600 })
+  })
+
+  it('keeps the top at the content start when the content box has no height', () => {
+    expect(resolveSideAttachmentGeometry(40, 100, 0)).toEqual({ top: 0, maxBlockSize: 0 })
   })
 })
 
