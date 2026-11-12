@@ -73,6 +73,10 @@ type Phase =
     step: number
     /** Waking occurrences latched for replay at convergence. */
     wakes: Set<UserMessage>
+    /** Waking occurrences delivered before the open turn admitted a step. */
+    firstStepWakes: Set<UserMessage>
+    /** The closed turn entered no step and committed a `completed` `turn/end`. */
+    closedWithoutStep: boolean
     /** A disposal cancel reached this activity; the signal keeps its first abort reason. */
     disposed: boolean
   }
@@ -163,6 +167,8 @@ export class ReactLoopAgent implements Agent {
 
   /** Waking occurrences an in-progress cancellation holds until it removes them. */
   private readonly deferredWakes = new Set<UserMessage>()
+  /** A disposal cancel reached this agent; no later convergence starts another turn. */
+  private disposalRequested = false
   /** Nesting depth of cancellation bookkeeping; an idle wake waits until it reaches zero. */
   private cancelDepth = 0
   /** Whether any cancellation nested in the open window requested disposal. */
@@ -239,6 +245,10 @@ export class ReactLoopAgent implements Agent {
 
   cancel(cause: AgentCancelCause, options: CancelOptions = {}): void {
     const clearInbox = !options.keepInbox
+    // A disposal is terminal for wake replay even when it reaches no activity:
+    // a convergence that a status notification re-enters is then still unable
+    // to redeem a wake for the agent being released.
+    if (cause.kind === 'disposed') this.disposalRequested = true
     // One outermost cancellation owns the window through every cancel nested in
     // its callbacks. A disposal request anywhere in that window forbids the idle
     // wakes it holds from replaying, because the owner is releasing the agent.
@@ -504,6 +514,11 @@ export class ReactLoopAgent implements Agent {
    * when its message was cleared; a latched replay instead requires the exact
    * occurrence the waking send produced to still be pending, so input that
    * remains after that occurrence was removed authorizes no turn.
+   *
+   * A live driver whose turn has admitted no step cannot deliver the wake
+   * either: its own claim is already taken, so a first batch that closes empty
+   * would leave the occurrence with no step to enter. Those occurrences are
+   * recorded for {@link turn} and adopted only by that closing.
    * @param wakeAfterAbort - the {@link send} classification, captured before
    *   the inbox insertion so a reentrant cancel cannot reclassify it.
    * @param occurrence - the pending occurrence the waking message produced, as
@@ -525,6 +540,12 @@ export class ReactLoopAgent implements Agent {
       if (!this.phase.disposed && (this.phase.kind === 'maintenance' || wakeAfterAbort)
         && occurrence !== undefined) {
         this.phase.wakes.add(occurrence)
+      } else if (this.phase.kind === 'running' && !this.phase.disposed
+        && this.phase.step === 0 && occurrence !== undefined) {
+        // The turn's first claim is taken, so this wake has no boundary left in
+        // this turn. Its closing adopts the occurrence if the batch enters no
+        // step; reject and failure paths never read the record.
+        this.phase.firstStepWakes.add(occurrence)
       }
       return
     }
@@ -536,6 +557,8 @@ export class ReactLoopAgent implements Agent {
       turn: this.phase.lastTurn,
       step: 0,
       wakes: new Set(),
+      firstStepWakes: new Set(),
+      closedWithoutStep: false,
       disposed: false,
     })
     this.loopCtx.agents.withInitiator(this, () => this.kick()).then(driver.resolve, driver.reject)
@@ -564,11 +587,19 @@ export class ReactLoopAgent implements Agent {
     } finally {
       /* v8 ignore next -- kick owns a running phase until this driver boundary */
       if (this.phase.kind === 'running') {
-        const { turn, wakes, disposed } = this.phase
+        const { turn, wakes, closedWithoutStep, firstStepWakes, abort: { signal } } = this.phase
         this.setPhase({ kind: 'idle', lastTurn: turn })
-        // Replay only for a latched wake whose own occurrence is still pending.
-        // Input that outlives a removed wake stays passive until a later wake.
-        if (!disposed && [...wakes].some(occurrence => this.inbox.holdsOccurrence(occurrence))) this.wakeDriver()
+        // The status notification above runs listeners that may start work or
+        // request disposal, so eligibility is decided from the closing this
+        // activity recorded, never from state a listener could have replaced.
+        // A closing cancellation owns the outcome just as it does for the
+        // natural next turn of an ordinary one.
+        if (closedWithoutStep && !signal.aborted) this.adoptFirstStepWakes(firstStepWakes, wakes)
+        // One still-pending occurrence authorizes the replay, exactly as a waking
+        // send's own occurrence does. Handing it to `wakeDriver` also lets a
+        // maintenance task the notification started latch it rather than drop it.
+        const pending = [...wakes].find(occurrence => this.inbox.holdsOccurrence(occurrence))
+        if (!this.disposalRequested && pending !== undefined) this.wakeDriver(false, pending)
       }
     }
   }
@@ -653,6 +684,27 @@ export class ReactLoopAgent implements Agent {
     return !headerEquals(baseline, canonicalHeader({ ...baseline, tools: [...tools] }))
   }
 
+  /**
+   * Hand a turn's recorded wakes to the convergence latch after its `turn/end`
+   * commits.
+   *
+   * A wake delivered before the turn admitted a step has no boundary to join:
+   * the first batch closed the turn without opening one. Only that closing
+   * adopts the record, so a reject, a thrown pre-step, and an admitted step
+   * keep their existing outcomes. Each occurrence is rechecked here, after the
+   * closing event's own observers ran: a withdrawal, a same-identity passive
+   * reinsert, and a cancellation's removal leave nothing to redeem.
+   * @param recorded - occurrences this turn recorded before admitting a step.
+   * @param latched - the phase latch that convergence replays.
+   */
+  private adoptFirstStepWakes(recorded: Set<UserMessage>, latched: Set<UserMessage>): void {
+    const adopted = [...recorded]
+    recorded.clear()
+    for (const occurrence of adopted) {
+      if (this.inbox.holdsOccurrence(occurrence)) latched.add(occurrence)
+    }
+  }
+
   /** Open one turn before claiming its first proposed step. */
   private async turn(): Promise<boolean> {
     if (this.phase.kind !== 'running') {
@@ -669,6 +721,9 @@ export class ReactLoopAgent implements Agent {
     }
     phase.turn = turn
     let turnEnds: TurnEndReason | null = null
+    // The first batch of this turn enters no step; the closing event decides
+    // whether that fact counts.
+    let withoutStep = false
     let target: InboxTarget = 'next-turn'
     try {
       while (true) {
@@ -689,6 +744,7 @@ export class ReactLoopAgent implements Agent {
           // still owns the initial turn boundary, but it spends no model call.
           if (phase.step === 0 && decision.messages.length === 0) {
             this.commitClaim()
+            withoutStep = true
             turnEnds = { kind: 'completed' }
             return false
           }
@@ -763,6 +819,9 @@ export class ReactLoopAgent implements Agent {
       } catch (error: unknown) {
         this.throwError(error)
       }
+      // The closing fact exists only once its own event committed: an append the
+      // session rejected is not the completed ending that redeems wakes.
+      if (withoutStep) phase.closedWithoutStep = true
     }
     // A synchronous turn/end observer can request disposal after the turn's
     // last signal check. That request is terminal for the activity: opening the
@@ -773,6 +832,9 @@ export class ReactLoopAgent implements Agent {
     phase.abort = new AbortController()
     // A fresh controller makes a latch set on the old one stale: the live driver claims the queue itself.
     phase.wakes.clear()
+    // A wake recorded before this turn admitted its step was never adopted; the
+    // next turn's first step records its own deliveries.
+    phase.firstStepWakes.clear()
     phase.step = 0
     return true
   }

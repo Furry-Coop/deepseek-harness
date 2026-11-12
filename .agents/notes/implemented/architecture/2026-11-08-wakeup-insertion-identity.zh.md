@@ -10,9 +10,13 @@ Status: implemented
 
 初始化还存在相关缺口。Factory 以 `disposed` 取消、同时保留队列来终止失败的初始化，但 abort 信号保留首个原因：当用户普通停止先到达时，维护信号的原因仍是 `user`，锁存的主动唤醒于是在回滚期间派发了一轮，消费掉失败契约承诺保留的排队输入。
 
+不含步骤的首批还有第三个缺口。监听器可以把首次领取改写为空批次，该轮次随后在没有步骤的情况下关闭。在领取之后、关闭之前投递的唤醒发送看到的是一个运行中的驱动器，于是把投递交给它；但轮次照样关闭，真实输入便留在待处理状态，既没有驱动器也没有下一次领取，而公开接口并不提供不带消息的唤醒。
+
 ## 决策
 
 锁存的唤醒是唤醒插入本次产生的那条确切待处理 occurrence。`ReactLoopInbox.insert()` 通过同一次持久 splice 提交，并返回本次 splice 自己的投影消息——即 `event.data.inserted` 中的那条消息——若同步观察者在 append 返回前将其移除则返回 `undefined`。`Session.append` 会分离 payload，因此移除再重插同一调用方对象的回调产生的是另一条 occurrence；身份判断是对实际投影的引用比较。running 与 maintenance 阶段各自持有一个 occurrence 的 `Set`，收敛时只有 `holdsOccurrence()` 仍能找到待处理项才兑现唤醒。真 idle 的唤醒仍无条件启动驱动器：即使同步观察者在插入期间撤下消息，其轮次边界仍是这次唤醒投递的记录。
+
+尚未准入任何步骤的运行中轮次，会把它唤醒投递插入的 occurrence 记在第二个按轮次作用域的集合中。该集合不是收敛锁存：只有不含步骤的关闭才采用它，而且只在收敛时、`turn/end` 提交之后采用——那是仍能看到关闭观察者推迟到微任务的投递的最后时点。资格就是这次已提交的关闭本身，因此被拒绝的 `turn/end` append 不兑现任何唤醒。采用时只有 `holdsOccurrence()` 仍能找到该 occurrence 才把它移入锁存，因此被撤下、以同一标识被动重插、以及被取消自身移除的输入都会继续停驻。释放即使没有触达任何活动也会抑制重放，因此在 `idle` 状态下释放 agent 的状态通知之后不会再出现兑现的轮次；交给 `wakeDriver()` 的 occurrence 也让同一次通知启动的维护任务能够锁存它，而不是丢弃它。拒绝、pre-step 抛错、已准入的步骤，以及抵达关闭时的取消，都不读取这份记录的任一部分，因此这些结束方式保持原有结果。被动输入不构成任何授权：`inject()` 不记录 occurrence，所以它只在真实唤醒旁边才会开启轮次，而重新开启的领取会排在该唤醒之前取得它。
 
 `Agent.cancel()` 在运行任何回调之前捕获当前活动与两份待处理通道的一份快照，丢弃本次取消拥有的唤醒，只中止捕获到的活动，再按身份只删除捕获到的 occurrence。因此由 abort 监听器或 discarded 通知投递的输入继续待处理，并唤醒下一次活动。agent 处于 idle 时，清除回调投递的唤醒会延迟到两条通道的捕获项都被移除之后，并且仅在其自身 occurrence 仍待处理时重放。
 
@@ -30,12 +34,16 @@ Status: implemented
 
 **在任务失败时一律抑制维护唤醒兑现。** 普通 `runMaintenance()` 任务在取消之后锁存唤醒是合法的，且必须兑现；只有释放才抑制重放。
 
+**把所有运行中的唤醒都锁存。** 运行中的驱动器通常自己领取排队工作，因此在那里锁存唤醒会兑现一轮驱动器本就要跑的轮次，而拒绝或 pre-step 抛错会重试这些结束方式有意停放的输入。
+
 **要求存在存活的注册项。** 初始化在等待 `agent/created` 之前就进入 AgentRegistry，因此失败的生命周期在其维护任务结算时仍在注册表中；注册表存在性无法区分初始化失败。
 
 ## 测试
 
-`packages/core/agent-loop/tests/wakeup-identity.spec.ts` 通过 abort 监听器投递驱动原生循环：被移除的唤醒只剩被动 next-step 输入、同一标识的被动重插、维护任务后锁存又被移除的 steer 唤醒、多个被移除的唤醒、之后真实到达的唤醒、在自身插入期间被撤下的 occurrence，以及释放。`packages/core/agent-loop/tests/initialization-wake.spec.ts` 在真实 JSONL 持久化上挂起 `agent/created`，发送真实 followup，以 `keepInbox` 停止，再让监听器拒绝：不记录轮次、领取或请求，写句柄释放后仍可读到已存储的待处理 splice，下次冷恢复读到该队列且不派发，直到之后的 followup 按顺序运行它。其配套用例表明监听器正常返回时会发布并随后兑现锁存唤醒。`packages/core/agent-loop/tests/cancel.spec.ts` 覆盖取消捕获：abort 监听器的输入得以保留，捕获项按身份原地删除，idle 清除回调的唤醒等待两条通道清空、并在其 occurrence 被移除时撤回，删除失败不启动任何轮次，释放同样不启动；空闲用户取消中嵌套的释放会停放晚到的唤醒 followup，同步 `turn/end` 观察者请求带 `keepInbox` 的释放时驱动器保持空闲、输入继续待处理。
+`packages/core/agent-loop/tests/wakeup-identity.spec.ts` 通过 abort 监听器投递驱动原生循环：被移除的唤醒只剩被动 next-step 输入、同一标识的被动重插、维护任务后锁存又被移除的 steer 唤醒、多个被移除的唤醒、之后真实到达的唤醒、在自身插入期间被撤下的 occurrence，以及释放。`packages/core/agent-loop/tests/first-step-wake.spec.ts` 挂起首个 pre-step 并从其中投递：晚到的 followup 与晚到的 steer 各开启一轮、各产生一次真实请求，两个晚到 followup 保持顺序，只有被动输入时继续待处理，被动输入与唤醒同时到达时进入重新开启的轮次，带 `preserveClaimed` 的拒绝、pre-step 抛错、被移除的 occurrence、同一标识的被动重插以及取消都让输入继续停驻，`turn/end` 观察者推迟到微任务的唤醒仍会重新开启轮次，后续步骤的空批与普通的非空首批保持原有行为，此外还覆盖关闭事件自身被拒绝、状态通知中的释放与维护启动，以及普通 idle 唤醒连同其自身取消。`packages/core/agent-loop/tests/initialization-wake.spec.ts` 在真实 JSONL 持久化上挂起 `agent/created`，发送真实 followup，以 `keepInbox` 停止，再让监听器拒绝：不记录轮次、领取或请求，写句柄释放后仍可读到已存储的待处理 splice，下次冷恢复读到该队列且不派发，直到之后的 followup 按顺序运行它。其配套用例表明监听器正常返回时会发布并随后兑现锁存唤醒。`packages/core/agent-loop/tests/cancel.spec.ts` 覆盖取消捕获：abort 监听器的输入得以保留，捕获项按身份原地删除，idle 清除回调的唤醒等待两条通道清空、并在其 occurrence 被移除时撤回，删除失败不启动任何轮次，释放同样不启动；空闲用户取消中嵌套的释放会停放晚到的唤醒 followup，同步 `turn/end` 观察者请求带 `keepInbox` 的释放时驱动器保持空闲、输入继续待处理。
 
 ## 影响
 
 锁存的开销是一条投影引用的 `Set` 与每次清除式取消的一份快照。没有任何新增持久内容：`agent/inbox/spliced` 事件、持久 inbox 投影以及 TypeScript 与 Python SDK 投影都不变，`Inbox` 保留公开的 `clear()` 与 splice 返回值。返回 occurrence 的 insert 与捕获辅助方法留在包内部的 `ReactLoopInbox` 上。取消现在先中止捕获到的活动，再移除该活动的输入，因此 abort 监听器的输入被归类为唤醒下一次活动，而不会加入被取消的活动；一份快照原地删除捕获项，保持了周围队列顺序。插入被撤下的唤醒不会再开轮次；需要轮次边界的调用方必须在 idle 时发送。在请求了释放的取消窗口中锁存的唤醒会继续待处理；在轮次最后一次信号检查之后到达的释放请求会结束该驱动器，而不打开其自然下一轮。初始化失败到此为止并保留队列，留存输入保持被动，直到之后的真实唤醒或冷恢复。
+
+不含步骤的关闭只持有单轮的 occurrence：一旦某个步骤被准入，窗口就结束并释放该记录，因此长期运行的驱动器在轮次之间不保留任何内容。该窗口内投递的唤醒现在会开启它仍需要的轮次，而不是继续停驻；这正是 idle 发送的唤醒本就开启的边界。空批本身依然不消耗模型调用，也不准入任何消息。
