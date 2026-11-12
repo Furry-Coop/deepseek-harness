@@ -1,0 +1,10 @@
+version: 1
+scenario: first-step-wake
+profile: sdk
+composition: sdk-first-step-wake
+recording: authored
+input:
+  task: Begin the first-step wake snapshot.
+header:
+  class: sdk-first-step-wake
+  pin: true

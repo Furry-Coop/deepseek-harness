@@ -118,10 +118,14 @@ export interface SessionSnapshotComparisonOptions extends Omit<NormalizeOptions,
 function cwdSpellings(ctx: NormalizeContext): string[] {
   const spellings = [...new Set([ctx.cwd, ...ctx.cwdAliases ?? []])]
     .filter(spelling => spelling.length > 0)
+  // Model-visible context text embeds a JSON-quoted path, so Windows separators
+  // appear doubled there. That escaped spelling must tokenize like the raw path,
+  // in fixtures and in the logs replayed against them.
+  const escaped = spellings.map(spelling => JSON.stringify(spelling).slice(1, -1))
   const macAliases = spellings
     .filter(spelling => spelling.startsWith('/') && !spelling.startsWith('/private/'))
     .map(spelling => `/private${spelling}`)
-  return [...new Set([...spellings, ...macAliases])]
+  return [...new Set([...spellings, ...escaped, ...macAliases])]
     .sort((left, right) => right.length - left.length)
 }
 

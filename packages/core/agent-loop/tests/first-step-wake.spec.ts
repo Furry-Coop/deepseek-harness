@@ -482,6 +482,51 @@ describe('the closing fact owns the redemption', () => {
     }
   })
 
+  it('keeps every late wake eligible when maintenance latches them and one is withdrawn', async () => {
+    const adapter = new MockAdapter([textResponse('late reply')])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('maintenance-withdrawn-wake'), { provider: 'mock', model: 'mock' })
+      const gate = gateFirstPreStep(ctx, agent)
+      const held = Promise.withResolvers<undefined>()
+      const started = Promise.withResolvers<undefined>()
+      const first = message('late one')
+      const second = message('late two')
+      let maintenance: Promise<unknown> | undefined
+      const stop = ctx.on('agent/status', ({ agent: subject, status }) => {
+        if (subject !== agent || status !== 'idle' || maintenance !== undefined) return
+        maintenance = agent.runMaintenance(async () => {
+          started.resolve(undefined)
+          await held.promise
+        })
+      })
+
+      agent.followup(message('claimed batch'))
+      await gate.entered.promise
+      agent.followup(first)
+      agent.followup(second)
+      gate.decision.resolve({ kind: 'enter', messages: [] })
+      // The idle notification claims maintenance before the closing latches the
+      // pending wakes, so this withdrawal happens while maintenance holds them.
+      await started.promise
+      expect(agent.inbox.remove(first.id)).toBe(true)
+      held.resolve(undefined)
+      await maintenance
+      await agent.whenIdle()
+      stop()
+
+      expect(adapter.requests).toHaveLength(1)
+      expect(requestText(adapter.requests[0])).toContain('late two')
+      expect(requestText(adapter.requests[0])).not.toContain('late one')
+      expect(admittedTexts(agent)).toEqual(['late two'])
+      expect(turnStarts(agent)).toBe(2)
+      expect(turnEnds(agent)).toEqual([{ kind: 'completed' }, { kind: 'completed' }])
+      expect(pendingTexts(agent)).toEqual([])
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('keeps the redeemed wake when the idle notification starts maintenance', async () => {
     const adapter = new MockAdapter([textResponse('late reply')])
     const ctx = await harness(adapter)

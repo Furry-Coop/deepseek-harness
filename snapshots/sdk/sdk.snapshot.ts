@@ -112,6 +112,12 @@ interface SdkAssertions {
   modelRequestsFile?: string
   /** Replay caller-owned commands between turns; profile fixtures own any in-turn commands. */
   replayStandaloneCommands?: boolean
+  /**
+   * The opening turn enters no step, so the caller's task exists only in the
+   * manifest: send it, send the wake the durable log admitted first, and let the
+   * scenario patch hold the first pre-step until that wake arrives.
+   */
+  firstStepWake?: boolean
   /** Submit all manifest images with each standalone command, including rejected invocations. */
   commandAttachments?: boolean
   /** Native plan-review choices in the order the fixture requests them. */
@@ -140,6 +146,10 @@ interface SdkAssertions {
 }
 
 const SDK_ASSERTIONS: Readonly<Record<string, SdkAssertions>> = {
+  'first-step-wake': {
+    firstStepWake: true,
+  },
+
   'approval': {
     approvalOutcomes: ['allowed-once', 'rejected'],
     environment: { DSH_PERMISSION_MODE: 'workspace-write' },
@@ -594,6 +604,34 @@ function sdkActions(log: string, replayStandaloneCommands: boolean): SdkAction[]
   return actions
 }
 
+/**
+ * The caller content the durable log admitted first after its step-less opening
+ * turn: the wake whose delivery reopened the following turn.
+ * @param log - primary session fixture.
+ * @returns the admitted wake content blocks to send as the second prompt.
+ */
+function firstStepWakeContent(log: string): JsonObject[] {
+  const rows = records(log)
+  const start = rows.findIndex(record => record.type === 'turn/start')
+  const closing = rows.findIndex(record => record.type === 'turn/end')
+  if (start < 0 || closing < start) throw new Error('first-step wake fixture has no opening turn')
+  const opening = rows.slice(start, closing)
+  if (opening.some(record => record.type === 'step/start')) {
+    throw new Error('first-step wake fixture opened a step in its opening turn')
+  }
+  if (opening.some(record => record.type === 'user/message')) {
+    throw new Error('first-step wake fixture admitted a message in its opening turn')
+  }
+  const admitted = rows.slice(closing + 1).find((record) => {
+    if (record.type !== 'user/message') return false
+    const source = (record.data as JsonObject | undefined)?.source as JsonObject | undefined
+    return source?.kind === 'user'
+  })
+  const content = (admitted?.data as JsonObject | undefined)?.content
+  if (!Array.isArray(content)) throw new Error('first-step wake fixture admitted no wake message after its opening turn')
+  return content as JsonObject[]
+}
+
 function postActionEventTypes(log: string): string[] {
   const values = records(log)
   const finalActionEnd = values.findLastIndex(record => record.type === 'turn/end' || record.type === 'command/done')
@@ -892,130 +930,152 @@ async function runScenario(scenario: CorpusScenario): Promise<{
       liveSessions.push(child)
     }
     try {
-      let session = harness.session(sessionId)
-      for (const action of actions) {
-        if (action.kind === 'command') {
-          const execution = await session.run(assertions.commandAttachments === true ? [
-            ...scenario.manifest.input?.attachments?.map(image => ({
-              type: 'image' as const, data: image.data, mimeType: image.mediaType,
-            })) ?? [],
-            { type: 'text', text: action.line },
-          ] : action.line)
-          expect(execution.sessionId).toBe(sessionId)
-          if (scenario.name === 'plan-review' && action === actions.find(item => item.kind === 'command')) {
-            expect(execution).toMatchObject({ finalResponse: 'SDK_PLAN_APPROVED', finishReason: 'completed' })
-            expect(execution.events.filter(event => event.type === 'turn/end'))
-              .toMatchObject([{ data: { turn: 2, reason: { kind: 'completed' } } }])
+      if (assertions.firstStepWake === true) {
+        // The opening batch entered no step, so its claim never became a
+        // `user/message` and no action derives the caller task. The manifest
+        // owns that task; the durable log owns the wake it admitted next. The
+        // scenario patch holds the first pre-step until that wake is pending, so
+        // sending both here reproduces the recorded delivery order.
+        const task = scenario.manifest.input?.task
+        if (task === undefined) {
+          throw new Error(`${scenario.name}: the step-less opening turn needs manifest.input.task`)
+        }
+        await harness.client.prompt(sessionId, [{ type: 'text', text: task }])
+        await harness.client.prompt(
+          sessionId,
+          materializeInput(firstStepWakeContent(primaryFixture), scenario, cwd, liveSessions),
+        )
+        await harness.client.request('session/wait', { sessionId })
+        for (let notification = subscription.tryNext(); notification !== undefined; notification = subscription.tryNext()) {
+          notifications.push(notification)
+          observe(notification)
+        }
+      } else {
+        let session = harness.session(sessionId)
+        for (const action of actions) {
+          if (action.kind === 'command') {
+            const execution = await session.run(assertions.commandAttachments === true ? [
+              ...scenario.manifest.input?.attachments?.map(image => ({
+                type: 'image' as const, data: image.data, mimeType: image.mediaType,
+              })) ?? [],
+              { type: 'text', text: action.line },
+            ] : action.line)
+            expect(execution.sessionId).toBe(sessionId)
+            if (scenario.name === 'plan-review' && action === actions.find(item => item.kind === 'command')) {
+              expect(execution).toMatchObject({ finalResponse: 'SDK_PLAN_APPROVED', finishReason: 'completed' })
+              expect(execution.events.filter(event => event.type === 'turn/end'))
+                .toMatchObject([{ data: { turn: 2, reason: { kind: 'completed' } } }])
+            }
+            if (scenario.name === 'goal-rounds') {
+              expect(execution).toMatchObject({ finalResponse: 'SDK_GOAL_DONE', finishReason: 'completed' })
+              expect(execution.events.filter(event => event.type === 'goal/change').map(event => event.data.operation))
+                .toEqual(['create', 'complete'])
+              expect(execution.events.filter(event => event.type === 'turn/end')).toMatchObject([
+                { data: { turn: 2, reason: { kind: 'completed' } } },
+                { data: { turn: 3, reason: { kind: 'completed' } } },
+              ])
+            }
+            collectCommandNotifications(subscription, sessionId, execution, notifications, observe)
+            continue
           }
-          if (scenario.name === 'goal-rounds') {
-            expect(execution).toMatchObject({ finalResponse: 'SDK_GOAL_DONE', finishReason: 'completed' })
-            expect(execution.events.filter(event => event.type === 'goal/change').map(event => event.data.operation))
-              .toEqual(['create', 'complete'])
-            expect(execution.events.filter(event => event.type === 'turn/end')).toMatchObject([
-              { data: { turn: 2, reason: { kind: 'completed' } } },
-              { data: { turn: 3, reason: { kind: 'completed' } } },
+          if (action.content === undefined) {
+            await waitForRootEvent(
+              subscription,
+              sessionId,
+              event => event.type === 'turn/end' && (event.data as JsonObject | undefined)?.turn === action.turn,
+              (notification) => {
+                observe(notification)
+                if (assertions.replayStandaloneCommands === true) notifications.push(notification)
+              },
+            )
+            continue
+          }
+          if (scenario.name === 'session-resume' && results.length > 0) {
+            subscription.close()
+            await harness.close()
+            await prepareTurnReplay(action.turn)
+            harness = createHarness('deepseek-v4-pro')
+            await harness.start()
+            subscription = harness.client.subscribeSessionTree(sessionId)
+            await expect(harness.resumeSession('missing-session')).rejects.toThrow()
+            session = await harness.resumeSession(sessionId)
+            expect(session.id).toBe(sessionId)
+          }
+          let result: RunResult | undefined
+          if (assertions.replayStandaloneCommands === true) {
+            const content = action.content[0]
+            if (action.content.length !== 1 || content?.type !== 'text' || typeof content.text !== 'string') {
+              throw new Error(`${scenario.name} run fixture requires one text block per prompt`)
+            }
+            const outcome = await session.run(content.text, {
+              onNotification(message) {
+                notifications.push(message)
+                observe(message)
+              },
+            })
+            result = outcome
+          } else {
+            const outcome = await session.run(materializeInput(action.content, scenario, cwd, liveSessions), {
+              onNotification: (notification) => {
+                notifications.push(notification)
+                observe(notification)
+              },
+            })
+            result = outcome
+          }
+          results.push(result)
+          if (titleSubscription !== undefined) {
+            const expected = expectedTitles[results.length - 1]?.data as JsonObject | undefined
+            expect(expected, 'each turn has a recorded provider title').toBeDefined()
+            await waitForRootEvent(titleSubscription, sessionId, event => event.type === 'session/title'
+              && ((event.data as JsonObject).source as JsonObject).kind === 'provider'
+              && (event.data as JsonObject).title === expected?.title, observe)
+          }
+          if (completionSubscription !== undefined) {
+            expect(result.finalResponse, 'run returns at the first parent idle').toBe('DONE')
+            expect(result.events.filter(event => event.type === 'turn/end'))
+              .toMatchObject([{ data: { turn: 1 } }])
+            expect(await harness.client.request('session/wait', { sessionId })).toEqual({})
+            const delivered: HarnessNotification[] = []
+            let notification: HarnessNotification | undefined
+            while ((notification = completionSubscription.tryNext()) !== undefined) delivered.push(notification)
+            const completionOrder = delivered.flatMap((entry) => {
+              if (entry.method === 'subagent.finished') return ['child:finished']
+              if (entry.params.sessionId !== sessionId) return []
+              if (entry.method === 'session.status' && entry.params.status === 'idle') return ['parent:idle']
+              const event = notificationEvent(entry)
+              if (event?.type !== 'turn/end') return []
+              const data = event.data as JsonObject
+              expect(data.reason).toEqual({ kind: 'completed' })
+              return [`parent:turn:${String(data.turn)}`]
+            })
+            expect(completionOrder, 'completion notifications arrive before the session/wait response').toEqual([
+              'parent:turn:1', 'parent:idle', 'child:finished', 'parent:turn:2', 'parent:idle',
+            ])
+            const parentMessages = delivered.flatMap((entry) => {
+              const event = entry.params.sessionId === sessionId ? notificationEvent(entry) : undefined
+              return event?.type === 'assistant/message' ? [event] : []
+            })
+            expect(parentMessages.at(-1)).toMatchObject({
+              data: { turn: 2, message: { content: [{ type: 'text', text: 'SUBAGENT_SETTLED_NOTED' }] } },
+            })
+          }
+          if (scenario.manifest.environment?.DSH_SNAPSHOT_FEEDBACK === '1') {
+            const feedback = result.events.filter(event => event.type.startsWith('feedback/'))
+            expect(feedback.map(event => event.type)).toEqual([
+              'feedback/record', 'feedback/record', 'feedback/message-put', 'feedback/message-put', 'feedback/message-delete',
             ])
           }
-          collectCommandNotifications(subscription, sessionId, execution, notifications, observe)
-          continue
-        }
-        if (action.content === undefined) {
           await waitForRootEvent(
             subscription,
             sessionId,
             event => event.type === 'turn/end' && (event.data as JsonObject | undefined)?.turn === action.turn,
-            (notification) => {
-              observe(notification)
-              if (assertions.replayStandaloneCommands === true) notifications.push(notification)
-            },
+            observe,
           )
-          continue
         }
-        if (scenario.name === 'session-resume' && results.length > 0) {
-          subscription.close()
-          await harness.close()
-          await prepareTurnReplay(action.turn)
-          harness = createHarness('deepseek-v4-pro')
-          await harness.start()
-          subscription = harness.client.subscribeSessionTree(sessionId)
-          await expect(harness.resumeSession('missing-session')).rejects.toThrow()
-          session = await harness.resumeSession(sessionId)
-          expect(session.id).toBe(sessionId)
+        for (const type of postActionEventTypes(primaryFixture)) {
+          await waitForRootEvent(subscription, sessionId, event => event.type === type, observe)
         }
-        let result: RunResult | undefined
-        if (assertions.replayStandaloneCommands === true) {
-          const content = action.content[0]
-          if (action.content.length !== 1 || content?.type !== 'text' || typeof content.text !== 'string') {
-            throw new Error(`${scenario.name} run fixture requires one text block per prompt`)
-          }
-          const outcome = await session.run(content.text, {
-            onNotification(message) {
-              notifications.push(message)
-              observe(message)
-            },
-          })
-          result = outcome
-        } else {
-          const outcome = await session.run(materializeInput(action.content, scenario, cwd, liveSessions), {
-            onNotification: (notification) => {
-              notifications.push(notification)
-              observe(notification)
-            },
-          })
-          result = outcome
-        }
-        results.push(result)
-        if (titleSubscription !== undefined) {
-          const expected = expectedTitles[results.length - 1]?.data as JsonObject | undefined
-          expect(expected, 'each turn has a recorded provider title').toBeDefined()
-          await waitForRootEvent(titleSubscription, sessionId, event => event.type === 'session/title'
-            && ((event.data as JsonObject).source as JsonObject).kind === 'provider'
-            && (event.data as JsonObject).title === expected?.title, observe)
-        }
-        if (completionSubscription !== undefined) {
-          expect(result.finalResponse, 'run returns at the first parent idle').toBe('DONE')
-          expect(result.events.filter(event => event.type === 'turn/end'))
-            .toMatchObject([{ data: { turn: 1 } }])
-          expect(await harness.client.request('session/wait', { sessionId })).toEqual({})
-          const delivered: HarnessNotification[] = []
-          let notification: HarnessNotification | undefined
-          while ((notification = completionSubscription.tryNext()) !== undefined) delivered.push(notification)
-          const completionOrder = delivered.flatMap((entry) => {
-            if (entry.method === 'subagent.finished') return ['child:finished']
-            if (entry.params.sessionId !== sessionId) return []
-            if (entry.method === 'session.status' && entry.params.status === 'idle') return ['parent:idle']
-            const event = notificationEvent(entry)
-            if (event?.type !== 'turn/end') return []
-            const data = event.data as JsonObject
-            expect(data.reason).toEqual({ kind: 'completed' })
-            return [`parent:turn:${String(data.turn)}`]
-          })
-          expect(completionOrder, 'completion notifications arrive before the session/wait response').toEqual([
-            'parent:turn:1', 'parent:idle', 'child:finished', 'parent:turn:2', 'parent:idle',
-          ])
-          const parentMessages = delivered.flatMap((entry) => {
-            const event = entry.params.sessionId === sessionId ? notificationEvent(entry) : undefined
-            return event?.type === 'assistant/message' ? [event] : []
-          })
-          expect(parentMessages.at(-1)).toMatchObject({
-            data: { turn: 2, message: { content: [{ type: 'text', text: 'SUBAGENT_SETTLED_NOTED' }] } },
-          })
-        }
-        if (scenario.manifest.environment?.DSH_SNAPSHOT_FEEDBACK === '1') {
-          const feedback = result.events.filter(event => event.type.startsWith('feedback/'))
-          expect(feedback.map(event => event.type)).toEqual([
-            'feedback/record', 'feedback/record', 'feedback/message-put', 'feedback/message-put', 'feedback/message-delete',
-          ])
-        }
-        await waitForRootEvent(
-          subscription,
-          sessionId,
-          event => event.type === 'turn/end' && (event.data as JsonObject | undefined)?.turn === action.turn,
-          observe,
-        )
-      }
-      for (const type of postActionEventTypes(primaryFixture)) {
-        await waitForRootEvent(subscription, sessionId, event => event.type === type, observe)
       }
     } finally {
       subscription.close()
@@ -1513,6 +1573,29 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
         expect(subscribed).toEqual(summaries)
         expect(events.findLastIndex(event => event.type === 'assistant/message'))
           .toBeGreaterThan(events.findIndex(event => event.type === 'compaction/summary'))
+      }
+      if (scenario.name === 'first-step-wake') {
+        const parent = ordered[0]
+        if (parent === undefined) throw new Error('first-step wake has no persisted Session')
+        const events = parseSessionLog(parent.content)
+        const closing = events.findIndex(event => event.type === 'turn/end')
+        const opening = events.slice(0, closing)
+        expect(opening.filter(event => event.type === 'step/start'), 'the opened turn admits no step').toEqual([])
+        expect(opening.filter(event => event.type === 'user/message'), 'the opened turn admits no message').toEqual([])
+        expect(opening.filter(event => event.type === 'request/header'), 'the opened turn spends no main request').toEqual([])
+        const admitted = events.findIndex(event => event.type === 'user/message' && event.data.source.kind === 'user')
+        expect(admitted, 'the recorded wake is admitted after the step-less turn').toBeGreaterThan(closing)
+        const wake = events[admitted]
+        if (wake === undefined) throw new Error('first-step wake has no admitted wake event')
+        expect(events.slice(admitted).filter(event => event.type === 'request/header'),
+          'the recorded wake reaches a real request').toHaveLength(1)
+        expect(JSON.stringify(wake)).toContain('STEP_WAKE_LATE_OK')
+        expect(JSON.stringify(events.findLast(event => event.type === 'assistant/message')))
+          .toContain('STEP_WAKE_LATE_OK')
+        expect(events.filter(event => event.type === 'turn/end')).toMatchObject([
+          { data: { turn: 1, reason: { kind: 'completed' } } },
+          { data: { turn: 2, reason: { kind: 'completed' } } },
+        ])
       }
       expect(logs.some(log => log.content.includes('llm-replay: script exhausted')), `${scenario.name}: replay script covers every model request`).toBe(false)
       if (scenario.name === 'subagent-dsh-sdk-diagnostic' || scenario.name === 'subagent-dsh-sdk-dynamic-route') {

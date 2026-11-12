@@ -1,0 +1,26 @@
+{
+  "turns": [
+    {
+      "turn": 1,
+      "steps": [],
+      "user_texts": [],
+      "requests": 0,
+      "assistant_texts": [],
+      "reason": "completed"
+    },
+    {
+      "turn": 2,
+      "steps": [
+        1
+      ],
+      "user_texts": [
+        "Report STEP_WAKE_LATE_OK."
+      ],
+      "requests": 1,
+      "assistant_texts": [
+        "STEP_WAKE_LATE_OK"
+      ],
+      "reason": "completed"
+    }
+  ]
+}

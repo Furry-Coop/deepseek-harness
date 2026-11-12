@@ -338,6 +338,20 @@ describe('normalizeSessionLog', () => {
     expect(out).not.toContain(ctx.cwd)
   })
 
+  it('scrubs the JSON-escaped Windows spelling of the cwd in event data', () => {
+    const windowsCwd = String.raw`C:\Users\runner\AppData\Local\Temp\acp-snap-cwd-abc123`
+    const windowsCtx: NormalizeContext = { sessionIds: [], cwd: windowsCwd }
+    const ev = JSON.stringify({
+      type: 'user/message', seq: 2, time: 5,
+      data: { content: [{ type: 'text', text: `Current working directory: ${JSON.stringify(windowsCwd)}.` }] },
+    })
+    const out = normalizeSessionLog(`${header({ cwd: windowsCwd })}\n${ev}\n`, windowsCtx)
+    expect(JSON.parse(out.trim().split('\n')[1] as string)).toMatchObject({
+      data: { content: [{ text: 'Current working directory: "{{cwd}}".' }] },
+    })
+    expect(out).not.toContain('runner')
+  })
+
   it('scrubs cwd at file URI and chained-punctuation boundaries in event data', () => {
     const ev = JSON.stringify({
       type: 'tool/result',
@@ -1060,6 +1074,28 @@ describe('tokenizeSessionFixtureCwd', () => {
     expect(resultText).toContain(`${context.cwd}.backup`)
     expect(resultText).toContain('/tmp/authored.txt')
     expect(resultText).not.toContain(`${reportedCwd}/proof.txt`)
+    expect(tokenizeSessionFixtureCwd(out)).toBe(out)
+  })
+
+  it('tokenizes the JSON-escaped Windows spelling of the cwd', () => {
+    const windowsCwd = String.raw`C:\Users\runner\AppData\Local\Temp\acp-snap-cwd-abc123`
+    const raw = [
+      JSON.stringify({ type: 'session', id: 's', createdAt: 1, cwd: windowsCwd }),
+      JSON.stringify({
+        type: 'user/message',
+        seq: 1,
+        time: 2,
+        data: { content: [{ type: 'text', text: `Current working directory: ${JSON.stringify(windowsCwd)}.` }] },
+      }),
+      '',
+    ].join('\n')
+
+    const out = tokenizeSessionFixtureCwd(raw)
+    const result = JSON.parse(out.split('\n')[1] as string) as {
+      data: { content: { text: string }[] }
+    }
+    expect(result.data.content[0]?.text).toBe('Current working directory: "{{cwd}}".')
+    expect(out).not.toContain('runner')
     expect(tokenizeSessionFixtureCwd(out)).toBe(out)
   })
 

@@ -228,7 +228,7 @@ export class ReactLoopAgent implements Agent {
     const wakingAfterAbort = wakeup && this.phase.kind !== 'idle' && this.phase.abort.signal.aborted
     const resolvedTarget = wakingAfterAbort ? 'next-turn' : target
     const occurrence = this.inbox.insert(resolvedTarget, message)
-    if (wakeup) this.wakeDriver(wakingAfterAbort, occurrence)
+    if (wakeup) this.wakeDriver(wakingAfterAbort, occurrence === undefined ? [] : [occurrence])
   }
 
   followup(input: UserMessage): void {
@@ -519,17 +519,21 @@ export class ReactLoopAgent implements Agent {
    * either: its own claim is already taken, so a first batch that closes empty
    * would leave the occurrence with no step to enter. Those occurrences are
    * recorded for {@link turn} and adopted only by that closing.
+   *
+   * Every occurrence a caller hands over stays eligible on its own: a latching
+   * activity holds them all, so removing one (or a cancellation's own removal)
+   * never withdraws another that is still pending.
    * @param wakeAfterAbort - the {@link send} classification, captured before
    *   the inbox insertion so a reentrant cancel cannot reclassify it.
-   * @param occurrence - the pending occurrence the waking message produced, as
-   *   reported by {@link ReactLoopInbox.insert}.
+   * @param occurrences - the pending occurrences these wake deliveries
+   *   produced, as reported by {@link ReactLoopInbox.insert}.
    */
-  private wakeDriver(wakeAfterAbort = false, occurrence?: UserMessage): void {
+  private wakeDriver(wakeAfterAbort = false, occurrences: readonly UserMessage[] = []): void {
     if (this.cancelDepth > 0 && this.phase.kind === 'idle') {
       // A cancellation is still removing the occurrences it captured at entry.
       // Starting a driver here would let its first claim take one of them, so
       // the wake waits for the outermost cancellation to finish.
-      if (occurrence !== undefined) this.deferredWakes.add(occurrence)
+      for (const occurrence of occurrences) this.deferredWakes.add(occurrence)
       return
     }
     if (this.phase.kind !== 'idle') {
@@ -537,15 +541,13 @@ export class ReactLoopAgent implements Agent {
       // exact occurrence for replay at convergence. A send whose insertion is
       // already gone latches nothing. Live drivers claim queued work
       // themselves; disposal never latches, so teardown waits on no model turn.
-      if (!this.phase.disposed && (this.phase.kind === 'maintenance' || wakeAfterAbort)
-        && occurrence !== undefined) {
-        this.phase.wakes.add(occurrence)
-      } else if (this.phase.kind === 'running' && !this.phase.disposed
-        && this.phase.step === 0 && occurrence !== undefined) {
+      if (!this.phase.disposed && (this.phase.kind === 'maintenance' || wakeAfterAbort)) {
+        for (const occurrence of occurrences) this.phase.wakes.add(occurrence)
+      } else if (this.phase.kind === 'running' && !this.phase.disposed && this.phase.step === 0) {
         // The turn's first claim is taken, so this wake has no boundary left in
         // this turn. Its closing adopts the occurrence if the batch enters no
         // step; reject and failure paths never read the record.
-        this.phase.firstStepWakes.add(occurrence)
+        for (const occurrence of occurrences) this.phase.firstStepWakes.add(occurrence)
       }
       return
     }
@@ -595,11 +597,14 @@ export class ReactLoopAgent implements Agent {
         // A closing cancellation owns the outcome just as it does for the
         // natural next turn of an ordinary one.
         if (closedWithoutStep && !signal.aborted) this.adoptFirstStepWakes(firstStepWakes, wakes)
-        // One still-pending occurrence authorizes the replay, exactly as a waking
-        // send's own occurrence does. Handing it to `wakeDriver` also lets a
-        // maintenance task the notification started latch it rather than drop it.
-        const pending = [...wakes].find(occurrence => this.inbox.holdsOccurrence(occurrence))
-        if (!this.disposalRequested && pending !== undefined) this.wakeDriver(false, pending)
+        // Every still-pending occurrence authorizes the replay, exactly as a
+        // waking send's own occurrence does. Handing them all to `wakeDriver`
+        // keeps each one eligible for the activity that owns the idle point: a
+        // maintenance task the notification started latches them rather than
+        // dropping all but the first, so a later withdrawal of one still leaves
+        // the others able to start the turn they require.
+        const pending = [...wakes].filter(occurrence => this.inbox.holdsOccurrence(occurrence))
+        if (!this.disposalRequested && pending.length > 0) this.wakeDriver(false, pending)
       }
     }
   }
