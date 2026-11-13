@@ -1,0 +1,25 @@
+# Bilingual-pair consistency record for 2026-11-13-protected-surface-head-maintenance.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-13-protected-surface-head-maintenance.md
+/agent-note-protected-surface-head-maintenance-for-plugin-owned-first-writes:
+  en: 390636b8e10ed533
+  zh: 2beebaa2a67e5652
+/agent-note-protected-surface-head-maintenance-for-plugin-owned-first-writes/problem:
+  en: 15ae49cacda27877
+  zh: fc430a48fd1dcb8a
+/agent-note-protected-surface-head-maintenance-for-plugin-owned-first-writes/decision:
+  en: 666aceacf9474141
+  zh: 2f6c73fe07bec180
+/agent-note-protected-surface-head-maintenance-for-plugin-owned-first-writes/producer-of-the-maintenance-alternative:
+  en: a4d5ab44c2e38813
+  zh: 616a5a77a6cd491d
+/agent-note-protected-surface-head-maintenance-for-plugin-owned-first-writes/alternatives-considered:
+  en: 7485be9637002a03
+  zh: 9f09466a2735b80e
+/agent-note-protected-surface-head-maintenance-for-plugin-owned-first-writes/verification:
+  en: c82c53cfae794695
+  zh: 795ebfecea75176b
+/agent-note-protected-surface-head-maintenance-for-plugin-owned-first-writes/consequences:
+  en: 9d2b3c39041e69a4
+  zh: b7f139db2d0425a8

@@ -307,7 +307,7 @@ Every surface event requires `surfaceOp`; known log-only events forbid both surf
 
 ## Surface types
 
-The message-producing types (`SurfaceEventType` — `system/message`, `developer/message`, `user/message`, `assistant/message`, `tool/result`) carry surface metadata declaring how they join the ordered derived surface. `system/message` holds the rendered system prompt: the loop appends the first one as surface node 0 and, when the prompt changes, replaces exactly the latest system node or appends a new one on an in-history route; the surface fold rejects any other replacement covering a `system/message` at node 0, while a later system node is ordinary history that a compaction replacement may shadow. A `maintenance: true` payload establishes that same head outside any turn for an idle-history maintenance, the only writer allowed to append a system node to an empty surface without a turn or step, and the next turn reconciles it by the ordinary head replacement. See the [session surface Agent Note](../../.agents/notes/implemented/architecture/2026-06-18-session-surface.md).
+The message-producing types (`SurfaceEventType` — `system/message`, `developer/message`, `user/message`, `assistant/message`, `tool/result`) carry surface metadata declaring how they join the ordered derived surface. `system/message` holds the rendered system prompt: the loop appends the first one as surface node 0 and, when the prompt changes, replaces exactly the latest system node or appends a new one on an in-history route; the surface fold rejects any other replacement covering a `system/message` at node 0, while a later system node is ordinary history that a compaction replacement may shadow. A `maintenance: true` payload establishes that same head outside any turn for idle maintenance: the one internal writer shared by `maintainIdleHistory()` and `maintainSurfaceHead()` is the only writer allowed to append a system node to an empty surface without a turn or step, and the next turn reconciles it by the ordinary head replacement. See the [session surface Agent Note](../../.agents/notes/implemented/architecture/2026-06-18-session-surface.md).
 
 ### `SurfaceEventType` — the message-producing subset of event types
 
@@ -678,12 +678,14 @@ declare class Session {
    */
   deriveEventMessage(event: SessionEvent): Message | null;
   /**
-   * Read the host-internal idle-history admission from the committed surface.
+   * Read the host-internal maintenance admission from the committed surface.
    * @internal
-   * @param message - submitted formal message to compare with its current carrier.
-   * @returns the protected head position and the first current carrier comparison.
+   * @param message - submitted formal message to compare with its current carrier;
+   * omit it to read only the protected head position.
+   * @returns the protected head position and, when a message was submitted, the first
+   * current carrier comparison.
    */
-  [SESSION_IDLE_HISTORY_ADMISSION](message: Message): IdleHistoryAdmission;
+  [SESSION_IDLE_HISTORY_ADMISSION](message?: Message): IdleHistoryAdmission;
 }
 ```
 

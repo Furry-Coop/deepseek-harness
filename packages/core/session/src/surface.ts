@@ -784,18 +784,23 @@ export class SurfaceManager implements SessionSurface {
   }
 
   /**
-   * Read the idle-history admission from the committed current surface.
+   * Read the maintenance admission from the committed current surface.
    * @internal
    * @param message - submitted formal message whose id and exact recorded content are
-   * compared; a non-lossless-JSON submission never matches.
-   * @returns the protected head position and the first current carrier comparison.
+   * compared; omit it to read only the protected head position. A non-lossless-JSON
+   * submission never matches.
+   * @returns the protected head position and, when a message was submitted, the first
+   * current carrier comparison.
    */
-  [SESSION_IDLE_HISTORY_ADMISSION](message: Message): IdleHistoryAdmission {
+  [SESSION_IDLE_HISTORY_ADMISSION](message?: Message): IdleHistoryAdmission {
     this._assertProjections()
     if (this._lastProcessedSeq < this.baseSeq + this.log.length - 1) this._processDelta()
     const state = this._state
     const head = state.nodes[0]
     const headNode = head === undefined ? undefined : state.recordedNodes.get(head)
+    if (message === undefined) {
+      return { headSeq: head !== undefined && headNode?.type === 'system/message' ? head : null, carried: undefined }
+    }
     let carried: IdleHistoryAdmission['carried']
     for (const seq of state.nodes) {
       const recorded = state.recordedNodes.get(seq)

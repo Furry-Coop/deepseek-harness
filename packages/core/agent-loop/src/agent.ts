@@ -20,8 +20,10 @@ import type {
   InboxState,
   PreStepDecision,
   RequestErrorAction,
+  SurfaceHeadPosition,
+  SurfaceHeadResult,
 } from '@deepseek-ai/dsh-agent'
-import { AgentModel, agentEvents, assembleContextFor, IdleHistoryError } from '@deepseek-ai/dsh-agent'
+import { AgentModel, agentEvents, assembleContextFor, IdleHistoryError, SurfaceHeadError } from '@deepseek-ai/dsh-agent'
 import type { GenerateOptions, LlmCallConfig, Message, PreparedLlmCall, SystemMessage } from '@deepseek-ai/dsh-llm'
 import {
   LlmError,
@@ -388,6 +390,80 @@ export class ReactLoopAgent implements Agent {
     )
   }
 
+  /**
+   * Establish or verify the protected system head from the true idle phase
+   * without writing a message, so a plugin-owned first surface write has a legal
+   * position after the head.
+   *
+   * The maintenance phase is claimed through {@link runMaintenance}, so a running
+   * turn and another maintenance task both refuse this operation while public
+   * status stays `idle`. Only prompt assembly awaits on an empty surface: the head
+   * commit follows its live and still-empty recheck with no new await, and a
+   * concurrent writer that took the surface first is reported as a conflict. An
+   * existing head is neither replaced nor duplicated, and the no-op path still
+   * runs the durability checkpoint, so a present head is confirmed durable before
+   * this call reports success. A committed head is never rolled back: a failed
+   * checkpoint, a cancellation, or an owner change after it reports that position
+   * as recovery state.
+   * @returns the head position, whether this call appended it, and the checkpoint outcome.
+   */
+  async maintainSurfaceHead(): Promise<SurfaceHeadResult> {
+    if (this.phase.kind !== 'idle') {
+      throw new SurfaceHeadError(
+        `agent "${this.id}" cannot maintain its surface head: ${this.phase.kind === 'maintenance' ? 'a maintenance task' : 'a turn'} already owns it`,
+        'not-idle',
+      )
+    }
+    return await this.runMaintenance(
+      signal => this.recordSurfaceHead(signal),
+    )
+  }
+
+  /** Establish or verify the head inside the claimed maintenance phase. */
+  private async recordSurfaceHead(signal: AbortSignal): Promise<SurfaceHeadResult> {
+    this.assertSurfaceHeadLive(signal)
+    // The surface owner serves the protected head position from its current fold
+    // state; this call never reads a historical event position.
+    const admission = this.session[SESSION_IDLE_HISTORY_ADMISSION]()
+    if (admission.headSeq === null && this.session.surface.nodes.length !== 0) {
+      // A non-empty surface whose first node is not a system prompt has no
+      // protected head: adding one here would put the prompt after another
+      // writer's messages, and adding nothing would leave a log a later turn
+      // makes unreadable. Refuse instead of reordering or shadowing.
+      throw new SurfaceHeadError(
+        `agent "${this.id}" cannot maintain its surface head: surface node 0 is not a protected system head`,
+        'history-conflict',
+      )
+    }
+    if (admission.headSeq !== null) {
+      const existing: SurfaceHeadPosition = { headSeq: admission.headSeq, appended: false }
+      // A present head is not by itself proof of durability: the no-op path runs
+      // the same checkpoint, so a caller that retries after a failed one confirms
+      // the stored head instead of appending a second.
+      const checkpointed = await this.checkpointSurfaceHead(existing)
+      // The checkpoint awaits listeners and storage: a cancellation or an owner
+      // change while it ran must be reported with the verified head rather than
+      // settling as a success.
+      this.assertSurfaceHeadLive(signal, existing)
+      return { ...existing, checkpointed }
+    }
+    const renderedHead = await this.assembleMaintenanceHead(signal)
+    this.assertSurfaceHeadLive(signal)
+    if (this.session.surface.nodes.length !== 0) {
+      throw new SurfaceHeadError(
+        `agent "${this.id}" cannot establish its surface head: another writer changed the surface while the prompt was assembled`,
+        'history-conflict',
+      )
+    }
+    const head: SurfaceHeadPosition = { headSeq: this.commitMaintenanceHead(renderedHead), appended: true }
+    this.assertSurfaceHeadLive(signal, head)
+    const checkpointed = await this.checkpointSurfaceHead(head)
+    // The head is committed and must never be reported as unwritten: recheck the
+    // same live identity the pre-append gate used before settling the call.
+    this.assertSurfaceHeadLive(signal, head)
+    return { ...head, checkpointed }
+  }
+
   /** Record the formal history inside the claimed maintenance phase. */
   private async recordIdleHistory(message: UserMessage, signal: AbortSignal): Promise<IdleHistoryResult> {
     this.assertIdleHistoryLive(signal)
@@ -421,7 +497,7 @@ export class ReactLoopAgent implements Agent {
       return { ...append, checkpointed: await this.checkpointIdleHistory(append) }
     }
     const renderedHead = systemHeadSeq === null
-      ? await this.assembleIdleHistoryHead(signal)
+      ? await this.assembleMaintenanceHead(signal)
       : undefined
     if (renderedHead !== undefined) {
       // Assembly is the only await before the head. Recheck live ownership,
@@ -437,7 +513,7 @@ export class ReactLoopAgent implements Agent {
     }
     const established = renderedHead === undefined
       ? null
-      : this.session.append('system/message', { maintenance: true, message: renderedHead }, { surfaceOp: 'append' }).seq
+      : this.commitMaintenanceHead(renderedHead)
     // The head publication is itself an event boundary: an observer may cancel
     // this maintenance or replace its live owner before the call returns. Check
     // again before the message, with no await before its commit either. When the
@@ -455,25 +531,44 @@ export class ReactLoopAgent implements Agent {
    * @param signal - the claimed maintenance signal.
    * @returns the rendered system message to commit as the protected head.
    */
-  private async assembleIdleHistoryHead(signal: AbortSignal): Promise<SystemMessage> {
+  private async assembleMaintenanceHead(signal: AbortSignal): Promise<SystemMessage> {
     const assembly = await this.loopCtx.systemPrompt.assemble(assembleContextFor(this, signal))
     return createSystemMessage(renderPrompt(assembly))
   }
 
   /**
-   * Run the durability checkpoint after both appends committed. The checkpoint
-   * cannot roll them back, so its failure reports the committed positions
-   * instead of pretending the append was undone. A cancellation after the
-   * message append still runs this checkpoint: refusing it would leave recorded
-   * history that the caller was told about but never made durable. A head
-   * committed alone is never returned as a success, so no checkpoint outcome is
-   * claimed for it.
+   * Commit one maintenance head as surface node 0 of the empty surface. This is
+   * the only writer of the idle maintenance alternative, so idle history and
+   * head-only maintenance cannot drift apart.
+   * @param message - the real rendered prompt to record as the protected head.
+   * @returns the committed head sequence.
+   */
+  private commitMaintenanceHead(message: SystemMessage): SessionSeq {
+    return this.session.append('system/message', { maintenance: true, message }, { surfaceOp: 'append' }).seq
+  }
+
+  /**
+   * Run the durability checkpoint after maintenance writes committed. The
+   * checkpoint cannot roll them back, so its failure reports the committed
+   * position instead of pretending the writes were undone.
+   * @returns whether at least one durability listener participated.
+   */
+  private async flushMaintenance(): Promise<boolean> {
+    return await this.loopCtx.sessions.flush(this.session)
+  }
+
+  /**
+   * Run the durability checkpoint after both appends committed. A cancellation
+   * after the message append still runs this checkpoint: refusing it would leave
+   * recorded history that the caller was told about but never made durable. A
+   * head committed alone is never returned as a success, so no checkpoint
+   * outcome is claimed for it.
    * @param append - positions this call established.
    * @returns whether at least one durability listener participated.
    */
   private async checkpointIdleHistory(append: IdleHistoryAppend): Promise<boolean> {
     try {
-      return await this.loopCtx.sessions.flush(this.session)
+      return await this.flushMaintenance()
     } catch (error: unknown) {
       throw new IdleHistoryError(
         `agent "${this.id}" recorded idle history at seq ${append.messageSeq} but its durability checkpoint failed`,
@@ -485,27 +580,80 @@ export class ReactLoopAgent implements Agent {
   }
 
   /**
+   * Run the durability checkpoint for a committed or verified protected head.
+   * The no-op path runs it too: a head being present does not confirm that it is
+   * durable, and a retry after a failed checkpoint must be able to settle it.
+   * @param head - committed head position this call appended or verified.
+   * @returns whether at least one durability listener participated.
+   */
+  private async checkpointSurfaceHead(head: SurfaceHeadPosition): Promise<boolean> {
+    try {
+      return await this.flushMaintenance()
+    } catch (error: unknown) {
+      throw new SurfaceHeadError(
+        `agent "${this.id}" maintains its surface head at seq ${head.headSeq} but its durability checkpoint failed`,
+        'checkpoint',
+        head,
+        { cause: error },
+      )
+    }
+  }
+
+  /**
+   * Report why this maintenance may no longer commit, independent of the
+   * caller's error vocabulary. Public status stays `idle` throughout a
+   * maintenance task, so this reads the live registries and the signal rather
+   * than the status.
+   * @param signal - the claimed maintenance signal.
+   * @param subject - the operation named in its cancellation diagnostic.
+   * @returns the refusal facts, or undefined while the maintenance may proceed.
+   */
+  private maintenanceRefusal(
+    signal: AbortSignal,
+    subject: string,
+  ): { readonly failure: 'aborted' | 'agent-changed'; readonly message: string; readonly cause?: unknown } | undefined {
+    if (signal.aborted) {
+      return { failure: 'aborted', message: `agent "${this.id}" ${subject} was cancelled`, cause: signal.reason }
+    }
+    if (this.loopCtx.agents.get(this.id) !== this || this.loopCtx.sessions.get(this.id) !== this.session) {
+      return { failure: 'agent-changed', message: `agent "${this.id}" is no longer the live agent for its session` }
+    }
+    return undefined
+  }
+
+  /**
    * Refuse a maintenance whose agent left the registry or whose explicit signal
-   * was aborted. Public status stays `idle` throughout a maintenance task, so
-   * this reads the live registries and the signal rather than the status.
+   * was aborted.
    * @param signal - the claimed maintenance signal.
    * @throws an {@link IdleHistoryError} naming the aborted or replaced agent.
    */
   private assertIdleHistoryLive(signal: AbortSignal): void {
-    if (signal.aborted) {
-      throw new IdleHistoryError(
-        `agent "${this.id}" idle-history maintenance was cancelled`,
-        'aborted',
-        undefined,
-        { cause: signal.reason },
-      )
-    }
-    if (this.loopCtx.agents.get(this.id) !== this || this.loopCtx.sessions.get(this.id) !== this.session) {
-      throw new IdleHistoryError(
-        `agent "${this.id}" is no longer the live agent for its session`,
-        'agent-changed',
-      )
-    }
+    const refusal = this.maintenanceRefusal(signal, 'idle-history maintenance')
+    if (refusal === undefined) return
+    throw new IdleHistoryError(
+      refusal.message,
+      refusal.failure,
+      undefined,
+      refusal.cause === undefined ? undefined : { cause: refusal.cause },
+    )
+  }
+
+  /**
+   * Refuse a surface-head maintenance whose agent was cancelled or replaced,
+   * reporting a head this call already committed as recovery state.
+   * @param signal - the claimed maintenance signal.
+   * @param head - committed head position, present after this call's own commit.
+   * @throws a {@link SurfaceHeadError} naming the aborted or replaced agent.
+   */
+  private assertSurfaceHeadLive(signal: AbortSignal, head?: SurfaceHeadPosition): void {
+    const refusal = this.maintenanceRefusal(signal, 'surface-head maintenance')
+    if (refusal === undefined) return
+    throw new SurfaceHeadError(
+      refusal.message,
+      refusal.failure,
+      head,
+      refusal.cause === undefined ? undefined : { cause: refusal.cause },
+    )
   }
 
   /**

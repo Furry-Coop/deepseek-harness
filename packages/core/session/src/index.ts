@@ -1150,12 +1150,14 @@ export class Session {
   }
 
   /**
-   * Read the host-internal idle-history admission from the committed surface.
+   * Read the host-internal maintenance admission from the committed surface.
    * @internal
-   * @param message - submitted formal message to compare with its current carrier.
-   * @returns the protected head position and the first current carrier comparison.
+   * @param message - submitted formal message to compare with its current carrier;
+   * omit it to read only the protected head position.
+   * @returns the protected head position and, when a message was submitted, the first
+   * current carrier comparison.
    */
-  [SESSION_IDLE_HISTORY_ADMISSION](message: Message): IdleHistoryAdmission {
+  [SESSION_IDLE_HISTORY_ADMISSION](message?: Message): IdleHistoryAdmission {
     return this.surfaceManager[SESSION_IDLE_HISTORY_ADMISSION](message)
   }
 }

@@ -309,7 +309,7 @@ type SessionEvent<T extends SessionEventType = SessionEventType> = {
 
 ## Surface 类型
 
-产生消息的类型（`SurfaceEventType`：`system/message`、`developer/message`、`user/message`、`assistant/message`、`tool/result`）携带 surface 元数据，用来声明它们如何加入有序的派生 surface。`system/message` 承载渲染后的系统提示词：循环把第一条追加为 surface 第 0 号节点，并在提示词变化时恰好替换最新的系统节点，或在历史内路由上追加一条新的；surface 折叠拒绝任何其他覆盖第 0 号节点 `system/message` 的替换，而后续系统节点是普通历史，压缩替换可以遮蔽它。`maintenance: true` 负载在任何轮次之外为一次空闲历史维护建立同一个受保护头：这是唯一允许在没有轮次或步骤时向空 surface 追加系统节点的写入方，后续轮次通过普通头替换协调它。见 [session surface Agent Note](../../.agents/notes/implemented/architecture/2026-06-18-session-surface.zh.md)。
+产生消息的类型（`SurfaceEventType`：`system/message`、`developer/message`、`user/message`、`assistant/message`、`tool/result`）携带 surface 元数据，用来声明它们如何加入有序的派生 surface。`system/message` 承载渲染后的系统提示词：循环把第一条追加为 surface 第 0 号节点，并在提示词变化时恰好替换最新的系统节点，或在历史内路由上追加一条新的；surface 折叠拒绝任何其他覆盖第 0 号节点 `system/message` 的替换，而后续系统节点是普通历史，压缩替换可以遮蔽它。`maintenance: true` 负载在任何轮次之外为空闲维护建立同一个受保护头：`maintainIdleHistory()` 与 `maintainSurfaceHead()` 共用的同一个内部写入方，是唯一允许在没有轮次或步骤时向空 surface 追加系统节点的写入方，后续轮次通过普通头替换协调它。见 [session surface Agent Note](../../.agents/notes/implemented/architecture/2026-06-18-session-surface.zh.md)。
 
 ### `SurfaceEventType`：事件类型中产生消息的子集
 
@@ -680,12 +680,14 @@ declare class Session {
    */
   deriveEventMessage(event: SessionEvent): Message | null;
   /**
-   * Read the host-internal idle-history admission from the committed surface.
+   * Read the host-internal maintenance admission from the committed surface.
    * @internal
-   * @param message - submitted formal message to compare with its current carrier.
-   * @returns the protected head position and the first current carrier comparison.
+   * @param message - submitted formal message to compare with its current carrier;
+   * omit it to read only the protected head position.
+   * @returns the protected head position and, when a message was submitted, the first
+   * current carrier comparison.
    */
-  [SESSION_IDLE_HISTORY_ADMISSION](message: Message): IdleHistoryAdmission;
+  [SESSION_IDLE_HISTORY_ADMISSION](message?: Message): IdleHistoryAdmission;
 }
 ```
 

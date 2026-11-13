@@ -137,6 +137,40 @@ interface Agent {
   maintainIdleHistory?(request: IdleHistoryRequest): Promise<IdleHistoryResult>
 
   /**
+   * Establish or verify the protected system head of this Session's surface from
+   * the true idle phase, without writing any message. A plugin that owns later
+   * surface messages needs the head first: a `system/message` appended after
+   * another writer's message leaves a log the next turn cannot reopen, and a
+   * plugin that only learns about its first write at `agent/pre-step` has no
+   * legal point before `step/start`. Absent only on an Agent implementation that
+   * cannot persist the head, so a caller must treat absence as an unsupported
+   * capability rather than a silent no-op.
+   *
+   * The call claims the same maintenance phase as `runMaintenance()` and
+   * `maintainIdleHistory()`, so a running turn or another maintenance task
+   * refuses it as `not-idle` instead of trusting the public `idle` status a
+   * maintenance deliberately keeps. On an empty surface it assembles and renders
+   * the real scoped prompt and commits one `system/message` carrying
+   * `maintenance: true` and no turn or step. This operation appends at most that
+   * one head and never a second; later prompt updates keep following the existing
+   * route and series policy of prompt admission, which it does not change. An
+   * existing head — including an empty rendering — is never
+   * replaced, duplicated, or moved. A surface that holds any node without a
+   * protected system head is refused as `history-conflict`.
+   *
+   * The commit and its durability checkpoint are separate outcomes, and the
+   * no-op path runs the same checkpoint: a head being present does not by itself
+   * confirm that it is durable. A failed checkpoint raises an error carrying the
+   * committed head position, so a later call verifies durability instead of
+   * appending a second head. Cancellation or an owner change after the commit is
+   * reported with the committed position as recovery state; the error never
+   * claims a committed head was not written.
+   * @returns the head position, whether this call appended it, and the checkpoint outcome.
+   * @throws a `SurfaceHeadError` naming the refused phase, identity, surface, or checkpoint.
+   */
+  maintainSurfaceHead?(): Promise<SurfaceHeadResult>
+
+  /**
    * Route identified input to an inbox boundary and optionally wake the driver.
    * Waking input submitted after active cancellation is queued for the next
    * turn and runs when the aborted activity converges to idle; a `disposed`
