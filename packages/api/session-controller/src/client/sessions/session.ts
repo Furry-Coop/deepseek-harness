@@ -2,6 +2,14 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { InboxState, InboxTarget } from '@deepseek-ai/dsh-agent/types'
+import {
+  advanceAdmissionWindow,
+  admitsRewrite,
+  claimAdmissionWindow,
+  inboxSpliceKind,
+  NO_ADMISSION_WINDOW,
+  type AdmissionWindow,
+} from '@deepseek-ai/dsh-agent/inbox-admission'
 import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import type { FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client'
@@ -46,6 +54,21 @@ function projectionsBaseline(value: SessionProjectionBaseline): ProjectionsBasel
     ...value,
     asOfSeq: value.asOfSeq === -1 ? -1 : SessionSeq(value.asOfSeq),
   }
+}
+
+/**
+ * The submission identity a durable message source correlates with.
+ *
+ * The submitting client mints this id, so a host-side rewrite can keep it while
+ * replacing the human source kind; reading it reconciles the local echo only and never
+ * grants human authorship. An empty or non-string value is no identity at all.
+ * @param source - durable message source.
+ * @returns the request id, or undefined when the source carries none.
+ */
+function submissionRequestIdOf(source: UserMessage['source']): SessionRequestId | undefined {
+  if (!('rpcId' in source)) return undefined
+  const rpcId: unknown = source.rpcId
+  return typeof rpcId === 'string' && rpcId !== '' ? rpcId as SessionRequestId : undefined
 }
 
 /** Minimum message count for ordinary history windows. */
@@ -131,6 +154,8 @@ export class Session implements SessionFace {
   private pendingSubmissions: readonly PendingSubmission[] = []
   /** The accepted echoes, published as SessionSnapshot.pendingSubmissions; rebuilt when one is accepted or removed. */
   private acceptedSubmissions: readonly PendingSubmission[] = []
+  /** The Turn currently observed as open, or 0 between Turns. */
+  private openTurn = 0
   /** Per-echo settlement state; `retiring` latches the first observation so a
    *  Inbox projection and its durable event cannot both retire one echo. */
   private readonly submissionSettlements = new Map<SessionRequestId, {
@@ -144,6 +169,22 @@ export class Session implements SessionFace {
     }
     /** Durable admission may precede the Inbox projection acknowledging its claim. */
     admitted?: readonly (ImageAttachmentRef | FileAttachmentRef)[]
+    /**
+     * Durable identity of this request's original occurrence, learned from the Inbox row.
+     *
+     * A host-side rewrite may keep the request id while replacing the human source kind,
+     * so the shipped message is matched by this identity rather than by `source.kind`
+     * alone; losing it only leaves the echo for the next follow baseline to settle.
+     */
+    messageId?: MessageId
+    /**
+     * Claim and entered-step evidence for a host-side rewrite of that occurrence.
+     *
+     * The shared admission policy owns the claim, entered-step, and same-id
+     * matching rules; this settlement keeps the receipt, watermark, and
+     * retirement state that only the Client echo needs.
+     */
+    window: AdmissionWindow
     /** Whether the Host accepted the prompt; the echo is published only from then on. */
     accepted: boolean
     readonly onAccept?: (() => void) | undefined
@@ -242,7 +283,12 @@ export class Session implements SessionFace {
       attachments: input.attachments,
     }]
     this.submissionSettlements.set(requestId, {
-      placement, accepted: false, onAccept: input.onAccept, onRetire: input.onRetire, retiring: false,
+      placement,
+      accepted: false,
+      onAccept: input.onAccept,
+      onRetire: input.onRetire,
+      retiring: false,
+      window: NO_ADMISSION_WINDOW,
     })
     return { requestId, abandon: () => { this.retireFailedSubmission(requestId) } }
   }
@@ -785,15 +831,31 @@ export class Session implements SessionFace {
 
   /** Observe durable acceptance even when insertion and claim share one projection notification. */
   private observeSubmissionEvent(event: SessionEventLike): void {
+    // Claim evidence needs the open-Turn and entered-Step facts; keep them independent of
+    // whether an echo is pending.
+    if (event.type === 'turn/start') this.openTurn = event.data.turn
+    else if (event.type === 'turn/end') this.openTurn = 0
     if (this.submissionSettlements.size === 0) return
+    if (event.type === 'step/start' || event.type === 'step/end' || event.type === 'turn/end') {
+      for (const settlement of this.submissionSettlements.values()) {
+        settlement.window = advanceAdmissionWindow(settlement.window, event)
+      }
+    }
     if (event.type === 'agent/inbox/spliced') {
-      const { target, start, removedCount = 0, inserted, outcome } = event.data
+      const { target, start, removedCount = 0, inserted } = event.data
+      // The shared policy owns which removal is a claim. Only a non-canceled
+      // remove-and-run proves this request's real original submission entered a Turn.
+      const kind = inboxSpliceKind(event.data)
       for (const [requestId, settlement] of this.submissionSettlements) {
         const receipt = settlement.receipt
         if (receipt?.target !== target || receipt.index === null || receipt.seq >= event.seq) continue
         const removed = receipt.index >= start && receipt.index < start + removedCount
-        if (removed && outcome === 'canceled') this.retireFailedSubmission(requestId)
-        else settlement.receipt = {
+        if (removed && kind === 'cancellation') {
+          this.retireFailedSubmission(requestId)
+          continue
+        }
+        if (removed && kind === 'claim') settlement.window = claimAdmissionWindow(this.openTurn, event.seq)
+        settlement.receipt = {
           ...receipt,
           seq: event.seq,
           index: removed ? null : receipt.index < start ? receipt.index : receipt.index + inserted.length - removedCount,
@@ -803,7 +865,7 @@ export class Session implements SessionFace {
       // A queued echo waits for the inbox projection the queue dock renders, which can arrive after this
       // event; retiring it here would empty the dock for a frame. A claim in the same projection notification
       // still retires it through the durable user message.
-      for (const message of inserted) this.observeSubmissionMessage(message, false, false)
+      for (const message of inserted) this.observeSubmissionMessage(message, false, false, event.seq)
       return
     }
     if (event.type === 'request/context' || event.type === 'turn/end') {
@@ -813,36 +875,64 @@ export class Session implements SessionFace {
       }
       return
     }
-    if (event.type === 'user/message') this.observeSubmissionMessage(event.data, true)
+    if (event.type === 'user/message') this.observeSubmissionMessage(event.data, true, true, event.seq)
   }
 
   private observeSubmissionInsertions(target: InboxTarget, messages: readonly UserMessage[], start: number, seq: number): void {
     for (const [index, message] of messages.entries()) {
-      const source = message.source
-      if (source.kind !== 'user' || !('rpcId' in source)) continue
-      const settlement = this.submissionSettlements.get(source.rpcId)
+      // Only a real human occurrence establishes this request's original identity. A
+      // producer that merely reuses a request id must not create the relation that a
+      // later admitted rewrite is matched against.
+      if (message.source.kind !== 'user') continue
+      const rpcId = submissionRequestIdOf(message.source)
+      if (rpcId === undefined) continue
+      const settlement = this.submissionSettlements.get(rpcId)
       if (settlement === undefined || settlement.retiring || (settlement.receipt?.seq ?? -1) > seq) continue
+      // Bind the identity to this occurrence. A re-inserted occurrence (preserveClaimed)
+      // is pending again, so an earlier claim of the previous occurrence no longer
+      // proves that this one entered a Turn.
+      settlement.messageId = message.id
+      settlement.window = NO_ADMISSION_WINDOW
       // Either proof accepts a prompt; an Inbox row can reach the Client before the prompt receipt. Later splices
       // move the recorded position, so a canceled splice that removes the row retires its echo, queued ones
       // included; a queued echo otherwise leaves once the queue dock renders its row or its message is admitted.
       settlement.receipt = { target, seq, index: start + index, attachments: attachmentRefsIn(message.content) }
-      this.acceptPrompt(source.rpcId)
+      this.acceptPrompt(rpcId)
     }
   }
 
-  private observeSubmissionMessage(message: UserMessage, admitted: boolean, retireQueued = true): void {
-    const source = message.source
-    if (source.kind !== 'user' || !('rpcId' in source)) return
-    const settlement = this.submissionSettlements.get(source.rpcId)
+  private observeSubmissionMessage(
+    message: UserMessage,
+    admitted: boolean,
+    retireQueued = true,
+    seq?: number,
+  ): void {
+    const rpcId = submissionRequestIdOf(message.source)
+    if (rpcId === undefined) return
+    const settlement = this.submissionSettlements.get(rpcId)
     if (settlement === undefined || settlement.retiring) return
+    // A rewrite keeps the request id but replaces the human source. It settles this echo
+    // only when the Session observed the Host claim the original occurrence, a step then
+    // entered after that claim, and the admitted copy keeps that occurrence's message id
+    // and request correlation; a producer that reuses a request id without that real
+    // relation never retires it. A pending Inbox row is always the original human
+    // occurrence, so an unadmitted copy must be human to retire a queued echo.
+    if (message.source.kind !== 'user') {
+      if (!admitted || seq === undefined || settlement.messageId === undefined
+        || settlement.receipt?.index !== null) return
+      if (!admitsRewrite(settlement.window, message, SessionSeq(seq), {
+        messageId: settlement.messageId,
+        correlation: rpcId,
+      })) return
+    }
     if (!admitted) {
       if (settlement.placement === 'queued' && retireQueued) {
-        this.scheduleObservedRetirement(source.rpcId, attachmentRefsIn(message.content))
+        this.scheduleObservedRetirement(rpcId, attachmentRefsIn(message.content))
       }
       return
     }
     settlement.admitted = attachmentRefsIn(message.content)
-    this.retireAdmittedSubmission(source.rpcId)
+    this.retireAdmittedSubmission(rpcId)
   }
 
   /** Retire admitted Chat identities only after stale Inbox rows can no longer reappear. */

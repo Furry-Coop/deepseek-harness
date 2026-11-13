@@ -9,7 +9,7 @@ import type {
   FileAttachmentRef, ImageAttachmentLimits, ImageAttachmentRef, SaveFileAttachment, SaveFileStreamAttachment,
   SaveImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, freezeMessage } from '@deepseek-ai/dsh-llm'
 import type { MessageSource, UserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
@@ -19,7 +19,19 @@ import type { FileUploadReceiptId } from '@deepseek-ai/dsh-client-file-upload/ty
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { ApiSessionAgentController } from '../src/agent.ts'
 import { SessionCommandController } from '../src/commands.ts'
+import { PromptAdmissionReader } from '../src/prompt-admission.ts'
 import type { SessionRequestId } from '../src/types.ts'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    /** A host-side rewrite that keeps the client's prompt request id. */
+    'rewrite': { kind: 'rewrite'; rpcId: SessionRequestId }
+    /** A rewrite that reuses the message id with another request correlation. */
+    'rewrite-foreign': { kind: 'rewrite-foreign'; rpcId: SessionRequestId }
+    /** A rewrite that reuses the message id without any request correlation. */
+    'rewrite-unrelated': { kind: 'rewrite-unrelated' }
+  }
+}
 
 const SESSION = SessionId('upload-session')
 const IMAGE_LIMITS: ImageAttachmentLimits = {
@@ -62,6 +74,8 @@ async function uploadHarness(origin?: 'subagent', imageLimits: ImageAttachmentLi
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(CommandRuntime)
+  const promptAdmission = new PromptAdmissionReader()
+  await promptAdmission.initialize(ctx)
   const session = ctx.sessions.create(SESSION, {
     meta: { cwd: '/workspace', ...(origin === undefined ? {} : { origin }) },
   })
@@ -133,7 +147,7 @@ async function uploadHarness(origin?: 'subagent', imageLimits: ImageAttachmentLi
   if (uploadRoute === undefined) throw new Error('file upload route was not registered')
   return {
     ctx,
-    controller: new SessionCommandController(ctx, agents, '/workspace'),
+    controller: new SessionCommandController(ctx, agents, '/workspace', undefined, promptAdmission),
     uploads,
     agent,
     followup,
@@ -547,6 +561,287 @@ describe('Session file uploads', () => {
 
     await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
     expect(followup).not.toHaveBeenCalled()
+  })
+
+  it('deduplicates a retried rpcId whose admitted copy is a rewrite of the claimed original', async () => {
+    const { controller, agent, followup } = await uploadHarness()
+    const request = promptRequest([{ type: 'text', text: '把节点 A 移出，继续修复分页' }])
+    const original = createUserMessage({
+      content: [{ type: 'text', text: '把节点 A 移出，继续修复分页' }],
+      source: { kind: 'user', rpcId: request.requestId },
+    })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [original] })
+    agent.session.append('turn/start', { turn: 1 })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [] })
+    agent.session.append('step/start', { turn: 1, step: 1 })
+    agent.session.append('user/message', freezeMessage({
+      ...original,
+      content: [{ type: 'text', text: '继续修复分页' }],
+      source: { kind: 'rewrite', rpcId: request.requestId },
+    }), { surfaceOp: 'append' })
+
+    await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
+    expect(followup).not.toHaveBeenCalled()
+  })
+
+  it('does not treat a same-id rewrite with a different request correlation as accepted', async () => {
+    const { controller, agent, followup } = await uploadHarness()
+    const request = promptRequest([{ type: 'text', text: 'correlated original' }])
+    const original = createUserMessage({
+      content: [{ type: 'text', text: 'correlated original' }],
+      source: { kind: 'user', rpcId: request.requestId },
+    })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [original] })
+    agent.session.append('turn/start', { turn: 1 })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [] })
+    agent.session.append('step/start', { turn: 1, step: 1 })
+    agent.session.append('user/message', freezeMessage({
+      ...original,
+      content: [{ type: 'text', text: 'rewritten original' }],
+      source: { kind: 'rewrite-foreign', rpcId: 'other-request' as SessionRequestId },
+    }), { surfaceOp: 'append' })
+
+    // The mismatched copy is not admitted, but the real original is still
+    // claimed: an overlapping retry must not insert a second copy.
+    await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
+    expect(followup).not.toHaveBeenCalled()
+    // The claim closes without admitting this request, so the same retry now proceeds.
+    agent.session.append('step/end', { turn: 1, step: 1 })
+    await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
+    expect(followup).toHaveBeenCalledOnce()
+  })
+
+  it('does not treat a same-id rewrite without the request correlation as accepted', async () => {
+    const { controller, agent, followup } = await uploadHarness()
+    const request = promptRequest([{ type: 'text', text: 'uncorrelated original' }])
+    const original = createUserMessage({
+      content: [{ type: 'text', text: 'uncorrelated original' }],
+      source: { kind: 'user', rpcId: request.requestId },
+    })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [original] })
+    agent.session.append('turn/start', { turn: 1 })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [] })
+    agent.session.append('step/start', { turn: 1, step: 1 })
+    agent.session.append('user/message', freezeMessage({
+      ...original,
+      content: [{ type: 'text', text: 'rewritten original' }],
+      source: { kind: 'rewrite-unrelated' },
+    }), { surfaceOp: 'append' })
+
+    await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
+    expect(followup).not.toHaveBeenCalled()
+    agent.session.append('step/end', { turn: 1, step: 1 })
+    await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
+    expect(followup).toHaveBeenCalledOnce()
+  })
+
+  it('does not treat a producer-copied rpcId without the claim chain as an accepted prompt', async () => {
+    const { controller, agent, followup } = await uploadHarness()
+    const request = promptRequest([{ type: 'text', text: 'real input' }])
+    agent.session.append('turn/start', { turn: 1 })
+    agent.session.append('user/message', freezeMessage({
+      id: 'producer-copy' as UserMessage['id'],
+      role: 'user',
+      content: [{ type: 'text', text: 'producer' }],
+      source: { kind: 'rewrite', rpcId: request.requestId },
+    }), { surfaceOp: 'append' })
+
+    await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
+    expect(followup).toHaveBeenCalledOnce()
+  })
+
+  it('does not claim eligibility from a canceled removal of the original or another input claim', async () => {
+    const { controller, agent, followup } = await uploadHarness()
+    const request = promptRequest([{ type: 'text', text: 'canceled original' }])
+    const original = createUserMessage({
+      content: [{ type: 'text', text: 'canceled original' }],
+      source: { kind: 'user', rpcId: request.requestId },
+    })
+    const other = createUserMessage({
+      content: [{ type: 'text', text: 'other input' }],
+      source: { kind: 'user', rpcId: 'other-request' as SessionRequestId },
+    })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [original] })
+    agent.session.append('turn/start', { turn: 1 })
+    // The original is canceled, not claimed.
+    agent.session.append('agent/inbox/spliced', {
+      target: 'next-turn', start: 0, removedCount: 1, inserted: [], outcome: 'canceled',
+    })
+    // Another input is really claimed in the same Turn.
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [other] })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [] })
+    // A producer borrows the canceled request id and its original message id.
+    agent.session.append('user/message', freezeMessage({
+      ...original,
+      content: [{ type: 'text', text: 'borrowed effective' }],
+      source: { kind: 'rewrite', rpcId: request.requestId },
+    }), { surfaceOp: 'append' })
+
+    await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
+    expect(followup).toHaveBeenCalledOnce()
+  })
+
+  it('claims the original across the two Inbox lanes of one batch', async () => {
+    const { controller, agent, followup } = await uploadHarness()
+    const request = promptRequest([{ type: 'text', text: 'queued original' }])
+    const original = createUserMessage({
+      content: [{ type: 'text', text: 'queued original' }],
+      source: { kind: 'user', rpcId: request.requestId },
+    })
+    const steering = createUserMessage({
+      content: [{ type: 'text', text: 'steering' }],
+      source: { kind: 'user' },
+    })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [original] })
+    agent.session.append('turn/start', { turn: 1 })
+    agent.session.append('agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [steering] })
+    // The batch claims next-step first, then the original from next-turn.
+    agent.session.append('agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [] })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [] })
+    agent.session.append('step/start', { turn: 1, step: 1 })
+    agent.session.append('user/message', freezeMessage({
+      ...original,
+      content: [{ type: 'text', text: 'effective' }],
+      source: { kind: 'rewrite', rpcId: request.requestId },
+    }), { surfaceOp: 'append' })
+
+    await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
+    expect(followup).not.toHaveBeenCalled()
+  })
+
+  it('does not reuse a claim for a copy admitted before the claim entered a step', async () => {
+    const { controller, agent, followup } = await uploadHarness()
+    const request = promptRequest([{ type: 'text', text: 'pre-step copy' }])
+    const original = createUserMessage({
+      content: [{ type: 'text', text: 'pre-step copy' }],
+      source: { kind: 'user', rpcId: request.requestId },
+    })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [original] })
+    agent.session.append('turn/start', { turn: 1 })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [] })
+    // Public injection can append a copy in the pre-step window, before step/start.
+    agent.session.append('user/message', freezeMessage({
+      ...original,
+      content: [{ type: 'text', text: 'pre-step effective' }],
+      source: { kind: 'rewrite', rpcId: request.requestId },
+    }), { surfaceOp: 'append' })
+
+    // The copy is not admitted before a step enters, but the real original is
+    // still claimed, so an overlapping retry must not insert a second copy.
+    await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
+    expect(followup).not.toHaveBeenCalled()
+    // The Turn closes without an entered step: the claim is spent and the retry proceeds.
+    agent.session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
+    expect(followup).toHaveBeenCalledOnce()
+  })
+
+  it('consumes a claim at step close so a later step cannot authorize a copy', async () => {
+    const { controller, agent, followup } = await uploadHarness()
+    const request = promptRequest([{ type: 'text', text: 'filtered original' }])
+    const original = createUserMessage({
+      content: [{ type: 'text', text: 'filtered original' }],
+      source: { kind: 'user', rpcId: request.requestId },
+    })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [original] })
+    agent.session.append('turn/start', { turn: 1 })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [] })
+    agent.session.append('step/start', { turn: 1, step: 1 })
+    agent.session.append('step/end', { turn: 1, step: 1 })
+    // A producer reuses the filtered original's id and request id after its step closed.
+    agent.session.append('user/message', freezeMessage({
+      ...original,
+      content: [{ type: 'text', text: 'later effective' }],
+      source: { kind: 'rewrite', rpcId: request.requestId },
+    }), { surfaceOp: 'append' })
+
+    await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
+    expect(followup).toHaveBeenCalledOnce()
+  })
+
+  it('does not carry a filtered claim across steps into a later producer occurrence', async () => {
+    const { controller, agent, followup } = await uploadHarness()
+    const request = promptRequest([{ type: 'text', text: 'handled in step 1' }])
+    const original = createUserMessage({
+      content: [{ type: 'text', text: 'handled in step 1' }],
+      source: { kind: 'user', rpcId: request.requestId },
+    })
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [original] })
+    agent.session.append('turn/start', { turn: 1 })
+    // Step 1 claims the real original; pre-step filters it out and never admits it.
+    agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [] })
+    agent.session.append('step/start', { turn: 1, step: 1 })
+    agent.session.append('step/end', { turn: 1, step: 1 })
+    // A foreign producer injects into the next-step lane, reusing the original id and
+    // request id but not the human source.
+    const producerOccurrence = freezeMessage({
+      ...original,
+      content: [{ type: 'text', text: 'producer occurrence' }],
+      source: { kind: 'rewrite', rpcId: request.requestId },
+    })
+    agent.session.append('agent/inbox/spliced', {
+      target: 'next-step', start: 0, inserted: [producerOccurrence],
+    })
+    // Step 2 actually claims that producer occurrence and admits its same-id message.
+    agent.session.append('agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [] })
+    agent.session.append('step/start', { turn: 1, step: 2 })
+    agent.session.append('user/message', freezeMessage({
+      ...producerOccurrence,
+      content: [{ type: 'text', text: 'producer effective' }],
+    }), { surfaceOp: 'append' })
+
+    await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
+    expect(followup).toHaveBeenCalledOnce()
+  })
+
+  it('binds and inserts once for overlapping retries during the live claim window', async () => {
+    const { ctx, controller, agent, followup } = await uploadHarness()
+    const request = promptRequest([{ type: 'text', text: 'overlapping retry' }])
+    const gate = Promise.withResolvers<undefined>()
+    const bothEntered = Promise.withResolvers<undefined>()
+    let calls = 0
+    const admittedContent = vi.spyOn(ctx.attachments, 'admitPromptContent').mockImplementation(async (content) => {
+      calls += 1
+      if (calls === 2) bothEntered.resolve(undefined)
+      await gate.promise
+      return content.flatMap(part => part.type === 'text' ? [{ type: 'text' as const, text: part.text }] : [])
+    })
+    const bind = vi.spyOn(ctx.fileUploads, 'bindPrompt')
+    followup.mockImplementation((message: UserMessage) => {
+      agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [message] })
+      agent.session.append('turn/start', { turn: 1 })
+      agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [] })
+    })
+    onTestFinished(() => {
+      admittedContent.mockRestore()
+      bind.mockRestore()
+    })
+
+    const first = controller.prompt(request, USER_SOURCE)
+    const second = controller.prompt(request, USER_SOURCE)
+    await bothEntered.promise
+    gate.resolve(undefined)
+    await expect(Promise.all([first, second])).resolves.toEqual([{ accepted: true }, { accepted: true }])
+    expect(followup).toHaveBeenCalledOnce()
+    expect(bind).toHaveBeenCalledOnce()
+  })
+
+  it('admits a retry after the live claim window closes without an admission', async () => {
+    const { controller, agent, followup } = await uploadHarness()
+    const request = promptRequest([{ type: 'text', text: 'retry after close' }])
+    followup.mockImplementation((message: UserMessage) => {
+      agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [message] })
+      agent.session.append('turn/start', { turn: 1 })
+      agent.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [] })
+    })
+
+    await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
+    expect(followup).toHaveBeenCalledOnce()
+    // The claim was consumed by the step that never admitted this request.
+    agent.session.append('step/start', { turn: 1, step: 1 })
+    agent.session.append('step/end', { turn: 1, step: 1 })
+    await expect(controller.prompt(request, USER_SOURCE)).resolves.toEqual({ accepted: true })
+    expect(followup).toHaveBeenCalledTimes(2)
   })
 
   it('rejects when the Agent disappears during prompt admission', async () => {

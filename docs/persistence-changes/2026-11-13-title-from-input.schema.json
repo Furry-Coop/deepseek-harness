@@ -1,0 +1,39 @@
+{
+  "formatVersion": 2,
+  "roots": [
+    {"key":"event:session/title-from-input","kind":"event","event":"session/title-from-input","surface":false,"digest":"de1c98325f6847c0a642a13b2f4747d01f9a49d9e6277ca7b5f00a1a0eafb02d"},
+    {"key":"event:session/title-llm-request-from-input","kind":"event","event":"session/title-llm-request-from-input","surface":false,"digest":"98ea0f4f576cac3a881f3b42f12262edbd8ec95832d4dc8264a9a324f08f0d45"}
+  ],
+  "types": [],
+  "nodes": {
+    "0657d3ca5ac4e7bf": {"kind":"primitive","type":"number"},
+    "07e1a58c58b593f5": {"kind":"object","properties":[{"name":"model","type":"4cd48f3e5108bd6e","optional":false},{"name":"provider","type":"4cd48f3e5108bd6e","optional":false}],"indices":[]},
+    "136958eeb50ebb5f": {"kind":"tuple","elements":[{"type":"b35bafa87d710483","optional":false,"rest":false}]},
+    "1b5649238876e288": {"kind":"object","properties":[{"name":"kind","type":"d6e654b88b584fcd","optional":false}],"indices":[]},
+    "23af3759678a30de": {"kind":"literal","value":"dsh-session-title-llm"},
+    "28391268267b6432": {"kind":"object","properties":[{"name":"inputRefs","type":"79ef39d7cebd90f4","optional":false},{"name":"source","type":"2bac2390983f361b","optional":false},{"name":"title","type":"4cd48f3e5108bd6e","optional":false}],"indices":[]},
+    "2881f0178891d0ba": {"kind":"literal","value":"session/title-llm-request-from-input"},
+    "290f32bfd81ff85a": {"kind":"object","properties":[{"name":"kind","type":"23af3759678a30de","optional":false}],"indices":[]},
+    "2bac2390983f361b": {"kind":"union","types":["1b5649238876e288","b81e9de81a481b24"]},
+    "4ae7e51ab2db1203": {"kind":"literal","value":"message"},
+    "4cd48f3e5108bd6e": {"kind":"primitive","type":"string"},
+    "4e44c9118152f682": {"kind":"literal","value":"text"},
+    "4e88776858652856": {"kind":"object","properties":[{"name":"text","type":"4cd48f3e5108bd6e","optional":false},{"name":"type","type":"4e44c9118152f682","optional":false}],"indices":[]},
+    "68f44f59e91c4139": {"kind":"literal","value":"user"},
+    "79ef39d7cebd90f4": {"kind":"array","element":"aa00c8840d186cb7"},
+    "8f6d609794bf5afc": {"kind":"tuple","elements":[{"type":"4e88776858652856","optional":false,"rest":false}]},
+    "98ea0f4f576cac3a": {"kind":"object","properties":[{"name":"data","type":"de18aba2aaaa42c2","optional":false},{"name":"ignorable","type":"dacf3d5f3e4ff619","optional":true},{"name":"seq","type":"0657d3ca5ac4e7bf","optional":false},{"name":"time","type":"0657d3ca5ac4e7bf","optional":false},{"name":"type","type":"2881f0178891d0ba","optional":false}],"indices":[]},
+    "aa00c8840d186cb7": {"kind":"union","types":["ae3581d08b9896ae","bcb64c1dbc39a5c3"]},
+    "ae3581d08b9896ae": {"kind":"object","properties":[{"name":"admittedSeq","type":"0657d3ca5ac4e7bf","optional":false},{"name":"claimSeq","type":"0657d3ca5ac4e7bf","optional":false},{"name":"kind","type":"f87fc910e41b8a1b","optional":false},{"name":"messageId","type":"4cd48f3e5108bd6e","optional":false},{"name":"originalInboxSeq","type":"0657d3ca5ac4e7bf","optional":false}],"indices":[]},
+    "b35bafa87d710483": {"kind":"object","properties":[{"name":"content","type":"8f6d609794bf5afc","optional":false},{"name":"id","type":"4cd48f3e5108bd6e","optional":false},{"name":"role","type":"68f44f59e91c4139","optional":false},{"name":"source","type":"290f32bfd81ff85a","optional":false}],"indices":[]},
+    "b81e9de81a481b24": {"kind":"object","properties":[{"name":"kind","type":"e31572180d6b28b7","optional":false},{"name":"model","type":"07e1a58c58b593f5","optional":true},{"name":"provider","type":"4cd48f3e5108bd6e","optional":false}],"indices":[]},
+    "bcb64c1dbc39a5c3": {"kind":"object","properties":[{"name":"kind","type":"4ae7e51ab2db1203","optional":false},{"name":"messageSeq","type":"0657d3ca5ac4e7bf","optional":false}],"indices":[]},
+    "d6e654b88b584fcd": {"kind":"literal","value":"fallback"},
+    "dacf3d5f3e4ff619": {"kind":"literal","value":true},
+    "de18aba2aaaa42c2": {"kind":"object","properties":[{"name":"inputRefs","type":"79ef39d7cebd90f4","optional":false},{"name":"maxTokens","type":"0657d3ca5ac4e7bf","optional":false},{"name":"messages","type":"136958eeb50ebb5f","optional":false},{"name":"reasoningEffort","type":"4cd48f3e5108bd6e","optional":true},{"name":"route","type":"07e1a58c58b593f5","optional":false},{"name":"system","type":"4cd48f3e5108bd6e","optional":false},{"name":"titleProvider","type":"4cd48f3e5108bd6e","optional":false}],"indices":[]},
+    "de1c98325f6847c0": {"kind":"object","properties":[{"name":"data","type":"28391268267b6432","optional":false},{"name":"ignorable","type":"dacf3d5f3e4ff619","optional":true},{"name":"seq","type":"0657d3ca5ac4e7bf","optional":false},{"name":"time","type":"0657d3ca5ac4e7bf","optional":false},{"name":"type","type":"ea8d25c10df80e4d","optional":false}],"indices":[]},
+    "e31572180d6b28b7": {"kind":"literal","value":"provider"},
+    "ea8d25c10df80e4d": {"kind":"literal","value":"session/title-from-input"},
+    "f87fc910e41b8a1b": {"kind":"literal","value":"origin"}
+  }
+}

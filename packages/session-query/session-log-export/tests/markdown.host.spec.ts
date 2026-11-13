@@ -20,6 +20,25 @@ function titleEvent(seq: number, title: string): SessionEvent<'session/title'> {
   }
 }
 
+function fromInputTitle(seq: number, title: string): SessionEvent<'session/title-from-input'> {
+  return {
+    type: 'session/title-from-input',
+    seq: sequence(seq),
+    time: seq,
+    data: {
+      title,
+      inputRefs: [{
+        kind: 'origin',
+        originalInboxSeq: sequence(0),
+        messageId: messageId('origin-input'),
+        claimSeq: sequence(1),
+        admittedSeq: sequence(2),
+      }],
+      source: { kind: 'fallback' },
+    },
+  }
+}
+
 function renderWithTitle(input: {
   readonly title: string | undefined
   readonly events: readonly SessionEvent[]
@@ -169,6 +188,20 @@ describe('formatSessionMarkdown', () => {
     const blank = [titleEvent(0, '   '), start(1, 1), user(2, 'Question'), end(3, 1)]
     expect(formatSessionMarkdown(blank)).toBe('# Untitled Session\n\n> Question\n')
     expect(formatSessionMarkdown([])).toBe('# Untitled Session\n')
+  })
+
+
+  it('uses an origin-derived title and still lets a later title event win', () => {
+    const events = [
+      fromInputTitle(0, 'Origin title'),
+      start(1, 1),
+      user(2, 'Question'),
+      assistant(3, [text('Answer')]),
+      end(4, 1),
+    ]
+    expect(formatSessionMarkdown(events)).toContain('# Origin title')
+    expect(formatSessionMarkdown([...events, titleEvent(5, 'Later title')])).toContain('# Later title')
+    expect(formatSessionMarkdown([...events, titleEvent(5, 'Later title')])).not.toContain('# Origin title')
   })
 
 

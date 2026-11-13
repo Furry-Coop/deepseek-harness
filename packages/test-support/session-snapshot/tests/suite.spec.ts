@@ -1093,6 +1093,64 @@ describe('refreshFixtureReplacements', () => {
     ])
   })
 
+  it('round-trips a Windows cwd through refresh replacements and fixture hydration', () => {
+    // A real session value holds one separator; JSON text doubles it, and text
+    // that embeds a JSON-quoted path doubles it again. Hydration writes the
+    // JSON-escaped value back into the committed token, so both directions must
+    // keep every row valid JSON and leave unrelated text alone.
+    const fresh = 'C:\\Users\\runner\\Temp\\sdk-snapshot-cwd'
+    const encoded = JSON.stringify(fresh).slice(1, -1)
+    const record = (cwd: string): string => [
+      JSON.stringify({ type: 'session', id: 'same', cwd }),
+      JSON.stringify({
+        type: 'user/message',
+        data: {
+          content: [
+            { type: 'text', text: `Working directory: ${JSON.stringify(cwd)}.` },
+            { type: 'text', text: 'unrelated text is untouched' },
+          ],
+        },
+      }),
+      '',
+    ].join('\n')
+    const freshLog = record(fresh)
+    const existingLog = record('{{cwd}}')
+    const parseRows = (content: string): Record<string, unknown>[] => content
+      .split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as Record<string, unknown>)
+    const replacements = refreshFixtureReplacements(
+      [{ id: 'diagnostic', createdAt: 1, content: freshLog }],
+      [existingLog],
+    )
+    expect(replacements).toEqual([
+      { from: JSON.stringify(encoded).slice(1, -1), to: '{{cwd}}' },
+      { from: encoded, to: '{{cwd}}' },
+      { from: fresh, to: '{{cwd}}' },
+    ])
+    const refreshed = replacements.reduce((text, { from, to }) => text.split(from).join(to), freshLog)
+    expect(refreshed).toBe(existingLog)
+    expect(parseRows(refreshed)).toEqual([
+      { type: 'session', id: 'same', cwd: '{{cwd}}' },
+      {
+        type: 'user/message',
+        data: {
+          content: [
+            { type: 'text', text: 'Working directory: "{{cwd}}".' },
+            { type: 'text', text: 'unrelated text is untouched' },
+          ],
+        },
+      },
+    ])
+    const hydrated = existingLog.replaceAll('{{cwd}}', encoded)
+    expect(parseRows(hydrated)).toHaveLength(2)
+    expect(tokenizeSessionFixtureCwd(hydrated)).toBe(existingLog)
+    // A POSIX path needs no escaping, so refresh adds no deeper spelling.
+    const posix = '/tmp/sdk-snapshot-cwd'
+    expect(refreshFixtureReplacements(
+      [{ id: 'diagnostic', createdAt: 1, content: record(posix) }],
+      [existingLog],
+    )).toEqual([{ from: posix, to: '{{cwd}}' }])
+  })
+
   it('stabilizes moved snapshot spill paths by filename while skipping unchanged or unmatched names', () => {
     const spill = (session: string, hash: string, name: string): string =>
       `/tmp/dsh-acp-snapshot-spill/session-${session}/${hash}-${name}`

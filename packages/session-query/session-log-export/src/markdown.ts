@@ -56,14 +56,16 @@ interface Turn {
 /**
  * Render one complete committed Session log as Markdown. This is a pure backend
  * utility: it needs no mounted plugin, reads no storage, and does not mutate the
- * supplied events. The latest `session/title` event supplies the heading; the
- * rest of the transcript is derived only from the supplied logical events.
+ * supplied events. The latest title event (`session/title` or
+ * `session/title-from-input`) supplies the heading; the rest of the transcript
+ * is derived only from the supplied logical events.
  * @param events - complete committed logical event snapshot in seq order, including any inherited prefix.
  * @param sourcePath - optional backend-resolved path to the selected Session artifact; emitted verbatim in a fenced text block.
  * @returns Markdown ending in exactly one newline; an empty log returns the heading and optional source metadata only.
  */
 export function formatSessionMarkdown(events: readonly SessionEvent[], sourcePath?: string): string {
-  const title = events.findLast(event => event.type === 'session/title')?.data.title
+  const title = events.findLast(event =>
+    event.type === 'session/title' || event.type === 'session/title-from-input')?.data.title
   const sections = [`# ${normalizedTitle(title)}`]
   if (sourcePath !== undefined && sourcePath !== '') {
     sections.push(`Session file:

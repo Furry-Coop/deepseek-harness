@@ -8774,6 +8774,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SessionTitleEventData {\n    readonly title: string;\n    readonly messageSeqs: SessionSeq[];\n    readonly source: SessionTitleSource;\n}',
   },
   {
+    name: 'SessionTitleInputRef',
+    declaration: 'export type SessionTitleInputRef = {\n    readonly kind: \'message\';\n    readonly messageSeq: SessionSeq;\n} | {\n    readonly kind: \'origin\';\n    readonly originalInboxSeq: SessionSeq;\n    readonly messageId: MessageId;\n    readonly claimSeq: SessionSeq;\n    readonly admittedSeq: SessionSeq;\n};',
+  },
+  {
     name: 'SessionTitleModelIdentity',
     declaration: 'export interface SessionTitleModelIdentity {\n    readonly provider: string;\n    readonly model: string;\n}',
   },
@@ -8791,7 +8795,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionTitleProviderRequest',
-    declaration: 'export interface SessionTitleProviderRequest {\n    readonly session: Session;\n    readonly messages: readonly SessionTitleUserMessage[];\n    readonly route?: SessionTitleModelIdentity;\n    readonly currentTitle?: SessionTitleSnapshot;\n    readonly signal: AbortSignal;\n}',
+    declaration: 'export interface SessionTitleProviderRequest {\n    readonly session: Session;\n    readonly messages: readonly SessionTitleUserMessage[];\n    readonly inputRefs: readonly SessionTitleInputRef[];\n    readonly route?: SessionTitleModelIdentity;\n    readonly currentTitle?: SessionTitleSnapshot;\n    readonly signal: AbortSignal;\n}',
   },
   {
     name: 'SessionTitleProviderResult',
@@ -8799,7 +8803,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionTitleSnapshot',
-    declaration: 'export interface SessionTitleSnapshot extends SessionTitleEventData {\n    readonly eventSeq: SessionSeq;\n    readonly updatedAt: number;\n}',
+    declaration: 'export interface SessionTitleSnapshot extends SessionTitleEventData {\n    readonly eventSeq: SessionSeq;\n    readonly updatedAt: number;\n    readonly inputRefs?: readonly SessionTitleInputRef[];\n}',
   },
   {
     name: 'SessionTitleSource',

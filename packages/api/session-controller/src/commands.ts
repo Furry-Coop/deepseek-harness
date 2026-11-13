@@ -63,6 +63,7 @@ import type {
   SessionUpdateQueueValue,
   SessionRequestId,
 } from './types.ts'
+import type { PromptAdmissionReader } from './prompt-admission.ts'
 
 type PromptContentCandidate =
   | SessionPromptRequest['content'][number]
@@ -168,12 +169,15 @@ export class SessionCommandController {
    * @param agents - sole owner of create, resume, and Session-local model selection.
    * @param defaultCwd - project directory used when create names neither a Workspace nor a cwd.
    * @param policies - registered creation policies; omission keeps the historical path.
+   * @param promptAdmission - synchronous prompt-admission facts; the Host composition
+   *   always supplies it, and omission keeps only the live pending-Inbox evidence.
    */
   constructor(
     private readonly ctx: Context,
     private readonly agents: ApiSessionAgentController,
     private readonly defaultCwd: string,
     policies?: SessionCreationPolicyRegistry,
+    private readonly promptAdmission?: PromptAdmissionReader,
   ) {
     this.policies = policies === undefined ? undefined : creationPolicyRuntime(policies)
   }
@@ -734,7 +738,7 @@ export class SessionCommandController {
    */
   async prompt(request: SessionPromptRequest, source: MessageSource): Promise<SessionPromptValue> {
     const agent = await this.resolveAgent(request.sessionId)
-    if (hasPromptRequest(agent, request.requestId)) return { accepted: true }
+    if (hasPromptRequest(agent, request.requestId, this.promptAdmission)) return { accepted: true }
     const admission = resolvePromptFileReceipts(
       request.content,
       receiptId => this.ctx.fileUploads.resolve(agent, receiptId),
@@ -743,6 +747,16 @@ export class SessionCommandController {
     const hasImage = admission.content.some(part => part.type === 'image')
     const admit = async (): Promise<SessionPromptValue> => {
       try {
+        // The image queue and the caller's first await can both overlap another
+        // retry of the same request. Re-check before converting anything again.
+        if (this.ctx.agents.get(agent.id) !== agent) {
+          throw new RemoteError(
+            'session/not-found',
+            `session "${agent.id}" was disposed during prompt admission`,
+            { sessionId: agent.id },
+          )
+        }
+        if (hasPromptRequest(agent, request.requestId, this.promptAdmission)) return { accepted: true }
         if (hasImage) {
           const current = agent.model.current()
           if (current !== undefined) {
@@ -757,7 +771,6 @@ export class SessionCommandController {
           }
         }
         const content = await this.ctx.attachments.admitPromptContent(admission.content)
-        const message: UserMessage = createUserMessage({ content, source })
         if (this.ctx.agents.get(agent.id) !== agent) {
           throw new RemoteError(
             'session/not-found',
@@ -765,6 +778,10 @@ export class SessionCommandController {
             { sessionId: agent.id },
           )
         }
+        // No await may separate this synchronous re-check from the bind and
+        // insert: a claim committed by an overlapping retry is visible here.
+        if (hasPromptRequest(agent, request.requestId, this.promptAdmission)) return { accepted: true }
+        const message: UserMessage = createUserMessage({ content, source })
         using binding = this.ctx.fileUploads.bindPrompt(agent, admission.receiptIds, request.requestId)
         if (request.mode === 'steer') agent.steer(message)
         else agent.followup(message)
@@ -1009,18 +1026,32 @@ function resolvePromptFileReceipts(
   return { content: resolved, receiptIds: [...receiptIds] }
 }
 
-function hasPromptRequest(agent: Agent, requestId: SessionRequestId): boolean {
-  const matches = (message: UserMessage): boolean => {
+/**
+ * Whether this prompt request already accepted input or owns a live claim.
+ *
+ * A pending Inbox occurrence is live evidence. A host-side rewrite keeps the
+ * request id while replacing the human source kind, so its claim and admission
+ * are recorded by the private prompt-admission projection and read here as a
+ * synchronous domain fact; this command never rescans the log. A claimed but
+ * unadmitted occurrence is in flight, so an overlapping retry must not insert
+ * a second copy. A producer that copies the request id without that claim
+ * chain is neither admitted nor in flight.
+ * @param agent - live Agent owning the request.
+ * @param requestId - client-minted prompt identity.
+ * @param admission - prompt-admission reader, when the Host composition supplied one.
+ * @returns whether the request already accepted this exact input or is being admitted.
+ */
+function hasPromptRequest(
+  agent: Agent,
+  requestId: SessionRequestId,
+  admission: PromptAdmissionReader | undefined,
+): boolean {
+  const matchesOriginal = (message: UserMessage): boolean => {
     const source = message.source
     return source.kind === 'user' && 'rpcId' in source && source.rpcId === requestId
   }
-  if (agent.inbox.nextTurn.some(matches) || agent.inbox.nextStep.some(matches)) return true
-  // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
-  return agent.session.snapshotEvents().some((event) => {
-    if (event.type !== 'user/message') return false
-    const source = event.data.source
-    return source.kind === 'user' && 'rpcId' in source && source.rpcId === requestId
-  })
+  if (agent.inbox.nextTurn.some(matchesOriginal) || agent.inbox.nextStep.some(matchesOriginal)) return true
+  return admission?.acceptedOrInFlight(agent.session, requestId) ?? false
 }
 
 /** Find a preset refusal preserved under creation wrappers. */

@@ -821,6 +821,8 @@ export function unknownToolCallIds(rawLog: string): string[] {
  */
 export function refreshFixtureReplacements(logs: HarvestedLog[], fixtures: string[]): FixtureReplacement[] {
   const replacements: FixtureReplacement[] = []
+  // Replacements run on JSON text, where a Windows separator appears doubled.
+  const jsonText = (value: string): string => JSON.stringify(value).slice(1, -1)
   for (let i = 0; i < logs.length; i++) {
     const fresh = parseJsonlRecords((logs[i] as HarvestedLog).content)[0]
     const existing = parseJsonlRecords(fixtures[i] ?? '')[0]
@@ -828,7 +830,23 @@ export function refreshFixtureReplacements(logs: HarvestedLog[], fixtures: strin
       const from = fresh?.[field]
       const to = existing?.[field]
       if (typeof from === 'string' && typeof to === 'string' && from.length > 0 && from !== to) {
-        replacements.push({ from, to })
+        if (field === 'cwd') {
+          // Model-visible context text quotes the path as a JSON string inside a
+          // JSON string, so its separators are escaped once for the header value
+          // and twice for the embedded text. Deeper spellings run first and the
+          // plain value stays last; unchanged (POSIX) spellings add nothing.
+          const deeper: FixtureReplacement[] = []
+          let fromText = from
+          let toText = to
+          for (let level = 0; level < 2; level++) {
+            fromText = jsonText(fromText)
+            toText = jsonText(toText)
+            if (fromText !== from || toText !== to) deeper.push({ from: fromText, to: toText })
+          }
+          replacements.push(...deeper.reverse(), { from, to })
+        } else {
+          replacements.push({ from, to })
+        }
       }
     }
     // Stabilize snapshot spill paths: match by filename suffix so the raw

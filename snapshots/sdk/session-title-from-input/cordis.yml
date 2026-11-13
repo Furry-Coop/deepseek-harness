@@ -1,0 +1,50 @@
+# TypeScript SDK title snapshot patch over `dsh --profile sdk`: the official
+# first-prompt title provider, plus a platform-neutral composition. Shell,
+# skill-root, and clock content is disabled so the recorded request header,
+# prompt, and tool catalog replay on macOS and Linux without host residue.
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    includeDefaultRoots: false
+
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek-api-key'
+  config:
+    thinking: enabled
+    reasoningEffort: max
+
+- id: session-persistence-jsonl
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js dshHomePath('sessions')
+    compression: !!js "process.env.DSH_SNAPSHOT === undefined ? 'zstd' : 'none'"
+
+- id: tool-bash
+  disabled: true
+
+- id: tool-pwsh
+  disabled: true
+
+- id: tool-skill
+  disabled: true
+
+- id: time-context
+  disabled: true
+
+# Delivery bookkeeping belongs to the provider; the recorded transcript keeps
+# only the loop's own events.
+- id: session-log-deepseek
+  config:
+    enabled: false
+
+- insert:
+    - id: session-title-provider
+      name: '@deepseek-ai/dsh-session-title-first-prompt-llm'
+      config:
+        targetWords: 5
+        targetCjkCharacters: 10
+        maxInputBytes: 4096
+        maxOutputTokens: 32
+        timeoutMs: 5000
+        provider: deepseek-official
+        model: deepseek-v4-flash

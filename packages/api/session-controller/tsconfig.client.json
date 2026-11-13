@@ -19,6 +19,7 @@
     { "path": "../../client/store" },
     { "path": "../../context/file-reference" },
     { "path": "../../core/session" },
+    { "path": "../../core/agent" },
     { "path": "../../jobs/jobs" },
     { "path": "../../llm/llm" },
     { "path": "../../session/session-projection" },

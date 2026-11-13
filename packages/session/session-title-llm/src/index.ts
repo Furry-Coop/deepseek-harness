@@ -28,13 +28,15 @@ import type {
   GenerateOptions,
   LlmResolvedModelInfo,
   Message,
+  MessageId,
   ReasoningEffortId,
 } from '@deepseek-ai/dsh-llm'
 import { deadline, MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { assertNever, deepFreeze } from '@deepseek-ai/dsh-util-values'
 import type { SessionSeq } from '@deepseek-ai/dsh-session'
-import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
+import { SessionTitleProviderId, selectSessionTitleInputRefs } from '@deepseek-ai/dsh-session-title'
 import type {
+  SessionTitleInputRef,
   SessionTitleModelIdentity,
   SessionTitleProviderRequest,
 } from '@deepseek-ai/dsh-session-title'
@@ -61,7 +63,43 @@ declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {
     /** Log-only pre-dispatch record of one session-title model request. */
     'session/title-llm-request': SessionTitleLlmRequestEventData
+    /**
+     * Log-only pre-dispatch record of a title request whose selected inputs
+     * include a claimed human Inbox occurrence. It carries exact frozen input
+     * refs instead of `messageSeqs`.
+     */
+    'session/title-llm-request-from-input': SessionTitleLlmRequestFromInputEventData
   }
+}
+
+/** Exact model-visible request for a title derived from claimed Inbox occurrences. */
+export interface SessionTitleLlmRequestFromInputEventData {
+  /** Registered title-provider identity responsible for the request. */
+  readonly titleProvider: SessionTitleProviderId
+  /** Exact admitted input references represented in `messages`, in admission order. */
+  readonly inputRefs: SessionTitleInputRef[]
+  /** Exact auxiliary LLM route. */
+  readonly route: SessionTitleModelIdentity
+  /** Exact auxiliary system prompt. */
+  readonly system: string
+  /** The one exact auxiliary user message: one text block from the provider's input. */
+  readonly messages: readonly [SessionTitleLlmRequestMessage]
+  /** Exact auxiliary output-token cap. */
+  readonly maxTokens: number
+  /** Resolved reasoning effort when recorded; older requests can omit it. */
+  readonly reasoningEffort?: ReasoningEffortId
+}
+
+/** The one auxiliary user message a from-input title request records. */
+export interface SessionTitleLlmRequestMessage {
+  /** Stable identity created with the auxiliary request. */
+  readonly id: MessageId
+  /** Auxiliary requests are user-role messages. */
+  readonly role: 'user'
+  /** Exactly the provider's user input as one text block. */
+  readonly content: readonly [Extract<ContentBlock, { type: 'text' }>]
+  /** The title-LLM producer, the only source that creates these messages. */
+  readonly source: { readonly kind: 'dsh-session-title-llm' }
 }
 
 /** Capability-owned timeout reason code for auxiliary title requests. */
@@ -241,18 +279,27 @@ export async function executeSessionTitleLlm(
   prepared: SessionTitleLlmPreparedRequest,
 ): Promise<SessionTitleLlmResponse> {
   request.signal.throwIfAborted()
-  if (prepared.messageSeqs.length === 0) {
+  // Capture the provider-owned text and selection before the first await: the
+  // model-visible text and the audit references must describe the same frozen
+  // revision even if the provider mutates its object while the call prepares.
+  const system = prepared.system
+  const input = prepared.input
+  const messageSeqs = deepFreeze([...prepared.messageSeqs])
+  if (messageSeqs.length === 0) {
     throw new Error('session-title-llm: at least one source message is required')
   }
-  const inputBytes = Buffer.byteLength(prepared.input, 'utf8')
+  const inputBytes = Buffer.byteLength(input, 'utf8')
   if (inputBytes > config.maxInputBytes) {
     throw new Error(`session-title-llm: input is ${inputBytes} bytes, exceeding maxInputBytes ${config.maxInputBytes}`)
   }
   const route = resolveRoute(config, request)
-  const messages: Message[] = [createUserMessage({
-    content: [{ type: 'text', text: prepared.input }],
+  const userMessage: SessionTitleLlmRequestMessage = createUserMessage({
+    content: [{ type: 'text', text: input }] as const,
     source: { kind: 'dsh-session-title-llm' },
-  })]
+  })
+  const messages: Message[] = [userMessage]
+  const auditMessages: readonly [SessionTitleLlmRequestMessage] = [userMessage]
+  const selectedRefs = selectSessionTitleInputRefs(request.messages, request.inputRefs, messageSeqs)
   using callDeadline = deadline(request.signal, config.timeoutMs, SESSION_TITLE_TIMEOUT_CODE)
   const maxTokens = config.maxOutputTokens
   const call = await ctx.llm.prepareCall({
@@ -265,20 +312,35 @@ export async function executeSessionTitleLlm(
   const options: GenerateOptions = deepFreeze({
     ...call.config,
     messages,
-    system: prepared.system,
+    system,
     sessionId: request.session.id,
     purpose: 'session-title',
     signal: callDeadline.signal,
   })
-  request.session.append('session/title-llm-request', {
-    titleProvider,
-    messageSeqs: [...prepared.messageSeqs],
-    route,
-    system: prepared.system,
-    messages,
-    maxTokens,
-    ...call.config.reasoningEffort === undefined ? {} : { reasoningEffort: call.config.reasoningEffort },
-  })
+  const reasoning = call.config.reasoningEffort === undefined
+    ? {}
+    : { reasoningEffort: call.config.reasoningEffort }
+  if (selectedRefs.some(ref => ref.kind === 'origin')) {
+    request.session.append('session/title-llm-request-from-input', {
+      titleProvider,
+      inputRefs: selectedRefs,
+      route,
+      system,
+      messages: auditMessages,
+      maxTokens,
+      ...reasoning,
+    })
+  } else {
+    request.session.append('session/title-llm-request', {
+      titleProvider,
+      messageSeqs: [...messageSeqs],
+      route,
+      system,
+      messages,
+      maxTokens,
+      ...reasoning,
+    })
+  }
   callDeadline.signal.throwIfAborted()
   const assembler = new BlockAssembler()
   for await (const chunk of call.stream(options)) {

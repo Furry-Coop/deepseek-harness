@@ -5,7 +5,8 @@
  */
 
 import { afterEach, describe, expect, vi } from 'vitest'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, freezeMessage } from '@deepseek-ai/dsh-llm'
+import type { UserMessage } from '@deepseek-ai/dsh-llm/types'
 import type { FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session/types'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
@@ -18,6 +19,17 @@ import { sessionBench } from './remote/bench.client.ts'
 import {
   FOLLOW, err, fileRef, followScript, history, imageRef, pushEvent,
 } from './remote/session.client.ts'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    /** A host-side rewrite keeping the submission request id but not the human kind. */
+    'rewrite-fixture': { kind: 'rewrite-fixture'; rpcId: SessionRequestId }
+    /** An ordinary non-human producer message with no submission identity at all. */
+    'producer-fixture': { kind: 'producer-fixture' }
+    /** A non-human producer that copies a submission request id without being its original. */
+    'producer-request': { kind: 'producer-request'; rpcId: SessionRequestId }
+  }
+}
 
 /** A Session talks through the Gateway client; its dependency cone is the Typert registry and the Connection. */
 const API_ROSTER = webApp.closure(['@deepseek-ai/dsh-api-gateway'])
@@ -60,6 +72,34 @@ function queuedItem(rpcId: SessionRequestId, refs: readonly AttachmentRef[] = []
     source: { kind: 'user', rpcId },
     content: refs.map(attachmentBlock),
   })
+}
+
+/**
+ * One durable host-side rewrite of an admitted original: same message and request
+ * identities, other producer kind — the Nodes input-handoff shape.
+ * @param seq - event position.
+ * @param original - the admitted human message being rewritten.
+ * @param rpcId - request identity the client minted.
+ * @param text - effective prompt text.
+ * @returns the durable rewrite event.
+ */
+function rewriteEvent(
+  seq: SessionSeq,
+  original: UserMessage,
+  rpcId: SessionRequestId,
+  text = '有效请求',
+): SessionEvent {
+  return {
+    seq,
+    time: 1_700_000_000_000 + seq,
+    type: 'user/message',
+    surfaceOp: 'append',
+    data: freezeMessage({
+      ...original,
+      content: [{ type: 'text', text }],
+      source: { kind: 'rewrite-fixture', rpcId },
+    }),
+  }
 }
 
 /** Let the frame-delayed retirement (setTimeout fallback in this node environment) run. */
@@ -681,6 +721,231 @@ describe('observed retirement', () => {
     expect(frames).toHaveLength(1)
     frames[0]?.(0)
     expect(session.getSnapshot().pendingSubmissions).toEqual([])
+  })
+
+  it('retires a rewritten submission at admission once the real claim and the copy share both identities', async ({ mock, start }) => {
+    const session = await sessionBench(mock, start, SID)
+    await session.open()
+    const retirements: PendingSubmissionRetirement[] = []
+    const handle = await submitAccepted(session, {
+      mode: 'queue', text: '把节点 A 移出，继续修复分页', attachments: [],
+      onRetire: retirement => retirements.push(retirement),
+    })
+    const original = createUserMessage({
+      content: [{ type: 'text', text: '把节点 A 移出，继续修复分页' }],
+      source: { kind: 'user', rpcId: handle.requestId },
+    })
+    await pushEvent(mock, {
+      type: 'agent/inbox/spliced', seq: SessionSeq(0), time: 1,
+      data: { target: 'next-turn', start: 0, inserted: [original] },
+    })
+    expect(session.getSnapshot().pendingSubmissions).toHaveLength(1)
+    await pushEvent(mock, ev.turnStart(SessionSeq(1), 1))
+    // The producer's claim: remove-and-run inside the Turn without a cancellation outcome.
+    await pushEvent(mock, {
+      type: 'agent/inbox/spliced', seq: SessionSeq(2), time: 3,
+      data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] },
+    })
+    session.projections.apply('inbox', { 'next-turn': [], 'next-step': [] }, SessionSeq(2))
+    expect(session.getSnapshot().pendingSubmissions).toHaveLength(1)
+    await pushEvent(mock, ev.stepStart(SessionSeq(3), 1, 1))
+    await pushEvent(mock, rewriteEvent(SessionSeq(4), original, handle.requestId))
+    await settleFrames()
+    expect(session.getSnapshot().pendingSubmissions).toEqual([])
+    expect(retirements).toEqual([{ reason: 'observed', attachments: [] }])
+  })
+
+  it('keeps a rewritten submission echo when no step entered after its claim', async ({ mock, start }) => {
+    const session = await sessionBench(mock, start, SID)
+    await session.open()
+    const retirements: PendingSubmissionRetirement[] = []
+    const handle = await submitAccepted(session, {
+      mode: 'queue', text: '未进入步骤', attachments: [],
+      onRetire: retirement => retirements.push(retirement),
+    })
+    const original = createUserMessage({
+      content: [{ type: 'text', text: '未进入步骤' }],
+      source: { kind: 'user', rpcId: handle.requestId },
+    })
+    await pushEvent(mock, {
+      type: 'agent/inbox/spliced', seq: SessionSeq(0), time: 1,
+      data: { target: 'next-turn', start: 0, inserted: [original] },
+    })
+    await pushEvent(mock, ev.turnStart(SessionSeq(1), 1))
+    await pushEvent(mock, {
+      type: 'agent/inbox/spliced', seq: SessionSeq(2), time: 3,
+      data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] },
+    })
+    await pushEvent(mock, rewriteEvent(SessionSeq(3), original, handle.requestId))
+    await settleFrames()
+    expect(session.getSnapshot().pendingSubmissions).toHaveLength(1)
+    expect(retirements).toEqual([])
+  })
+
+  it('consumes a claim at step close, so a later step cannot settle the echo', async ({ mock, start }) => {
+    const session = await sessionBench(mock, start, SID)
+    await session.open()
+    const retirements: PendingSubmissionRetirement[] = []
+    const handle = await submitAccepted(session, {
+      mode: 'queue', text: '步骤已关闭', attachments: [],
+      onRetire: retirement => retirements.push(retirement),
+    })
+    const original = createUserMessage({
+      content: [{ type: 'text', text: '步骤已关闭' }],
+      source: { kind: 'user', rpcId: handle.requestId },
+    })
+    await pushEvent(mock, {
+      type: 'agent/inbox/spliced', seq: SessionSeq(0), time: 1,
+      data: { target: 'next-turn', start: 0, inserted: [original] },
+    })
+    await pushEvent(mock, ev.turnStart(SessionSeq(1), 1))
+    await pushEvent(mock, {
+      type: 'agent/inbox/spliced', seq: SessionSeq(2), time: 3,
+      data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] },
+    })
+    await pushEvent(mock, ev.stepStart(SessionSeq(3), 1, 1))
+    await pushEvent(mock, {
+      seq: SessionSeq(4), time: 5, type: 'step/end', data: { turn: 1, step: 1 },
+    })
+    await pushEvent(mock, rewriteEvent(SessionSeq(5), original, handle.requestId))
+    await settleFrames()
+    expect(session.getSnapshot().pendingSubmissions).toHaveLength(1)
+    expect(retirements).toEqual([])
+  })
+
+  it('keeps a rewritten submission echo when no real claim of its original was observed', async ({ mock, start }) => {
+    const session = await sessionBench(mock, start, SID)
+    await session.open()
+    const retirements: PendingSubmissionRetirement[] = []
+    const handle = await submitAccepted(session, {
+      mode: 'queue', text: '未领取就被改写', attachments: [],
+      onRetire: retirement => retirements.push(retirement),
+    })
+    const original = createUserMessage({
+      content: [{ type: 'text', text: '未领取就被改写' }],
+      source: { kind: 'user', rpcId: handle.requestId },
+    })
+    await pushEvent(mock, {
+      type: 'agent/inbox/spliced', seq: SessionSeq(0), time: 1,
+      data: { target: 'next-turn', start: 0, inserted: [original] },
+    })
+    await pushEvent(mock, rewriteEvent(SessionSeq(1), original, handle.requestId))
+    await settleFrames()
+    // No claim: the copy is not this submission's admitted counterpart.
+    expect(session.getSnapshot().pendingSubmissions).toHaveLength(1)
+    expect(retirements).toEqual([])
+  })
+
+  it('never retires on a producer-only message or on a borrowed request id without the original', async ({ mock, start }) => {
+    const session = await sessionBench(mock, start, SID)
+    await session.open()
+    const retirements: PendingSubmissionRetirement[] = []
+    const handle = await submitAccepted(session, {
+      mode: 'queue', text: '真人输入', attachments: [],
+      onRetire: retirement => retirements.push(retirement),
+    })
+    // Producer-only background: no submission identity at all.
+    await pushEvent(mock, {
+      type: 'user/message', seq: SessionSeq(0), time: 1, surfaceOp: 'append',
+      data: freezeMessage({
+        id: 'producer-message' as UserMessage['id'],
+        role: 'user',
+        content: [{ type: 'text', text: 'runtime context' }],
+        source: { kind: 'producer-fixture' },
+      }),
+    })
+    // Borrowed request id with no original occurrence ever observed by this Session.
+    await pushEvent(mock, {
+      type: 'user/message', seq: SessionSeq(1), time: 2, surfaceOp: 'append',
+      data: freezeMessage({
+        id: 'borrowed-rewrite' as UserMessage['id'],
+        role: 'user',
+        content: [{ type: 'text', text: '借用 rpcId' }],
+        source: { kind: 'rewrite-fixture', rpcId: handle.requestId },
+      }),
+    })
+    await settleFrames()
+    expect(session.getSnapshot().pendingSubmissions).toHaveLength(1)
+    expect(retirements).toEqual([])
+  })
+
+  it('does not build the original relation from a non-human producer Inbox occurrence', async ({ mock, start }) => {
+    const session = await sessionBench(mock, start, SID)
+    await session.open()
+    const retirements: PendingSubmissionRetirement[] = []
+    const handle = await submitAccepted(session, {
+      mode: 'queue', text: '真实原始输入', attachments: [],
+      onRetire: retirement => retirements.push(retirement),
+    })
+    // A producer copies the request id into an Inbox occurrence; the real human original
+    // was never inserted, so there is no original relationship to consume.
+    const forged = createUserMessage({
+      content: [{ type: 'text', text: '伪造的原始' }],
+      source: { kind: 'producer-request', rpcId: handle.requestId },
+    })
+    await pushEvent(mock, {
+      type: 'agent/inbox/spliced', seq: SessionSeq(0), time: 1,
+      data: { target: 'next-turn', start: 0, inserted: [forged] },
+    })
+    await pushEvent(mock, ev.turnStart(SessionSeq(1), 1))
+    await pushEvent(mock, {
+      type: 'agent/inbox/spliced', seq: SessionSeq(2), time: 3,
+      data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] },
+    })
+    await pushEvent(mock, {
+      type: 'user/message', seq: SessionSeq(3), time: 4, surfaceOp: 'append',
+      data: freezeMessage({
+        ...forged,
+        content: [{ type: 'text', text: '伪造的有效版' }],
+      }),
+    })
+    await settleFrames()
+    expect(session.getSnapshot().pendingSubmissions).toHaveLength(1)
+    expect(retirements).toEqual([])
+  })
+
+  it('clears a stale claim when the original occurrence is re-inserted, and a new claim settles it', async ({ mock, start }) => {
+    const session = await sessionBench(mock, start, SID)
+    await session.open()
+    const retirements: PendingSubmissionRetirement[] = []
+    const handle = await submitAccepted(session, {
+      mode: 'queue', text: '被重领的输入', attachments: [],
+      onRetire: retirement => retirements.push(retirement),
+    })
+    const original = createUserMessage({
+      content: [{ type: 'text', text: '被重领的输入' }],
+      source: { kind: 'user', rpcId: handle.requestId },
+    })
+    await pushEvent(mock, {
+      type: 'agent/inbox/spliced', seq: SessionSeq(0), time: 1,
+      data: { target: 'next-turn', start: 0, inserted: [original] },
+    })
+    await pushEvent(mock, ev.turnStart(SessionSeq(1), 1))
+    await pushEvent(mock, {
+      type: 'agent/inbox/spliced', seq: SessionSeq(2), time: 3,
+      data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] },
+    })
+    // preserveClaimed re-inserts the same original; the old claim no longer authorizes it.
+    await pushEvent(mock, {
+      type: 'agent/inbox/spliced', seq: SessionSeq(3), time: 4,
+      data: { target: 'next-turn', start: 0, inserted: [original] },
+    })
+    await pushEvent(mock, rewriteEvent(SessionSeq(4), original, handle.requestId))
+    await settleFrames()
+    expect(session.getSnapshot().pendingSubmissions).toHaveLength(1)
+    expect(retirements).toEqual([])
+
+    // A second real claim of the re-inserted occurrence settles the echo.
+    await pushEvent(mock, {
+      type: 'agent/inbox/spliced', seq: SessionSeq(5), time: 6,
+      data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] },
+    })
+    session.projections.apply('inbox', { 'next-turn': [], 'next-step': [] }, SessionSeq(5))
+    await pushEvent(mock, ev.stepStart(SessionSeq(6), 1, 1))
+    await pushEvent(mock, rewriteEvent(SessionSeq(7), original, handle.requestId))
+    await settleFrames()
+    expect(session.getSnapshot().pendingSubmissions).toEqual([])
+    expect(retirements).toEqual([{ reason: 'observed', attachments: [] }])
   })
 })
 

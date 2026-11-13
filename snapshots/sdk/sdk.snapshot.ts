@@ -29,6 +29,7 @@ import {
   normalizedToolSchemas,
   parseSnapshotManifest,
   parseToolSchemasSnapshot,
+  recoverRewrittenCallerInputs,
   redactSessionSnapshotIds,
   refreshFixtureReplacements,
   reconcileCatalogCreationTimes,
@@ -124,6 +125,13 @@ interface SdkAssertions {
   planReviews?: readonly ('keep' | 'approve' | 'dismiss')[]
   /** Wait for the recorded provider title before sending each subsequent prompt. */
   waitForProviderTitle?: boolean
+  /**
+   * The recorded provider title is an origin-derived `session/title-from-input`
+   * rather than `session/title`. Replay waits for the recorded tag; only a
+   * bootstrap refresh, which still holds the predecessor's `session/title`,
+   * accepts the successor tag for that transition.
+   */
+  titleFromInput?: boolean
   /** Final response required from a completed turn before updating goldens. */
   expectedFinalResponse?: string
   /** Environment overrides passed to the runtime subprocess. */
@@ -210,6 +218,12 @@ const SDK_ASSERTIONS: Readonly<Record<string, SdkAssertions>> = {
     expectedTools: { bash: ['command'], read_image: ['file_path'], working_directory: [] },
   },
   'session-title-stability': { waitForProviderTitle: true },
+  'session-title-from-input': {
+    waitForProviderTitle: true,
+    titleFromInput: true,
+    modelRequestsFile: 'title-input-requests.jsonl',
+    patches: [fileURLToPath(new URL('./session-title-from-input/runtime.cordis.yml', import.meta.url))],
+  },
   'dynamic-tool-updates': {
     expectedFinalResponse: 'DONE',
   },
@@ -454,9 +468,12 @@ async function fixtureFiles(scenario: CorpusScenario): Promise<string[]> {
 async function hydrateReplayFixtures(scenario: CorpusScenario, cwd: string): Promise<string[]> {
   const root = join(cwd, '.replay-fixtures')
   await mkdir(root, { recursive: true })
+  // The fixture is JSONL, so the generated cwd enters each tokenized string in
+  // its JSON-escaped spelling; a Windows separator must not break the row.
+  const encodedCwd = JSON.stringify(cwd).slice(1, -1)
   return Promise.all((await fixtureFiles(scenario)).map(async (source) => {
     const destination = join(root, basename(source))
-    await writeFile(destination, (await readFile(source, 'utf8')).replaceAll('{{cwd}}', cwd))
+    await writeFile(destination, (await readFile(source, 'utf8')).replaceAll('{{cwd}}', encodedCwd))
     return destination
   }))
 }
@@ -514,7 +531,7 @@ interface JsonObject {
 interface TurnAction {
   readonly kind: 'turn'
   readonly turn: number
-  readonly content?: JsonObject[]
+  readonly content?: readonly JsonObject[]
 }
 
 interface CommandAction {
@@ -557,6 +574,8 @@ function modelFromSession(log: string): { provider: string; model: string } {
 /** Replay caller inputs; profile fixtures recreate their own in-turn command activity. */
 function sdkActions(log: string, replayStandaloneCommands: boolean): SdkAction[] {
   const actions: SdkAction[] = []
+  const rewrittenCallerInputs = new Map(recoverRewrittenCallerInputs(log)
+    .map(entry => [entry.turn, entry.content]))
   const commandInputs = new Set<string>()
   let commandId: string | undefined
   let current: TurnAction | undefined
@@ -597,7 +616,11 @@ function sdkActions(log: string, replayStandaloneCommands: boolean): SdkAction[]
       continue
     }
     if (record.type === 'turn/end' && current !== undefined) {
-      actions.push(current)
+      // A pre-step rewrite keeps the caller text only in the claimed occurrence,
+      // so a turn whose admitted message is that rewrite takes its caller input
+      // from the durable admission chain instead of the rewritten content.
+      const rewritten = current.content === undefined ? rewrittenCallerInputs.get(current.turn) : undefined
+      actions.push(rewritten === undefined ? current : { kind: 'turn', turn: current.turn, content: rewritten })
       current = undefined
     }
   }
@@ -630,6 +653,63 @@ function firstStepWakeContent(log: string): JsonObject[] {
   const content = (admitted?.data as JsonObject | undefined)?.content
   if (!Array.isArray(content)) throw new Error('first-step wake fixture admitted no wake message after its opening turn')
   return content as JsonObject[]
+}
+
+/**
+ * Require replay content for every Turn an origin-derived title attributes to
+ * the caller. The origin ref names the human occurrence, and the pre-step
+ * rewrite that replaced it leaves the real caller text only in the claimed
+ * insertion; replay recovers that text instead of sending the effective one.
+ * When the claim, its entered step, or the admission window is missing, nothing
+ * is recovered, so sending no prompt would wait forever for a turn/end that
+ * nothing started. Autonomous Turns in other scenarios stay legal.
+ *
+ * @param log - primary Session fixture that records the origin title refs.
+ * @param actions - replay actions derived from that fixture.
+ * @param scenarioName - scenario name for the failure report.
+ * @throws when an origin ref names no admitted message, or its Turn has no caller content.
+ */
+function requireTitleOriginCallerContent(
+  log: string,
+  actions: readonly SdkAction[],
+  scenarioName: string,
+): void {
+  const rows = records(log)
+  const originMessageIds = new Set<string>()
+  for (const row of rows) {
+    if (row.type !== 'session/title-from-input') continue
+    const refs = (row.data as JsonObject | undefined)?.inputRefs
+    if (!Array.isArray(refs)) continue
+    for (const candidate of refs) {
+      const ref = candidate as JsonObject
+      if (ref.kind !== 'origin') continue
+      if (typeof ref.messageId !== 'string') {
+        throw new Error(`${scenarioName}: an origin title ref has no caller message id`)
+      }
+      originMessageIds.add(ref.messageId)
+    }
+  }
+  const turnOfMessage = new Map<string, number>()
+  let turn = 0
+  for (const row of rows) {
+    const data = row.data as JsonObject | undefined
+    if (row.type === 'turn/start' && typeof data?.turn === 'number') turn = data.turn
+    if (row.type !== 'user/message' || typeof data?.id !== 'string') continue
+    turnOfMessage.set(data.id, turn)
+  }
+  for (const messageId of originMessageIds) {
+    const callerTurn = turnOfMessage.get(messageId)
+    if (callerTurn === undefined) {
+      throw new Error(`${scenarioName}: origin title ref "${messageId}" names no admitted caller message`)
+    }
+    const action = actions.find(candidate => candidate.kind === 'turn' && candidate.turn === callerTurn)
+    if (action?.kind !== 'turn' || action.content === undefined || action.content.length === 0) {
+      throw new Error(
+        `${scenarioName}: Turn ${callerTurn} must replay the caller content the origin title attributes to `
+        + `message "${messageId}", but the claim, entered step, and admission window recovered none`,
+      )
+    }
+  }
 }
 
 function postActionEventTypes(log: string): string[] {
@@ -676,6 +756,18 @@ function notificationEvent(notification: HarnessNotification): JsonObject | unde
     && typeof notification.params.event === 'object'
     ? notification.params.event as JsonObject
     : undefined
+}
+
+/**
+ * The provider title payload, whichever title discriminator recorded it.
+ * @param event - one projected Session row or notified event.
+ * @returns the title payload when a provider supplied it, otherwise undefined.
+ */
+function providerTitle(event: JsonObject): JsonObject | undefined {
+  if (event.type !== 'session/title' && event.type !== 'session/title-from-input') return undefined
+  const data = event.data as JsonObject | undefined
+  const source = data?.source as JsonObject | undefined
+  return source?.kind === 'provider' ? data : undefined
 }
 
 async function waitForRootEvent(
@@ -834,6 +926,9 @@ async function runScenario(scenario: CorpusScenario): Promise<{
   })
   const [parentFixture, ...childFixtures] = replayFixtures
   const actions = sdkActions(primaryFixture, assertions.replayStandaloneCommands === true)
+  if (assertions.titleFromInput === true) {
+    requireTitleOriginCallerContent(primaryFixture, actions, scenario.name)
+  }
   const resumeReplayFile = scenario.name === 'session-resume' && !recording
     ? join(patchRoot, 'resume-replay.json') : undefined
   const prepareTurnReplay = async (turn: number): Promise<void> => {
@@ -917,8 +1012,12 @@ async function runScenario(scenario: CorpusScenario): Promise<{
     const titleSubscription = assertions.waitForProviderTitle === true
       ? harness.client.subscribeSessionTree(sessionId)
       : undefined
-    const expectedTitles = records(primaryFixture).filter(event => event.type === 'session/title'
-      && ((event.data as JsonObject).source as JsonObject).kind === 'provider')
+    const expectedTitles = records(primaryFixture).filter(event => providerTitle(event) !== undefined)
+    // Only a refresh whose predecessor fixture still records the old
+    // `session/title` seed may accept or skip the origin-derived successor once;
+    // a refreshed fixture and every replay must wait for the exact tag.
+    const oldSeedTitleBootstrap = (recordedTitle: JsonObject | undefined): boolean =>
+      refreshing && assertions.titleFromInput === true && recordedTitle?.type === 'session/title'
     const completionSubscription = scenario.name === 'subagent-continuable'
       ? harness.client.subscribeSessionTree(sessionId)
       : undefined
@@ -1025,11 +1124,19 @@ async function runScenario(scenario: CorpusScenario): Promise<{
           }
           results.push(result)
           if (titleSubscription !== undefined) {
-            const expected = expectedTitles[results.length - 1]?.data as JsonObject | undefined
+            const recordedTitle = expectedTitles[results.length - 1]
+            const expected = recordedTitle?.data as JsonObject | undefined
             expect(expected, 'each turn has a recorded provider title').toBeDefined()
-            await waitForRootEvent(titleSubscription, sessionId, event => event.type === 'session/title'
-              && ((event.data as JsonObject).source as JsonObject).kind === 'provider'
-              && (event.data as JsonObject).title === expected?.title, observe)
+            // A bootstrap refresh replays the predecessor's `session/title`
+            // recording while the runtime writes the origin-derived successor;
+            // that one transition accepts either discriminator. Every other
+            // run waits for the exact recorded event type.
+            const titleAlias = oldSeedTitleBootstrap(recordedTitle)
+            await waitForRootEvent(titleSubscription, sessionId, (event) => {
+              const title = providerTitle(event)
+              if (title?.title !== expected?.title) return false
+              return titleAlias || event.type === recordedTitle?.type
+            }, observe)
           }
           if (completionSubscription !== undefined) {
             expect(result.finalResponse, 'run returns at the first parent idle').toBe('DONE')
@@ -1074,6 +1181,10 @@ async function runScenario(scenario: CorpusScenario): Promise<{
           )
         }
         for (const type of postActionEventTypes(primaryFixture)) {
+          // Only the old seed bootstrap still posts `session/title`; this run
+          // emits the successor tag, and the refreshed fixture's replay waits on
+          // its exact tag again. A missing subject would otherwise wait forever.
+          if (type === 'session/title' && oldSeedTitleBootstrap(expectedTitles.at(-1))) continue
           await waitForRootEvent(subscription, sessionId, event => event.type === type, observe)
         }
       }
@@ -1236,6 +1347,23 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
     expect(normalizeSessionSnapshots([serialize(interrupted)], context))
       .toEqual(normalizeSessionSnapshots([serialize(expected)], context))
     expect(await readFile(path, 'utf8')).toBe(fixture)
+  })
+
+  it('rejects an origin-title caller Turn whose rewrite lost its claim before replay', async () => {
+    const scenario = sdkScenarios.find(candidate => candidate.name === 'session-title-from-input')
+    if (scenario === undefined) throw new Error('session-title-from-input is not in the SDK corpus')
+    const [fixturePath] = await fixtureFiles(scenario)
+    if (fixturePath === undefined) throw new Error('session-title-from-input has no Session fixture')
+    const rows = records(await readFile(fixturePath, 'utf8'))
+    const claim = rows.findIndex(row => row.type === 'agent/inbox/spliced'
+      && (row.data as JsonObject).removedCount === 1)
+    expect(claim, 'the fixture records the claim that holds the caller text').toBeGreaterThanOrEqual(0)
+    const withoutClaim = [...rows.slice(0, claim), ...rows.slice(claim + 1)]
+      .map(row => JSON.stringify(row)).join('\n') + '\n'
+    const actions = sdkActions(withoutClaim, false)
+    expect(actions, 'missing claim evidence recovers no caller content').toEqual([{ kind: 'turn', turn: 1 }])
+    expect(() => requireTitleOriginCallerContent(withoutClaim, actions, scenario.name))
+      .toThrow(/recovered none/u)
   })
 
   for (const scenario of sdkScenarios) {
@@ -1596,6 +1724,64 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
           { data: { turn: 1, reason: { kind: 'completed' } } },
           { data: { turn: 2, reason: { kind: 'completed' } } },
         ])
+      }
+      if (scenario.name === 'session-title-from-input') {
+        const parent = ordered[0]
+        if (parent === undefined) throw new Error('session-title-from-input has no primary Session log')
+        const events = records(parent.content)
+        const insertedMessages = events.flatMap(event => event.type !== 'agent/inbox/spliced' ? []
+          : ((event.data as JsonObject).inserted as JsonObject[] | undefined) ?? [])
+        const occurrence = insertedMessages.find(message => (message.source as JsonObject | undefined)?.kind === 'user')
+        if (occurrence === undefined) throw new Error('session-title-from-input recorded no human occurrence')
+        const occurrenceText = (occurrence.content as JsonObject[])
+          .flatMap(block => block.type === 'text' && typeof block.text === 'string' ? [block.text] : []).join('')
+        expect(occurrenceText.length, 'the recorded caller prompt has text').toBeGreaterThan(0)
+        const insertion = events.find(event => event.type === 'agent/inbox/spliced'
+          && ((event.data as JsonObject).inserted as JsonObject[] | undefined)
+            ?.some(message => message.id === occurrence.id) === true)
+        if (insertion === undefined) throw new Error('session-title-from-input recorded no inbox insertion')
+        const claim = events.find(event => event.type === 'agent/inbox/spliced'
+          && (event.data as JsonObject).outcome === undefined
+          && (event.data as JsonObject).removedCount === 1
+          && ((event.data as JsonObject).inserted as JsonObject[]).length === 0)
+        expect(claim, 'the claim removes the human occurrence').toBeDefined()
+        const admitted = events.find(event => event.type === 'user/message'
+          && (event.data as JsonObject).id === occurrence.id)
+        expect(admitted, 'the rewrite is admitted under the claimed identity').toBeDefined()
+        const admittedData = admitted?.data as JsonObject
+        expect(admittedData.source).toMatchObject({ kind: 'snapshot-prompt-rewrite' })
+        const admittedText = (admittedData.content as JsonObject[])
+          .flatMap(block => block.type === 'text' && typeof block.text === 'string' ? [block.text] : []).join('')
+        expect(admittedText, 'the caller text is replaced').not.toBe(occurrenceText)
+        const title = events.findLast(event => event.type === 'session/title-from-input'
+          && ((event.data as JsonObject).source as JsonObject).kind === 'provider')
+        expect(title, 'the provider writes an origin-derived title').toBeDefined()
+        expect(title?.data).toMatchObject({
+          title: 'Late durable session title',
+          inputRefs: [{
+            kind: 'origin',
+            messageId: occurrence.id,
+            originalInboxSeq: insertion.seq,
+            claimSeq: claim?.seq,
+            admittedSeq: admitted?.seq,
+          }],
+          source: { kind: 'provider', provider: 'session-title-first-prompt-llm' },
+        })
+        expect(events.some(event => event.type === 'session/title'), 'no legacy title record remains').toBe(false)
+        const audits = events.filter(event => event.type === 'session/title-llm-request-from-input')
+        expect(audits, 'a title model request is audited before dispatch').toHaveLength(1)
+        const audit = audits[0]?.data as JsonObject
+        expect(audit).toMatchObject({ inputRefs: (title?.data as JsonObject).inputRefs })
+        expect(JSON.stringify(audit.messages)).toContain(occurrenceText)
+        expect(JSON.stringify(audit.messages)).not.toContain(admittedText)
+        const mainRequests = modelRequests.filter(request => request.purpose !== 'session-title')
+        const titleRequests = modelRequests.filter(request => request.purpose === 'session-title')
+        expect(mainRequests, 'one main model request used the effective input').toHaveLength(1)
+        expect(titleRequests, 'one title model request used the original input').toHaveLength(1)
+        expect(JSON.stringify(mainRequests[0]?.messages)).toContain(admittedText)
+        expect(JSON.stringify(mainRequests[0]?.messages)).not.toContain(occurrenceText)
+        expect(JSON.stringify(titleRequests[0]?.messages)).toContain(occurrenceText)
+        expect(JSON.stringify(titleRequests[0]?.messages)).not.toContain(admittedText)
       }
       expect(logs.some(log => log.content.includes('llm-replay: script exhausted')), `${scenario.name}: replay script covers every model request`).toBe(false)
       if (scenario.name === 'subagent-dsh-sdk-diagnostic' || scenario.name === 'subagent-dsh-sdk-dynamic-route') {

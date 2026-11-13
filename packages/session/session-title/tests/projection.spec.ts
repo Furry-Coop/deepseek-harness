@@ -35,7 +35,7 @@ describe('title projection unit', () => {
     const { ctx, session } = await harness(true)
     const snapshot = ctx.sessionProjections.snapshot(session)
     expect(snapshot.values.title).toBeNull()
-    expect(ctx.sessionProjections.checkpoint(session).title).toEqual({ ver: 1, seq: -1, val: null })
+    expect(ctx.sessionProjections.checkpoint(session).title).toEqual({ ver: 2, seq: -1, val: null })
   })
 
   it('serves the latest title last-wins and notifies the change feed with the causing seq', async () => {
@@ -56,12 +56,12 @@ describe('title projection unit', () => {
     expect(snapshot.asOfSeq).toBe(session.seq - 1)
   })
 
-  it('reads the version-1 string checkpoint format used by existing title caches', async () => {
+  it('rebuilds a version-1 title checkpoint under the new title semantics', async () => {
     const { ctx } = await harness(true)
 
     expect(ctx.sessionProjections.viewCheckpoint({
       title: { ver: 1, seq: SessionSeq(8), val: 'Cached title' },
-    })).toEqual({ title: 'Cached title' })
+    })).toEqual({})
   })
 
   it('folds titles already in the log when the service mounts late (lazy cell build)', async () => {
@@ -102,11 +102,13 @@ describe('title projection unit', () => {
     const checkpoint = ctx.sessionProjections.checkpoint(session)
     const row = checkpoint.titleInput
     expect(row).toBeDefined()
+    const empty = { first: null, count: 0, lastSeq: null, pending: [], claimed: [], openTurn: 0 }
+    const first = { seq: 1, text: 'first', ref: { kind: 'message', messageSeq: 1 } }
     const invalidStates = [
-      { first: null, count: 1, lastSeq: null },
-      { first: { seq: 1, text: 'first' }, count: 1, lastSeq: null },
-      { first: { seq: 1, text: 'first' }, count: 0, lastSeq: 1 },
-      { first: { seq: 2, text: 'first' }, count: 1, lastSeq: 1 },
+      { ...empty, count: 1 },
+      { ...empty, first, count: 1 },
+      { ...empty, first, count: 0, lastSeq: 1 },
+      { ...empty, first: { ...first, seq: 2 }, count: 1, lastSeq: 1 },
     ]
     for (const state of invalidStates) {
       const malformed = {
@@ -123,7 +125,7 @@ describe('title projection unit', () => {
       ...checkpoint,
       titleInput: {
         ...row!,
-        val: { first: { seq: 1, text: 'first' }, count: 1, lastSeq: 1 },
+        val: { ...empty, first, count: 1, lastSeq: 1 },
       },
     }, [], SessionLogOffset(0), session.header, session.inheritedEventCount)).not.toThrow()
   })

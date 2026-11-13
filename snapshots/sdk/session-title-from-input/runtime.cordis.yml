@@ -1,0 +1,12 @@
+# Scenario patch over the authored `session-title` composition: a Host rewrite
+# in the first pre-step turns the claimed human occurrence into an origin-backed
+# title input, and the captured model requests prove that the main turn saw only
+# the effective text while the title request saw only the original.
+- insert:
+    - id: snapshot-title-input-rewrite
+      name: ./rewrite-input.mjs
+
+    - id: snapshot-title-input-capture
+      name: ./capture-requests.mjs
+      config:
+        path: !!js dshHomePath('title-input-requests.jsonl')

@@ -1,0 +1,28 @@
+# Bilingual-pair consistency record for 2026-11-13-title-from-input.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/persistence-changes/2026-11-13-title-from-input.md
+/:
+  en: 3d5a424ae7d7e46b
+  zh: c22a8e4a62d8cc1a
+/2026-11-13-title-from-input:
+  en: c000dff86052c409
+  zh: d4b5812348cfd074
+/2026-11-13-title-from-input/summary:
+  en: f9abf9f1d0b4e158
+  zh: dca6eb67fef8b43d
+/2026-11-13-title-from-input/table-of-contents:
+  en: 6cf314a069ceb451
+  zh: 9adff678e9ecab3b
+/2026-11-13-title-from-input/declaration:
+  en: 6907136f28e48c90
+  zh: 02f8298485f3d8e7
+/2026-11-13-title-from-input/compatibility:
+  en: 102e4782b2b697eb
+  zh: 27c016c1a2f4095f
+/2026-11-13-title-from-input/verification:
+  en: 1f5b2b78023b5474
+  zh: 2b76f2b7d9e6233d
+/2026-11-13-title-from-input/dev-note:
+  en: b75c8458928b72b9
+  zh: 003ba4e17b4b5269

@@ -113,7 +113,7 @@ This section explains the design of the kit; the observable behavior is fully co
 
 ### Design
 
-The shared core owns manifests, generation-qualified role selection, workspace setup/comparison, typed identity mapping, normalizers, and fixture invariants. The ACP adapter adds four composable layers: launcher, scenario harness, normalizers, and suite factory. `launchAcpTestAgent` boots a source profile under tsx or a built `lib` profile under plain Node, connects the SDK client over a raw-byte stdout tee, collects Session updates and stderr, fails closed on unhandled permission requests, and owns shutdown. `runScenario` drives ACP JSON-RPC stdio and harvests the numerically highest persisted raw JSONL generation for every Session directory. The pure normalizers replace cwd paths and typed identities with stable tokens, zero times, expand physical source-event ranges, and scrub system-prompt text and tool-schema bulk. `defineAcpSnapshotSuite` registers comparisons, generation-qualified fixture write-back, and the live uniformity guard.
+The shared core owns manifests, generation-qualified role selection, workspace setup/comparison, typed identity mapping, normalizers, fixture invariants, and caller-input recovery for replay drivers. The ACP adapter adds four composable layers: launcher, scenario harness, normalizers, and suite factory. `launchAcpTestAgent` boots a source profile under tsx or a built `lib` profile under plain Node, connects the SDK client over a raw-byte stdout tee, collects Session updates and stderr, fails closed on unhandled permission requests, and owns shutdown. `runScenario` drives ACP JSON-RPC stdio and harvests the numerically highest persisted raw JSONL generation for every Session directory. The pure normalizers replace cwd paths and typed identities with stable tokens, zero times, expand physical source-event ranges, and scrub system-prompt text and tool-schema bulk. `recoverRewrittenCallerInputs` folds the shared Inbox admission policy over a projected Session and returns the caller content a Host pre-step rewrite replaced, so a replay driver sends what the human sent instead of the effective text. `defineAcpSnapshotSuite` registers comparisons, generation-qualified fixture write-back, and the live uniformity guard.
 
 ### Source map
 
@@ -125,6 +125,7 @@ The shared core owns manifests, generation-qualified role selection, workspace s
 | [`src/session-files.ts`](src/session-files.ts) | Canonical parent/child generation grammar, header agreement, and highest-role selection |
 | [`src/identity.ts`](src/identity.ts) | Typed first-seen identity tokenization across parent and child logs |
 | [`src/normalize.ts`](src/normalize.ts) | Pure normalizers and scrubbing helpers |
+| [`src/rewritten-input.ts`](src/rewritten-input.ts) | Caller-input recovery for a Turn admitted as a Host rewrite of its claimed Inbox occurrence |
 | [`src/workspace.ts`](src/workspace.ts) | Scenario workspace setup and complete expected-state comparison |
 | [`src/suite.ts`](src/suite.ts) | Scenario-table suite factory, fixture guards, record/refresh write-back |
 | [`src/index.ts`](src/index.ts) | Package entry re-exporting the four layers |

@@ -21,6 +21,7 @@ import {
   type ApiSessionAgentResult,
 } from './agent.ts'
 import { SessionCommandController, hasPromptContent } from './commands.ts'
+import { PromptAdmissionReader } from './prompt-admission.ts'
 import { SessionCreationPolicyRegistry } from './creation-policy.ts'
 import { SessionControlController } from './control.ts'
 import { HistoryController } from './history/controller.ts'
@@ -172,6 +173,7 @@ export class SessionController extends TypertRemoteService {
 
   private agents!: ApiSessionAgentController
   private commands!: SessionCommandController
+  private promptAdmission!: PromptAdmissionReader
   private controlState!: SessionControlController
   private listState!: ApiSessionList
   private readonly openPath: (path: string, signal: AbortSignal) => Promise<void>
@@ -214,7 +216,10 @@ export class SessionController extends TypertRemoteService {
     ctx.typert.resources.register('session', { resolve: resolveSessionResource })
     this.agents = new ApiSessionAgentController(ctx)
     this.agents.initialize()
-    this.commands = new SessionCommandController(ctx, this.agents, process.cwd(), this.policyRegistry)
+    this.promptAdmission = new PromptAdmissionReader()
+    this.commands = new SessionCommandController(
+      ctx, this.agents, process.cwd(), this.policyRegistry, this.promptAdmission,
+    )
     ctx.effect(() => ctx.fileUploads.registerAgentResolver(async (sessionId) => {
       const result = await this.agents.resolveAgent(sessionId)
       if ('error' in result) throw result.error
@@ -233,6 +238,10 @@ export class SessionController extends TypertRemoteService {
     this.webController = new WebController(ctx, this.historyController, (observation) => { this.promote(observation) })
     this.listState = new ApiSessionList(ctx, this.listWorkSliceMs)
     await this.listState.initialize()
+    // The first yield above is where assistant-stream observation must already be
+    // live; register the prompt-admission reader after it and before this service
+    // publishes, so the commands reader is ready for its first Remote call.
+    await this.promptAdmission.initialize(ctx)
     ctx.plugin(SessionFileReferences)
     ctx.plugin(SessionMediaReferences)
     ctx.plugin(SessionSkillCatalog)

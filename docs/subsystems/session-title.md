@@ -2,13 +2,13 @@
 
 English | [中文](session-title.zh.md)
 
-Durable latest-wins title state and the optional asynchronous provider vocabulary owned by [`@deepseek-ai/dsh-session-title`](../../packages/session/session-title). The shared execution module owns the exact auxiliary request record. Package READMEs own timing, fallback, failure, and fork behavior; the generated [persistence catalog](../persistence-catalog.md) owns the complete event declarations.
+Durable latest-wins title state and the optional asynchronous provider vocabulary owned by [`@deepseek-ai/dsh-session-title`](../../packages/session/session-title). The shared execution module owns the exact auxiliary request record. A title may derive from a directly admitted human message or from a human Inbox occurrence that the Host claimed and then admitted under a rewritten source; the latter freezes exact input references instead of presenting the effective seq as a human `user/message`. Package READMEs own timing, fallback, failure, and fork behavior; the generated [persistence catalog](../persistence-catalog.md) owns the complete event declarations.
 
 Sources: [`packages/session/session-title/src/index.ts`](../../packages/session/session-title/src/index.ts), [`packages/session/session-title-llm/src/index.ts`](../../packages/session/session-title-llm/src/index.ts)
 
 ## Durable title state
 
-`SessionTitleProviderId` is recorded for provider-produced revisions. `SessionTitleEventData` lists the exact human-message seqs used for the title, while `SessionTitleSnapshot` adds the durable event envelope facts returned by `ctx.sessionTitle.get()` and `foldSessionTitle()`. The `title` projection keeps its version-1 state and client view as only the title string or `null`, so existing persisted cache rows remain readable.
+`SessionTitleProviderId` is recorded for provider-produced revisions. `SessionTitleEventData` lists the exact human-message seqs used for the title, while `SessionTitleSnapshot` adds the durable event envelope facts returned by `ctx.sessionTitle.get()` and `foldSessionTitle()`. A title derived from a claimed Inbox occurrence is recorded by `session/title-from-input`, whose `SessionTitleInputRef` entries identify each ordinary human message or each original occurrence, its claim, and the admitted message. The `title` projection keeps its client view as only the title string or `null`; its version-2 fold accepts both title event types.
 
 ```ts type-equiv
 /** Identifies one session-title provider registration. */
@@ -41,11 +41,25 @@ type SessionTitleSource =
 ```
 
 ```ts type-equiv
+/**
+ * Non-user source for an origin-derived title.
+ *
+ * A manual rename must use `session/title` with the user source; the
+ * from-input record can therefore never fabricate a user pin.
+ */
+type SessionTitleGeneratedSource = Exclude<SessionTitleSource, { kind: 'user' }>
+```
+
+```ts type-equiv
 /** Payload of the log-only `session/title` event. */
 interface SessionTitleEventData {
   /** Normalized non-empty title text. */
   readonly title: string
-  /** Exact human `user/message` seqs used to derive this title; empty for an explicit user rename. */
+  /**
+   * Exact human `user/message` seqs used to derive this title; empty only for
+   * an explicit user rename. An origin-derived title never writes this field:
+   * it uses `session/title-from-input` and `inputRefs` instead.
+   */
   readonly messageSeqs: SessionSeq[]
   /** Whether the built-in fallback, a registered provider, or the user supplied the title. */
   readonly source: SessionTitleSource
@@ -53,18 +67,68 @@ interface SessionTitleEventData {
 ```
 
 ```ts type-equiv
+/**
+ * One exact input reference frozen by the title service.
+ *
+ * A directly admitted human message cites only its `user/message` seq. A
+ * rewrite of a claimed human Inbox occurrence cites the occurrence, the claim,
+ * and the admitted message, because no human `user/message` exists for it.
+ */
+type SessionTitleInputRef =
+  | {
+    /** An ordinary human `user/message` and its exact event seq. */
+    readonly kind: 'message'
+    readonly messageSeq: SessionSeq
+  }
+  | {
+    /** A rewrite of a claimed human Inbox occurrence. */
+    readonly kind: 'origin'
+    /** Seq of the `agent/inbox/spliced` event that inserted the occurrence. */
+    readonly originalInboxSeq: SessionSeq
+    /** Message identity repeated by the admitted rewrite. */
+    readonly messageId: MessageId
+    /** Claim splice seq that removed the occurrence. */
+    readonly claimSeq: SessionSeq
+    /** Seq of the admitted `user/message` event. */
+    readonly admittedSeq: SessionSeq
+  }
+```
+
+```ts type-equiv
+/**
+ * Payload of the log-only `session/title-from-input` event.
+ *
+ * Used when at least one selected input is a rewrite of a claimed human Inbox
+ * occurrence, so no human `user/message` seq can carry its attribution.
+ */
+interface SessionTitleFromInputEventData {
+  /** Normalized non-empty title text. */
+  readonly title: string
+  /** Exact admitted input references, in admission order. */
+  readonly inputRefs: SessionTitleInputRef[]
+  /** Whether the built-in fallback or a registered provider supplied the title. */
+  readonly source: SessionTitleGeneratedSource
+}
+```
+
+```ts type-equiv
 /** Latest folded title plus the title event's durable envelope facts. */
 interface SessionTitleSnapshot extends SessionTitleEventData {
-  /** Seq of the latest `session/title` event. */
+  /** Seq of the latest title event. */
   readonly eventSeq: SessionSeq
-  /** Timestamp of the latest `session/title` event. */
+  /** Timestamp of the latest title event. */
   readonly updatedAt: number
+  /**
+   * Exact input references when the latest title came from
+   * `session/title-from-input`; `messageSeqs` is empty for that title.
+   */
+  readonly inputRefs?: readonly SessionTitleInputRef[]
 }
 ```
 
 ## Auxiliary request record
 
-The shared execution module records each validated, dispatchable title request before calling the model. The payload reproduces the model-visible system and message input, routing, output limit, resolved reasoning effort, provider ownership, and source-message attribution even when generation later fails.
+The shared execution module records each validated, dispatchable title request before calling the model. The payload reproduces the model-visible system and message input, routing, output limit, resolved reasoning effort, provider ownership, and source-message attribution even when generation later fails. When the selected inputs include a claimed Inbox occurrence, it records `session/title-llm-request-from-input` with frozen `inputRefs` instead of `messageSeqs`; its `messages` is exactly one user message carrying the provider's input as one text block.
 
 ```ts type-equiv
 /** Exact model-visible request recorded before one auxiliary title dispatch. */
@@ -86,14 +150,48 @@ interface SessionTitleLlmRequestEventData {
 }
 ```
 
-## Provider input and output
-
-The service snapshots eligible messages through one revision and, immediately before each provider call, the latest accepted title including the fallback it just ensured. A provider returns only seqs from that request; service-owned acceptance verifies ordering, normalizes the title, enforces the byte limit, and appends the title with its source-message seqs and source kind.
+```ts type-equiv
+/** Exact model-visible request for a title derived from claimed Inbox occurrences. */
+interface SessionTitleLlmRequestFromInputEventData {
+  /** Registered title-provider identity responsible for the request. */
+  readonly titleProvider: SessionTitleProviderId
+  /** Exact admitted input references represented in `messages`, in admission order. */
+  readonly inputRefs: SessionTitleInputRef[]
+  /** Exact auxiliary LLM route. */
+  readonly route: SessionTitleModelIdentity
+  /** Exact auxiliary system prompt. */
+  readonly system: string
+  /** The one exact auxiliary user message: one text block from the provider's input. */
+  readonly messages: readonly [SessionTitleLlmRequestMessage]
+  /** Exact auxiliary output-token cap. */
+  readonly maxTokens: number
+  /** Resolved reasoning effort when recorded; older requests can omit it. */
+  readonly reasoningEffort?: ReasoningEffortId
+}
+```
 
 ```ts type-equiv
-/** One eligible human text message exposed to title providers. */
+/** The one auxiliary user message a from-input title request records. */
+interface SessionTitleLlmRequestMessage {
+  /** Stable identity created with the auxiliary request. */
+  readonly id: MessageId
+  /** Auxiliary requests are user-role messages. */
+  readonly role: 'user'
+  /** Exactly the provider's user input as one text block. */
+  readonly content: readonly [Extract<ContentBlock, { type: 'text' }>]
+  /** The title-LLM producer, the only source that creates these messages. */
+  readonly source: { readonly kind: 'dsh-session-title-llm' }
+}
+```
+
+## Provider input and output
+
+The service snapshots eligible inputs through one revision and, immediately before each provider call, the latest accepted title including the fallback it just ensured. An input is a directly admitted human message or a claimed human Inbox occurrence whose same-id, same-correlation rewrite was admitted after the claim's step; the original occurrence supplies its text and exact reference. A provider returns only seqs from that request; service-owned acceptance verifies ordering, maps each selected seq to its frozen reference, normalizes the title, enforces the byte limit, and appends the title with its source.
+
+```ts type-equiv
+/** One eligible title input exposed to title providers. */
 interface SessionTitleUserMessage {
-  /** Source `user/message` event seq. */
+  /** Seq of the `user/message` event that admitted this input. */
   readonly seq: SessionSeq
   /** Exact concatenated text-block content. */
   readonly text: string
@@ -112,6 +210,8 @@ interface SessionTitleProviderRequest {
   readonly session: Session
   /** All eligible human messages through this generation revision. */
   readonly messages: readonly SessionTitleUserMessage[]
+  /** Exact input references parallel to {@link messages}, frozen by the service. */
+  readonly inputRefs: readonly SessionTitleInputRef[]
   /** Exact current logged main-request route, when one has been recorded. */
   readonly route?: SessionTitleModelIdentity
   /**

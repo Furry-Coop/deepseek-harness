@@ -108,6 +108,10 @@ export {
   type SnapshotSuiteOptions,
 } from './suite.ts'
 export {
+  recoverRewrittenCallerInputs,
+  type RewrittenCallerInput,
+} from './rewritten-input.ts'
+export {
   captureExpectedWorkspaceSnapshot,
   captureWorkspaceSnapshot,
   EMPTY_WORKSPACE_MARKER,

@@ -83,6 +83,10 @@ The [experimental persistence catalog](../../../docs/experimental-persistence-ca
 
 The logical `SessionHeader.isSeeded` field reports whether fork history exists without exposing a positional integer. `Session.inheritedEventCount` retains the exact checked `SessionLogOffset`; `ownEvents()` returns events at and after that cut, and `isOwnSeq(seq)` accepts only an existing child-owned position. A low-level seeded constructor must supply an explicit `seed` and `inheritedEventCount` because the constructor seed can contain child-owned setup events after the inherited prefix.
 
+### Share the Inbox admission policy
+
+`@deepseek-ai/dsh-session/inbox-admission` is a browser-safe pure module for the durable claim-and-entered-step proof of a rewritten human Inbox occurrence: it classifies a committed splice, tracks the claim window across `step/start`, `step/end`, and `turn/end`, and matches a same-id admitted rewrite by source and request correlation. It depends only on Session/LLM types and reads the splice through a structural view of the fields it consumes. `@deepseek-ai/dsh-agent/inbox-admission` re-exports it for the Client echo, prompt idempotency, and title consumers, and the persistence backends reuse it to validate the required title-input events before publishing a stored log.
+
 ### Flush durable state
 
 `ctx.sessions.flush(session)` dispatches the awaited durability checkpoint: every persistence listener flushes and the call settles after all of them. A producer that needs an immediate durability barrier awaits it instead of assuming the write-behind drained.
@@ -113,6 +117,7 @@ The package is built on event sourcing: a `Session` is an append-only log of typ
 | [`src/types.ts`](src/types.ts) | `SessionEventMap`, `SessionEvent`, `UserMessage`, `SessionHeader`, `TurnEndReasonMap` |
 | [`src/surface.ts`](src/surface.ts) | Ordered surface projection, replacement validation, `deriveEventMessage` |
 | [`src/request-header.ts`](src/request-header.ts) | `request/header` folding and reconstruction |
+| [`src/inbox-admission.ts`](src/inbox-admission.ts) | Browser-safe pure Inbox claim/admission policy shared by the Client echo, prompt idempotency, title input, and cold-read validation |
 | [`dsh-util-values`](../../util/values/README.md) | Shared lossless JSON validation and detached snapshots |
 | [`src/repair.ts`](src/repair.ts) | Shared tool-result recovery for failed steps, interrupted logs, and fork seeds |
 

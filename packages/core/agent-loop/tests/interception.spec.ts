@@ -197,6 +197,46 @@ describe('agent/pre-step', () => {
     expect(JSON.stringify(adapter.requests[0]!.messages)).not.toContain('original')
   })
 
+  it('a rewrite leaves one real claim of the original and one admitted copy sharing its id', async () => {
+    const adapter = new MockAdapter([textResponse('ok')])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('rewrite-claim'), { provider: 'mock', model: 'mock' })
+
+    let claimedId: string | undefined
+    ctx.on('agent/pre-step', async ({ messages }): Promise<PreStepDecision> => {
+      const original = messages[0]!
+      claimedId = original.id
+      return {
+        kind: 'enter',
+        messages: [{ ...original, content: [{ type: 'text', text: 'EFFECTIVE' }], source: { kind: 'test' } }],
+      }
+    })
+
+    send(agent, 'ORIGINAL')
+    await waitForIdle(ctx, agent)
+
+    const log = events(agent)
+    // The producer's claim of the real original: remove-and-run inside the Turn with no
+    // cancellation outcome. Ordinary removal and replacement carry `outcome: 'canceled'`.
+    const claims = log.filter(event => event.type === 'agent/inbox/spliced'
+      && event.data.inserted.length === 0
+      && event.data.removedCount === 1
+      && event.data.outcome === undefined)
+    expect(claims).toHaveLength(1)
+    const claim = claims[0]!
+    if (claim.type !== 'agent/inbox/spliced') throw new Error('claim shape changed')
+    const turnStart = log.find(event => event.type === 'turn/start')
+    expect(turnStart !== undefined && turnStart.seq < claim.seq).toBe(true)
+
+    // The admitted rewrite keeps the claimed message identity, so the client can reconcile
+    // its echo against this real chain instead of a source kind or a borrowed id.
+    const admitted = log.find(event => event.type === 'user/message')
+    expect(admitted?.type === 'user/message' && admitted.data.id).toBe(claimedId)
+    expect(admitted?.type === 'user/message' && admitted.data.source.kind).toBe('test')
+    expect(JSON.stringify(adapter.requests[0]!.messages)).toContain('EFFECTIVE')
+    expect(JSON.stringify(adapter.requests[0]!.messages)).not.toContain('ORIGINAL')
+  })
+
   it('enter with additional messages records separately sourced context in the turn', async () => {
     const adapter = new MockAdapter([textResponse('ok')])
     const ctx = await harness(adapter)

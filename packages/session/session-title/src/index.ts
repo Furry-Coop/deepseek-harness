@@ -7,7 +7,7 @@ import { Context, FiberState, Service, type Fiber } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
 import type { ZodType } from 'zod'
-import type { Branded } from '@deepseek-ai/dsh-brand'
+import { brandString, type Branded } from '@deepseek-ai/dsh-brand'
 import { isAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { assertNever, deepFreeze } from '@deepseek-ai/dsh-util-values'
@@ -19,23 +19,42 @@ import { SessionSeq } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type { ProjectionDefinition, ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-agent'
+import {
+  advanceAdmissionWindow,
+  admitsRewrite,
+  claimAdmissionWindow,
+  inboxCorrelationOf,
+  inboxSpliceKind,
+} from '@deepseek-ai/dsh-agent/inbox-admission'
+import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
+import type { UserMessage } from '@deepseek-ai/dsh-llm/types'
 export type {
   SessionTitleEventData,
+  SessionTitleFromInputEventData,
+  SessionTitleGeneratedSource,
+  SessionTitleInputEntry,
+  SessionTitleInputRef,
   SessionTitleModelIdentity,
   SessionTitleSnapshot,
   SessionTitleSource,
   SessionTitleUserMessage,
+  TitleClaimedOccurrence,
+  TitlePendingOccurrence,
   TitleProjection,
 } from './types.ts'
 import { fallbackSessionTitle, normalizeSessionTitle } from './normalize.ts'
 import type {
   SessionTitleEventData,
+  SessionTitleFromInputEventData,
+  SessionTitleInputEntry,
+  SessionTitleInputRef,
   SessionTitleModelIdentity,
   SessionTitleSnapshot,
   SessionTitleSource,
   SessionTitleUserMessage,
+  TitleClaimedOccurrence,
   TitleInputState,
-  TitleProjection,
+  TitlePendingOccurrence,
 } from './types.ts'
 
 /** Identifies one session-title provider registration. */
@@ -75,6 +94,12 @@ declare module '@deepseek-ai/dsh-session/types' {
      * surface or derived history.
      */
     'session/title': SessionTitleEventData
+    /**
+     * Latest-wins title derived from at least one claimed human Inbox
+     * occurrence. Log-only: it never enters the model surface or derived
+     * history, and it carries exact frozen input refs instead of `messageSeqs`.
+     */
+    'session/title-from-input': SessionTitleFromInputEventData
   }
 }
 
@@ -97,6 +122,8 @@ export interface SessionTitleProviderRequest {
   readonly session: Session
   /** All eligible human messages through this generation revision. */
   readonly messages: readonly SessionTitleUserMessage[]
+  /** Exact input references parallel to {@link messages}, frozen by the service. */
+  readonly inputRefs: readonly SessionTitleInputRef[]
   /** Exact current logged main-request route, when one has been recorded. */
   readonly route?: SessionTitleModelIdentity
   /**
@@ -133,17 +160,16 @@ export interface SessionTitleProvider {
   generate(request: SessionTitleProviderRequest): Promise<SessionTitleProviderResult>
 }
 
-/** Extract one eligible human text message from a session event. */
-function sessionTitleUserMessageOf(event: SessionEvent): SessionTitleUserMessage | undefined {
-  if (event.type !== 'user/message' || event.data.source.kind !== 'user') return undefined
-  const content = event.data.content
+/** Extract the exact text of one message, or undefined when it has no visible text. */
+function titleTextOf(message: UserMessage): string | undefined {
+  const content = message.content
   const text = content
     .filter((block): block is Extract<(typeof content)[number], { type: 'text' }> => block.type === 'text')
     .map(block => block.text)
     .join('\n')
-  if (normalizeSessionTitle(text, Number.MAX_SAFE_INTEGER).length === 0) return undefined
-  return { seq: event.seq, text }
+  return normalizeSessionTitle(text, Number.MAX_SAFE_INTEGER).length === 0 ? undefined : text
 }
+
 /** Defensive copy of a logged title source (the snapshot must not alias log-owned objects). */
 function copySessionTitleSource(source: SessionTitleSource): SessionTitleSource {
   switch (source.kind) {
@@ -156,6 +182,22 @@ function copySessionTitleSource(source: SessionTitleSource): SessionTitleSource 
     case 'user': return { kind: 'user' }
     /* v8 ignore next -- closed-union exhaustiveness guard */
     default: return assertNever(source, 'SessionTitleSource')
+  }
+}
+
+/** Defensive copy of one frozen input reference. */
+function copySessionTitleInputRef(ref: SessionTitleInputRef): SessionTitleInputRef {
+  switch (ref.kind) {
+    case 'message': return { kind: 'message', messageSeq: ref.messageSeq }
+    case 'origin': return {
+      kind: 'origin',
+      originalInboxSeq: ref.originalInboxSeq,
+      messageId: ref.messageId,
+      claimSeq: ref.claimSeq,
+      admittedSeq: ref.admittedSeq,
+    }
+    /* v8 ignore next -- closed-union exhaustiveness guard */
+    default: return assertNever(ref, 'SessionTitleInputRef')
   }
 }
 
@@ -201,32 +243,63 @@ function assertPositiveInteger(name: keyof Config, value: number): void {
   }
 }
 
-/**
- * Convert title projection state into an immutable snapshot.
- * @param state - the title unit's folded state.
- * @returns the immutable snapshot.
- */
-function titleSnapshotFromState(state: TitleProjection): SessionTitleSnapshot {
-  return deepFreeze({
-    title: state.title,
-    messageSeqs: [...state.messageSeqs],
-    source: copySessionTitleSource(state.source),
-    eventSeq: state.eventSeq,
-    updatedAt: state.updatedAt,
-  })
+const EMPTY_TITLE_INPUT: TitleInputState = {
+  first: null,
+  count: 0,
+  lastSeq: null,
+  pending: [],
+  claimed: [],
+  openTurn: 0,
 }
 
-const EMPTY_TITLE_INPUT: TitleInputState = { first: null, count: 0, lastSeq: null }
+const messageSeqSchema = zod.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).transform(SessionSeq)
+const messageIdSchema: ZodType<MessageId> = zod.string().min(1)
+  .transform(value => brandString<MessageId>(value))
+const sessionTitleInputRefSchema: ZodType<SessionTitleInputRef> = zod.discriminatedUnion('kind', [
+  zod.object({ kind: zod.literal('message'), messageSeq: messageSeqSchema }).strict(),
+  zod.object({
+    kind: zod.literal('origin'),
+    originalInboxSeq: messageSeqSchema,
+    messageId: messageIdSchema,
+    claimSeq: messageSeqSchema,
+    admittedSeq: messageSeqSchema,
+  }).strict(),
+]) as ZodType<SessionTitleInputRef>
 
-const sessionTitleUserMessageSchema: ZodType<SessionTitleUserMessage> = zod.object({
-  seq: zod.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).transform(SessionSeq),
+const sessionTitleInputEntrySchema: ZodType<SessionTitleInputEntry> = zod.object({
+  seq: messageSeqSchema,
   text: zod.string(),
+  ref: sessionTitleInputRefSchema,
+}).strict()
+
+const titlePendingOccurrenceSchema: ZodType<TitlePendingOccurrence> = zod.object({
+  messageId: messageIdSchema,
+  originalInboxSeq: messageSeqSchema,
+  text: zod.string(),
+  correlation: zod.string().nullable(),
+  target: zod.union([zod.literal('next-turn'), zod.literal('next-step')]),
+  index: zod.number().int().nonnegative(),
+}).strict()
+
+const titleClaimedOccurrenceSchema: ZodType<TitleClaimedOccurrence> = zod.object({
+  messageId: messageIdSchema,
+  originalInboxSeq: messageSeqSchema,
+  text: zod.string(),
+  correlation: zod.string().nullable(),
+  window: zod.object({
+    claimSeq: messageSeqSchema.nullable(),
+    claimTurn: zod.number().int().nonnegative().nullable(),
+    stepStartSeq: messageSeqSchema.nullable(),
+  }).strict(),
 }).strict()
 
 const titleInputStateSchema: ZodType<TitleInputState> = zod.object({
-  first: sessionTitleUserMessageSchema.nullable(),
+  first: sessionTitleInputEntrySchema.nullable(),
   count: zod.number().int().nonnegative(),
-  lastSeq: zod.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).transform(SessionSeq).nullable(),
+  lastSeq: messageSeqSchema.nullable(),
+  pending: zod.array(titlePendingOccurrenceSchema).readonly(),
+  claimed: zod.array(titleClaimedOccurrenceSchema).readonly(),
+  openTurn: zod.number().int().nonnegative(),
 }).strict().superRefine((state, context) => {
   const empty = state.first === null && state.lastSeq === null && state.count === 0
   const populated = state.first !== null
@@ -241,26 +314,244 @@ const titleInputStateSchema: ZodType<TitleInputState> = zod.object({
   }
 })
 
+/** One fold step: the advanced aggregate and the input this event admitted, if any. */
+interface TitleInputStep {
+  readonly state: TitleInputState
+  readonly admitted?: SessionTitleInputEntry
+}
+
+/** Fold one Inbox splice into the title's pending and claimed occurrences. */
+function advanceTitleSplice(
+  state: TitleInputState,
+  event: Extract<SessionEvent, { type: 'agent/inbox/spliced' }>,
+): TitleInputStep {
+  const splice = event.data
+  const removedCount = splice.removedCount ?? 0
+  const end = splice.start + removedCount
+  if (!Number.isSafeInteger(splice.start) || splice.start < 0
+    || !Number.isSafeInteger(removedCount) || removedCount < 0) {
+    throw new Error(`invalid persisted inbox splice at session seq ${event.seq}`)
+  }
+  const kind = inboxSpliceKind(splice)
+  const replacedIds = new Set(splice.inserted.map(message => message.id))
+  const pending: TitlePendingOccurrence[] = []
+  const claimed = state.claimed.filter(item => !replacedIds.has(item.messageId))
+  let changed = claimed.length !== state.claimed.length
+  for (const item of state.pending) {
+    if (item.target !== splice.target) {
+      pending.push(item)
+      continue
+    }
+    if (item.index >= splice.start && item.index < end) {
+      changed = true
+      // A claim enters the entered-step window; cancellation and replacement
+      // consume the occurrence without authorizing a later copy.
+      if (kind === 'claim' && state.openTurn > 0) {
+        claimed.push({
+          messageId: item.messageId,
+          originalInboxSeq: item.originalInboxSeq,
+          text: item.text,
+          correlation: item.correlation,
+          window: claimAdmissionWindow(state.openTurn, event.seq),
+        })
+      }
+      continue
+    }
+    if (item.index >= end) {
+      const index = item.index + splice.inserted.length - removedCount
+      if (index !== item.index) {
+        changed = true
+        pending.push({ ...item, index })
+        continue
+      }
+    }
+    pending.push(item)
+  }
+  for (const [offset, message] of splice.inserted.entries()) {
+    if (message.source.kind !== 'user') continue
+    const text = titleTextOf(message)
+    if (text === undefined) continue
+    changed = true
+    pending.push({
+      messageId: message.id,
+      originalInboxSeq: event.seq,
+      text,
+      correlation: inboxCorrelationOf(message) ?? null,
+      target: splice.target,
+      index: splice.start + offset,
+    })
+  }
+  return changed ? { state: { ...state, pending, claimed } } : { state }
+}
+
+/** Fold one admitted message into the title aggregate. */
+function advanceTitleMessage(
+  state: TitleInputState,
+  event: Extract<SessionEvent, { type: 'user/message' }>,
+): TitleInputStep {
+  const message = event.data
+  const claimedIndex = state.claimed.findIndex(item => item.messageId === message.id)
+  let pending = state.pending
+  let claimed = state.claimed
+  let admitted: SessionTitleInputEntry | undefined
+  if (claimedIndex >= 0) {
+    const item = state.claimed[claimedIndex]
+    /* v8 ignore next 2 -- claimedIndex comes from findIndex over the same dense array; unreachable under the projection contract. */
+    if (item === undefined) throw new Error('title input claim index lost its candidate')
+    // A human source is the ordinary admission; a rewritten source needs the
+    // claim's entered-step window, the same identity, and the same correlation.
+    const rewritten = message.source.kind !== 'user'
+      && item.window.claimSeq !== null
+      && admitsRewrite(item.window, message, event.seq, {
+        messageId: item.messageId,
+        correlation: item.correlation,
+      })
+    if (message.source.kind === 'user' || rewritten) {
+      claimed = claimed.filter((_, index) => index !== claimedIndex)
+      if (rewritten && item.window.claimSeq !== null) {
+        admitted = {
+          seq: event.seq,
+          text: item.text,
+          ref: {
+            kind: 'origin',
+            originalInboxSeq: item.originalInboxSeq,
+            messageId: item.messageId,
+            claimSeq: item.window.claimSeq,
+            admittedSeq: event.seq,
+          },
+        }
+      }
+    }
+  }
+  if (message.source.kind === 'user') {
+    pending = pending.filter(item => item.messageId !== message.id)
+    const text = titleTextOf(message)
+    if (text !== undefined) {
+      admitted = { seq: event.seq, text, ref: { kind: 'message', messageSeq: event.seq } }
+    }
+  }
+  if (admitted === undefined) {
+    const changed = pending !== state.pending || claimed !== state.claimed
+    return changed ? { state: { ...state, pending, claimed } } : { state }
+  }
+  return {
+    state: {
+      ...state,
+      pending,
+      claimed,
+      first: state.first ?? admitted,
+      count: state.count + 1,
+      lastSeq: event.seq,
+    },
+    admitted,
+  }
+}
+
 /**
- * Collect eligible human text messages from a session log, in seq order.
+ * Advance the title-input aggregate by one committed event.
+ *
+ * Claims and admissions use the shared Inbox admission policy; the title
+ * aggregate keeps only its own first/count, pending occurrence text, and the
+ * bounded claim window.
+ * @param state - aggregate before the event.
+ * @param event - next committed Session event.
+ * @returns the advanced aggregate and the input this event admitted, if any.
+ */
+function advanceTitleInput(state: TitleInputState, event: SessionEvent): TitleInputStep {
+  switch (event.type) {
+    case 'turn/start':
+      return state.openTurn === event.data.turn
+        ? { state }
+        : { state: { ...state, openTurn: event.data.turn } }
+    case 'turn/end':
+      return state.openTurn === 0 && state.claimed.length === 0
+        ? { state }
+        : { state: { ...state, openTurn: 0, claimed: [] } }
+    case 'step/start': {
+      if (state.claimed.length === 0) return { state }
+      let changed = false
+      const claimed = state.claimed.map((item) => {
+        if (item.window.stepStartSeq !== null) return item
+        const window = advanceAdmissionWindow(item.window, event)
+        if (window === item.window) return item
+        changed = true
+        return { ...item, window }
+      })
+      return changed ? { state: { ...state, claimed } } : { state }
+    }
+    case 'step/end':
+      return state.claimed.length === 0 ? { state } : { state: { ...state, claimed: [] } }
+    case 'agent/inbox/spliced':
+      return advanceTitleSplice(state, event)
+    case 'user/message':
+      return advanceTitleMessage(state, event)
+    default:
+      return { state }
+  }
+}
+
+/**
+ * Collect eligible title inputs from a session log, in admission order.
  * The full eligible prefix is only materialized for one provider generation,
  * so it is scanned from the log at execution time rather than retained by
- * the O(1) `titleInput` projection.
+ * the bounded `titleInput` projection.
  * @param events - the session event log.
  * @param throughSeq - optional inclusive upper seq bound.
- * @returns eligible messages with exact source seqs.
+ * @returns eligible messages with the exact input references the service freezes.
  */
-function collectSessionTitleMessages(
+function collectSessionTitleInputs(
   events: readonly SessionEvent[],
   throughSeq?: SessionSeq,
-): SessionTitleUserMessage[] {
+): { messages: SessionTitleUserMessage[]; inputRefs: SessionTitleInputRef[] } {
+  let state = EMPTY_TITLE_INPUT
   const messages: SessionTitleUserMessage[] = []
+  const inputRefs: SessionTitleInputRef[] = []
   for (const event of events) {
     if (throughSeq !== undefined && event.seq > throughSeq) break
-    const message = sessionTitleUserMessageOf(event)
-    if (message !== undefined) messages.push(message)
+    const step = advanceTitleInput(state, event)
+    state = step.state
+    if (step.admitted === undefined) continue
+    messages.push({ seq: step.admitted.seq, text: step.admitted.text })
+    inputRefs.push(step.admitted.ref)
   }
-  return messages
+  return { messages, inputRefs }
+}
+
+/**
+ * Resolve the provider's selected request seqs to the exact frozen references.
+ * @param messages - provider request messages.
+ * @param inputRefs - exact refs parallel to `messages`.
+ * @param messageSeqs - exact seqs the provider selected from `messages`.
+ * @returns the matching input references, in the provider's order.
+ * @throws when a selected seq is not one of the request's inputs.
+ */
+export function selectSessionTitleInputRefs(
+  messages: readonly SessionTitleUserMessage[],
+  inputRefs: readonly SessionTitleInputRef[],
+  messageSeqs: readonly SessionSeq[],
+): SessionTitleInputRef[] {
+  if (messages.length !== inputRefs.length) {
+    throw new Error('session-title request messages and input refs are not parallel')
+  }
+  if (messageSeqs.length === 0) {
+    throw new Error('session-title provider must select at least one source message seq')
+  }
+  const refs: SessionTitleInputRef[] = []
+  let previous = -1
+  for (const seq of messageSeqs) {
+    const index = messages.findIndex(message => message.seq === seq)
+    if (index < 0) throw new Error('session-title provider selected a seq outside the request')
+    if (index <= previous) {
+      throw new Error('session-title provider messageSeqs must be unique and ordered seqs from the request')
+    }
+    const ref = inputRefs[index]
+    if (ref === undefined) {
+      throw new Error('session-title request input refs are not parallel to its messages')
+    }
+    refs.push(ref)
+    previous = index
+  }
+  return refs
 }
 
 const titleViewSchema: ZodType<string | null> = zod.string().min(1).nullable()
@@ -268,10 +559,10 @@ const titleViewSchema: ZodType<string | null> = zod.string().min(1).nullable()
 /** Latest logged title text and its client view. */
 export const titleProjectionDefinition = {
   key: 'title',
-  stateVersion: 1,
+  stateVersion: 2,
   stateSchema: titleViewSchema,
   init: () => null,
-  apply: (state, event) => (event.type === 'session/title'
+  apply: (state, event) => (event.type === 'session/title' || event.type === 'session/title-from-input'
     ? event.data.title
     : state),
   wire: {
@@ -286,12 +577,22 @@ export const titleProjectionDefinition = {
  * @returns the latest immutable title snapshot, or `undefined`.
  */
 export function foldSessionTitle(events: readonly SessionEvent[]): SessionTitleSnapshot | undefined {
-  const event = events.findLast(item => item.type === 'session/title')
+  const event = events.findLast(item => item.type === 'session/title' || item.type === 'session/title-from-input')
   if (event === undefined) return undefined
-  return titleSnapshotFromState({
+  if (event.type === 'session/title') {
+    return deepFreeze({
+      title: event.data.title,
+      messageSeqs: [...event.data.messageSeqs],
+      source: copySessionTitleSource(event.data.source),
+      eventSeq: event.seq,
+      updatedAt: event.time,
+    })
+  }
+  return deepFreeze({
     title: event.data.title,
-    messageSeqs: event.data.messageSeqs,
-    source: event.data.source,
+    messageSeqs: [],
+    inputRefs: event.data.inputRefs.map(copySessionTitleInputRef),
+    source: copySessionTitleSource(event.data.source),
     eventSeq: event.seq,
     updatedAt: event.time,
   })
@@ -372,18 +673,10 @@ export class SessionTitleService extends Service {
 
     this.titleInputProjectionHandle = await ctx.sessionProjections.register<'titleInput', TitleInputState>({
       key: 'titleInput',
-      stateVersion: 3,
+      stateVersion: 4,
       stateSchema: titleInputStateSchema,
       init: () => EMPTY_TITLE_INPUT,
-      apply: (state, event) => {
-        const message = sessionTitleUserMessageOf(event)
-        if (message === undefined) return state
-        return {
-          first: state.first ?? message,
-          count: state.count + 1,
-          lastSeq: message.seq,
-        }
-      },
+      apply: (state, event) => advanceTitleInput(state, event).state,
     })
   }
 
@@ -508,20 +801,23 @@ export class SessionTitleService extends Service {
 
   /** Schedule current-provider work; activation-time messages only request the fallback. */
   private async onUserMessage(session: Session, event: Extract<SessionEvent, { type: 'user/message' }>): Promise<void> {
-    if (event.data.source.kind !== 'user' || sessionTitleUserMessageOf(event) === undefined) return
     if (this.ownerFiber.state === FiberState.LOADING) {
       await this.ownerFiber.await()
       if (this.serviceActive() && this.ctx.sessions.get(session.id) === session) await this.ensureFallback(session)
       return
     }
     if (!this.serviceActive()) return
+    // The projection registry observes the committed event before this listener,
+    // so an admitted rewrite of a claimed human occurrence counts here exactly
+    // like a directly admitted human message.
+    const input = this.titleInputOf(session)
+    if (input.lastSeq !== event.seq) return
     // A user rename pins the title: no automatic revision may override it.
     if (this.get(session)?.source.kind === 'user') return
     const registration = this.registration
     if (registration !== undefined && !registration.closing) {
-      const count = this.titleInputOf(session).count
       const shouldSchedule = registration.provider.automatic === 'all-prompts'
-        || (!session.header.isSeeded && session.header.origin !== 'subagent' && count === 1 && this.get(session) === undefined)
+        || (!session.header.isSeeded && session.header.origin !== 'subagent' && input.count === 1 && this.get(session) === undefined)
       if (shouldSchedule) {
         const state = this.stateFor(session)
         const revision = this.supersede(state, 'newer user message superseded title generation')
@@ -613,26 +909,43 @@ export class SessionTitleService extends Service {
       // watermark, while the current title is not bounded by that watermark.
       // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
       const events = session.snapshotEvents()
-      const messages = collectSessionTitleMessages(events, work.throughSeq)
+      const inputs = collectSessionTitleInputs(events, work.throughSeq)
+      // The provider observes frozen JSON facts. The service retains these same
+      // private canonical arrays and selects refs from them after the await, so a
+      // provider cannot alter the input references of the required title record.
+      const messages = deepFreeze(inputs.messages.map(entry => ({ ...entry })))
+      const inputRefs = deepFreeze(inputs.inputRefs.map(copySessionTitleInputRef))
       const currentTitle = foldSessionTitle(events)
-      const result = await work.registration.provider.generate({
+      const request: SessionTitleProviderRequest = Object.freeze({
         session,
         messages,
+        inputRefs,
         ...route === undefined ? {} : { route },
         ...currentTitle === undefined ? {} : { currentTitle },
         signal: work.signal,
       })
+      const result = await work.registration.provider.generate(request)
       this.assertCurrent(session, work)
       const accepted = this.validateResult(result, messages)
-      session.append('session/title', {
-        title: accepted.title,
-        messageSeqs: [...accepted.messageSeqs],
-        source: {
-          kind: 'provider',
-          provider: work.registration.provider.id,
-          ...accepted.model === undefined ? {} : { model: accepted.model },
-        },
-      })
+      const selectedRefs = selectSessionTitleInputRefs(messages, inputRefs, accepted.messageSeqs)
+      const source = {
+        kind: 'provider' as const,
+        provider: work.registration.provider.id,
+        ...accepted.model === undefined ? {} : { model: accepted.model },
+      }
+      if (selectedRefs.some(ref => ref.kind === 'origin')) {
+        session.append('session/title-from-input', {
+          title: accepted.title,
+          inputRefs: selectedRefs,
+          source,
+        })
+      } else {
+        session.append('session/title', {
+          title: accepted.title,
+          messageSeqs: [...accepted.messageSeqs],
+          source,
+        })
+      }
       return this.get(session)
     } finally {
       const state = this.work.get(session)
@@ -804,12 +1117,20 @@ export class SessionTitleService extends Service {
    * it needs neither ensureFallback's in-flight dedup nor its liveness
    * re-check. An underivable fallback (empty after the caps) appends nothing.
    */
-  private appendFallback(session: Session, first: SessionTitleUserMessage): void {
+  private appendFallback(session: Session, first: SessionTitleInputEntry): void {
     const title = fallbackSessionTitle(first.text, this.config.fallbackMaxWords, this.config.fallbackMaxBytes)
     if (title.length === 0) return
+    if (first.ref.kind === 'origin') {
+      session.append('session/title-from-input', {
+        title,
+        inputRefs: [first.ref],
+        source: { kind: 'fallback' },
+      })
+      return
+    }
     session.append('session/title', {
       title,
-      messageSeqs: [first.seq],
+      messageSeqs: [first.ref.messageSeq],
       source: { kind: 'fallback' },
     })
   }
@@ -836,11 +1157,19 @@ export class SessionTitleService extends Service {
       }
       const accepted = this.get(session)
       if (accepted !== undefined) return accepted
-      session.append('session/title', {
-        title,
-        messageSeqs: [first.seq],
-        source: { kind: 'fallback' },
-      })
+      if (first.ref.kind === 'origin') {
+        session.append('session/title-from-input', {
+          title,
+          inputRefs: [first.ref],
+          source: { kind: 'fallback' },
+        })
+      } else {
+        session.append('session/title', {
+          title,
+          messageSeqs: [first.ref.messageSeq],
+          source: { kind: 'fallback' },
+        })
+      }
       return this.get(session)
     })
     state.fallback = fallback

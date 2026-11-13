@@ -263,6 +263,7 @@ describe('first-prompt LLM title provider', () => {
     await expect(registered!.generate({
       session: Session.create(SessionId('empty-first-provider')),
       messages: [],
+      inputRefs: [],
       signal: new AbortController().signal,
     })).rejects.toThrow(/requires one human message/)
   })

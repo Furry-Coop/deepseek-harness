@@ -1,13 +1,13 @@
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
-import LlmRuntime, { createUserMessage, isAgentLoopRequest, LlmAdapter, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, isAgentLoopRequest, LlmAdapter, MessageId, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type {
   FinishReason,
   GenerateOptions,
   LlmResolvedModelInfo,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
 import type { SessionTitleProviderRequest } from '@deepseek-ai/dsh-session-title'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
@@ -139,6 +139,10 @@ function request(
       { seq: first.seq, text: 'first prompt' },
       { seq: second.seq, text: '第二个问题' },
     ],
+    inputRefs: [
+      { kind: 'message', messageSeq: first.seq },
+      { kind: 'message', messageSeq: second.seq },
+    ],
     route: { provider: 'current-route', model: 'current-model' },
     signal,
   }
@@ -146,7 +150,7 @@ function request(
 
 function requestWithoutRoute(ctx: Context, signal = new AbortController().signal): SessionTitleProviderRequest {
   const routed = request(ctx, signal)
-  return { session: routed.session, messages: routed.messages, signal }
+  return { session: routed.session, messages: routed.messages, inputRefs: routed.inputRefs, signal }
 }
 
 /** Provider-prepared input attributing both fixture messages to one exact text. */
@@ -233,6 +237,46 @@ describe('executeSessionTitleLlm', () => {
         maxTokens: 32,
         reasoningEffort: ReasoningEffortId('off'),
       })
+  })
+
+  it('logs the from-input audit discriminator for a selected claimed occurrence', async () => {
+    const { ctx, adapter } = await withScript(SCRIPT)
+    const providerRequest = request(ctx)
+    const originRef = {
+      kind: 'origin' as const,
+      originalInboxSeq: SessionSeq(0),
+      messageId: MessageId('origin-message'),
+      claimSeq: SessionSeq(1),
+      admittedSeq: providerRequest.messages[0]!.seq,
+    }
+    const fromInputRequest: SessionTitleProviderRequest = {
+      ...providerRequest,
+      inputRefs: [
+        originRef,
+        { kind: 'message', messageSeq: providerRequest.messages[1]!.seq },
+      ],
+    }
+    await executeSessionTitleLlm(
+      ctx,
+      resolveSessionTitleLlmConfig(CONFIG),
+      fromInputRequest,
+      TITLE_PROVIDER,
+      prepared(fromInputRequest, { messageSeqs: [providerRequest.messages[0]!.seq] }),
+    )
+
+    expect(adapter.requests).toHaveLength(1)
+    const logged = fromInputRequest.session.snapshotEvents()
+      .findLast(event => event.type === 'session/title-llm-request-from-input')
+    expect(logged?.data).toEqual({
+      titleProvider: TITLE_PROVIDER,
+      inputRefs: [originRef],
+      route: { provider: 'current-route', model: 'current-model' },
+      system: 'Exact provider system prompt',
+      messages: adapter.requests[0]!.messages,
+      maxTokens: 32,
+    })
+    expect(fromInputRequest.session.snapshotEvents()
+      .some(event => event.type === 'session/title-llm-request')).toBe(false)
   })
 
   it('forwards a different valid reasoning selector instead of choosing one itself', async () => {
@@ -564,5 +608,67 @@ describe('executeSessionTitleLlm', () => {
     const rejected = expect(pending).rejects.toThrow('caller stopped')
     controller.abort(new Error('caller stopped'))
     await rejected
+  })
+
+  it('keeps the captured system, input, and seqs when the provider mutates prepared during route resolution', async () => {
+    const ctx = new Context()
+    onTestFinished(() => ctx.fiber.dispose())
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(LlmRuntime)
+    const providerRequest = request(ctx)
+    const first = providerRequest.messages[0]!.seq
+    const second = providerRequest.messages[1]!.seq
+    const mutable = {
+      system: 'original provider system',
+      input: 'original provider input',
+      messageSeqs: [first, second] as SessionSeq[],
+    }
+    const preparedRequest: SessionTitleLlmPreparedRequest = {
+      get system(): string { return mutable.system },
+      get input(): string { return mutable.input },
+      get messageSeqs(): readonly SessionSeq[] { return mutable.messageSeqs },
+      selectReasoningEffort: NO_EFFORT_SELECTOR,
+    }
+    class MutatingAdapter extends RecordingAdapter {
+      override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+        mutable.system = 'mutated provider system'
+        mutable.input = 'mutated provider input'
+        mutable.messageSeqs = [second]
+        return super.resolveModel(provider, model)
+      }
+    }
+    const adapter = new MutatingAdapter(SCRIPT)
+    ctx.llm.registerAdapter(['current-route'], adapter)
+
+    await executeSessionTitleLlm(ctx, resolveSessionTitleLlmConfig(CONFIG), providerRequest, TITLE_PROVIDER, preparedRequest)
+
+    const options = adapter.requests[0]!
+    expect(options.system).toBe('original provider system')
+    const prompt = options.messages[0]?.content[0]
+    expect(prompt?.type === 'text' && prompt.text).toBe('original provider input')
+    const logged = providerRequest.session.snapshotEvents()
+      .findLast(event => event.type === 'session/title-llm-request')?.data
+    expect(logged).toMatchObject({
+      system: 'original provider system',
+      messageSeqs: [first, second],
+    })
+    expect(JSON.stringify(logged)).toContain('original provider input')
+    expect(JSON.stringify(logged)).not.toContain('mutated provider input')
+  })
+
+  it('refuses a duplicated or descending prepared selection before model dispatch', async () => {
+    const { ctx, adapter } = await withScript(SCRIPT)
+    const config = resolveSessionTitleLlmConfig(CONFIG)
+    const duplicated = request(ctx)
+    const first = duplicated.messages[0]!.seq
+    const second = duplicated.messages[1]!.seq
+    await expect(executeSessionTitleLlm(
+      ctx, config, duplicated, TITLE_PROVIDER, prepared(duplicated, { messageSeqs: [first, first] }),
+    )).rejects.toThrow(/unique and ordered/)
+    const descending = request(ctx)
+    await expect(executeSessionTitleLlm(
+      ctx, config, descending, TITLE_PROVIDER, prepared(descending, { messageSeqs: [second, first] }),
+    )).rejects.toThrow(/unique and ordered/)
+    expect(adapter.requests).toEqual([])
   })
 })

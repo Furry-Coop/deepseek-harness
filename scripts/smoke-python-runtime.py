@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Literal
 
 if TYPE_CHECKING:
-    from deepseek_harness import Notification, RunResult
+    from deepseek_harness import DeepSeekHarness, Notification, RunResult
 
 
 EXPECTED_TEXT = "runtime smoke ok"
@@ -127,6 +127,22 @@ CANCEL_SNAPSHOT_DIRECTORY = (
     Path(__file__).resolve().parent / "snapshots" / "python-sdk-single-exe" / "cancel"
 )
 CANCEL_SNAPSHOT_FILENAMES = ("result.json", "session.v4.jsonl")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BUILT_DSH_CLI = REPO_ROOT / "apps" / "cli" / "lib" / "bin.js"
+SHARED_TITLE_INPUT_REWRITE = (
+    REPO_ROOT / "snapshots" / "sdk" / "session-title-from-input" / "rewrite-input.mjs"
+)
+TITLE_FROM_INPUT_PROMPT = "ORIGINAL human request for the checked title input."
+TITLE_FROM_INPUT_MODEL_TITLE = "Checked title input"
+TITLE_FROM_INPUT_FINAL_TEXT = "TITLE_INPUT_PROOF_OK"
+TITLE_FROM_INPUT_SESSION_ID = "title-from-input"
+TITLE_FROM_INPUT_REQUEST_PREFIX = (
+    "Generate the session title from this JSON array of human messages:"
+)
+TITLE_FROM_INPUT_SNAPSHOT_DIRECTORY = (
+    Path(__file__).resolve().parent / "snapshots" / "python-sdk-single-exe" / "title-from-input"
+)
+TITLE_FROM_INPUT_SNAPSHOT_FILENAMES = ("result.json", "requests.json", "session.v4.jsonl")
 SNAPSHOT_WORKFLOW_SCRIPT = (
     "phase('Delegate')\n"
     f"const reply = await agent('{SNAPSHOT_WORKFLOW_CHILD_PROMPT}', {{ label: 'workflow-child' }})\n"
@@ -314,11 +330,30 @@ def write_mcp_patch(root: Path, sessions: Path, server_script: Path) -> Path:
     }])
 
 
+def is_title_from_input_request(body: dict[str, object]) -> bool:
+    """Whether one captured model request is the title provider's auxiliary request."""
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return False
+    return any(
+        isinstance(message, dict)
+        and message.get("role") == "user"
+        and TITLE_FROM_INPUT_REQUEST_PREFIX in message_text(message.get("content"))
+        for message in messages
+    )
+
+
 class MockModelHandler(BaseHTTPRequestHandler):
     """Return deterministic text, worker, and orchestration completions."""
 
     requests: list[dict[str, object]] = []
     direct_child_finished = threading.Event()
+    title_from_input_active = False
+    # Hold the main response until the title request has been captured, so the
+    # audit event cannot race the assistant event, and hold the title response
+    # until the scenario has observed Session idle.
+    title_from_input_request_seen = threading.Event()
+    title_from_input_release = threading.Event()
 
     def do_POST(self) -> None:
         if self.path != "/v1/messages":
@@ -327,6 +362,8 @@ class MockModelHandler(BaseHTTPRequestHandler):
         content_length = int(self.headers.get("content-length", "0"))
         body = json.loads(self.rfile.read(content_length))
         self.requests.append(body)
+        if MockModelHandler.title_from_input_active and is_title_from_input_request(body):
+            MockModelHandler.title_from_input_request_seen.set()
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
         self.end_headers()
@@ -353,6 +390,20 @@ def completion_chunks(body: dict[str, object]) -> list[dict[str, object]]:
     latest = next(message for message in reversed(messages) if message.get("role") != "system")
     if not isinstance(latest, dict):
         raise AssertionError(f"model request has an invalid latest message: {body}")
+
+    if MockModelHandler.title_from_input_active:
+        # Only this scenario rewrites the main prompt and enables the title
+        # provider: answer the framed original for the title request and the
+        # rewritten effective prompt for the main turn. The main response waits
+        # for the title request so the logged audit precedes the assistant turn.
+        latest_text = message_text(latest.get("content"))
+        if TITLE_FROM_INPUT_REQUEST_PREFIX in latest_text:
+            if not MockModelHandler.title_from_input_release.wait(timeout=60):
+                raise AssertionError("title-from-input title response stayed blocked")
+            return text_chunks(TITLE_FROM_INPUT_MODEL_TITLE)
+        if not MockModelHandler.title_from_input_request_seen.wait(timeout=60):
+            raise AssertionError("title-from-input main response did not observe the title request")
+        return text_chunks(TITLE_FROM_INPUT_FINAL_TEXT)
 
     recovery_prompt = next((
         block.get("text")
@@ -862,7 +913,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--scenario",
-        choices=("all", "sdk-default", "sdk-custom", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-fs-search", "sdk-spawn-node", "sdk-mcp", "sdk-snapshot", "sdk-recovery", "sdk-cancel", "sdk-restart", "sdk-profile-plugin", "sdk-plugin-manager", "sdk-office", "sdk-authoring", "sdk-live", "runner", "direct"),
+        choices=("all", "sdk-default", "sdk-custom", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-title-from-input", "sdk-fs-search", "sdk-spawn-node", "sdk-mcp", "sdk-snapshot", "sdk-recovery", "sdk-cancel", "sdk-restart", "sdk-profile-plugin", "sdk-plugin-manager", "sdk-office", "sdk-authoring", "sdk-live", "runner", "direct"),
         default="all",
     )
     parser.add_argument("--exe", type=Path)
@@ -883,8 +934,8 @@ def main() -> None:
         args.exe = assert_installed_wheel_environment()
     if args.scenario in {"all", "sdk-custom", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-fs-search", "sdk-spawn-node", "sdk-snapshot", "sdk-recovery", "sdk-cancel", "sdk-restart", "sdk-office", "sdk-authoring", "sdk-plugin-manager", "runner", "direct"} and args.exe is None:
         parser.error("--exe is required for custom, minimal, dynamic-tools, fs-search, spawn-node, snapshot, recovery, cancel, restart, office, runner, and direct scenarios")
-    if args.update_snapshots and args.scenario not in {"all", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-snapshot", "sdk-recovery", "sdk-cancel", "sdk-restart", "sdk-authoring"}:
-        parser.error("--update-snapshots requires --scenario sdk-minimal, sdk-minimal-in-history, sdk-dynamic-tools, sdk-snapshot, sdk-recovery, sdk-cancel, sdk-restart, sdk-authoring, or all")
+    if args.update_snapshots and args.scenario not in {"all", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-title-from-input", "sdk-snapshot", "sdk-recovery", "sdk-cancel", "sdk-restart", "sdk-authoring"}:
+        parser.error("--update-snapshots requires --scenario sdk-minimal, sdk-minimal-in-history, sdk-dynamic-tools, sdk-title-from-input, sdk-snapshot, sdk-recovery, sdk-cancel, sdk-restart, sdk-authoring, or all")
     if args.exe is not None and not args.exe.is_file():
         parser.error(f"runtime executable does not exist: {args.exe}")
 
@@ -931,6 +982,8 @@ def main() -> None:
         if args.scenario in {"all", "sdk-dynamic-tools"}:
             assert args.exe is not None
             smoke_sdk_dynamic_tools(model.url, args.exe.resolve(), args.update_snapshots)
+        if args.scenario in {"all", "sdk-title-from-input"}:
+            smoke_sdk_title_from_input(model.url, args.update_snapshots)
         if args.scenario in {"all", "sdk-fs-search"}:
             assert args.exe is not None
             smoke_sdk_fs_search(model.url, args.exe.resolve())
@@ -1517,6 +1570,190 @@ def smoke_sdk_minimal(
             compare_snapshot_files(
                 files, update_snapshots, MINIMAL_SNAPSHOT_DIRECTORY, MINIMAL_SNAPSHOT_FILENAMES,
             )
+
+
+def smoke_sdk_title_from_input(base_url: str, update_snapshots: bool) -> None:
+    """Drive a real pre-step rewrite through the built SDK profile and pin both title events."""
+    from deepseek_harness import DeepSeekHarness
+
+    if not SHARED_TITLE_INPUT_REWRITE.is_file():
+        raise AssertionError(
+            "the title-from-input scenario requires the shared pre-step rewrite at "
+            f"{SHARED_TITLE_INPUT_REWRITE}",
+        )
+    if not BUILT_DSH_CLI.is_file():
+        raise AssertionError(
+            f"the title-from-input scenario requires the built checkout CLI at {BUILT_DSH_CLI}; "
+            "run `pnpm run build:artifacts` first",
+        )
+    node = shutil.which("node")
+    if node is None:
+        raise AssertionError("the title-from-input scenario requires Node on PATH")
+
+    first_request = len(MockModelHandler.requests)
+    MockModelHandler.title_from_input_request_seen.clear()
+    MockModelHandler.title_from_input_release.clear()
+    MockModelHandler.title_from_input_active = True
+    try:
+        with tempfile.TemporaryDirectory(prefix="dsh-sdk-title-from-input-") as temporary:
+            root = Path(temporary).resolve()
+            dsh_home = root / "home"
+            sessions = dsh_home / "sessions"
+            user_home = root / "user-home"
+            user_home.mkdir()
+            patch = write_profile_patch(root, "title-from-input.patch.json", sessions, [
+                # The SDK profile disables the model-backed title provider; this
+                # scenario needs its exact auxiliary request.
+                {"id": "session-title-llm", "disabled": False},
+                # One expected log serves every platform and keeps delivery
+                # generation qualifiers out of the comparison.
+                {"id": "session-log-deepseek", "config": {"enabled": False}},
+                {"id": "tool-bash", "disabled": True},
+                {"id": "tool-pwsh", "disabled": True},
+                # The scenario proves title input attribution, not the optional
+                # clock, skill catalog, or workspace instructions, whose text
+                # differs by host and checkout location.
+                {"id": "time-context", "disabled": True},
+                {"id": "skill", "disabled": True},
+                {"id": "skill-filesystem", "disabled": True},
+                {"id": "tool-skill", "disabled": True},
+                {"id": "agent-instructions", "disabled": True},
+                {"insert": [{
+                    "id": "title-from-input-rewrite",
+                    "name": SHARED_TITLE_INPUT_REWRITE.as_uri(),
+                }]},
+            ])
+            try:
+                with DeepSeekHarness(
+                    provider="deepseek-official",
+                    model="smoke-model",
+                    cwd=str(root),
+                    runtime_cwd=str(root),
+                    dsh_home=str(dsh_home),
+                    _launch_args=(node, str(BUILT_DSH_CLI), "--profile", "sdk", "--patch", str(patch)),
+                    env={
+                        # Keep the checkout profile but own every user-visible and
+                        # persistent location this run could otherwise inherit.
+                        "DSH_HOME": str(dsh_home),
+                        "DSH_PERMISSION_MODE": "danger-full-access",
+                        "DSH_TELEMETRY_DISABLED": "1",
+                        "HOME": str(user_home),
+                        "USERPROFILE": str(user_home),
+                        "DSH_AGENTS_HOME": str(user_home / ".agents"),
+                        "DSH_PRIMARY_RUNTIME": "",
+                        "DSH_BUNDLED_SKILL_DIR": "",
+                        "DSH_BUNDLED_OFFICE_CLI": "",
+                        "DSH_RESOURCE_CACHE": str(root / "resource-cache"),
+                    },
+                    api_key="sk-keyless-smoke",
+                    base_url=base_url,
+                    initialize_timeout_seconds=120,
+                    request_timeout_seconds=120,
+                    shutdown_timeout_seconds=5,
+                ) as harness:
+                    session = harness.start_session(TITLE_FROM_INPUT_SESSION_ID)
+                    events, notifications = drive_title_from_input(
+                        harness, session.id, first_request,
+                    )
+            except BaseException:
+                # The temporary home still exists here; keep whatever Session
+                # log the failed turn wrote before the context manager removes it.
+                try:
+                    partial_logs = read_session_logs(sessions).get(TITLE_FROM_INPUT_SESSION_ID)
+                except Exception:
+                    partial_logs = None
+                write_title_from_input_session_evidence(partial_logs)
+                raise
+
+            try:
+                logs = read_session_logs(sessions)
+            except BaseException:
+                write_title_from_input_evidence(
+                    events, notifications,
+                    requests=MockModelHandler.requests[first_request:],
+                )
+                raise
+            if set(logs) != {TITLE_FROM_INPUT_SESSION_ID}:
+                raise AssertionError(f"title-from-input wrote unexpected Session logs: {sorted(logs)}")
+            files = build_title_from_input_snapshot_files(
+                events,
+                notifications,
+                logs[TITLE_FROM_INPUT_SESSION_ID],
+                MockModelHandler.requests[first_request:],
+                root,
+            )
+        compare_snapshot_files(
+            files, update_snapshots,
+            TITLE_FROM_INPUT_SNAPSHOT_DIRECTORY, TITLE_FROM_INPUT_SNAPSHOT_FILENAMES,
+        )
+    finally:
+        # Unblock handlers the run may have abandoned on failure.
+        MockModelHandler.title_from_input_request_seen.set()
+        MockModelHandler.title_from_input_release.set()
+        MockModelHandler.title_from_input_active = False
+
+
+def drive_title_from_input(
+    harness: "DeepSeekHarness",
+    session_id: str,
+    first_request: int,
+) -> tuple[list[dict[str, object]], list["Notification"]]:
+    """Prompt through the SDK and keep reading past idle until both title events land."""
+    events: list[dict[str, object]] = []
+    notifications: list["Notification"] = []
+    seen_types: set[object] = set()
+    provider_title_seen = False
+    audit_seen = False
+    idle = False
+    deadline = time.monotonic() + 120
+    try:
+        with harness.client.subscribe_session_notifications(session_id) as subscription:
+            harness.client.session_prompt(
+                session_id, [{"type": "text", "text": TITLE_FROM_INPUT_PROMPT}],
+            )
+            while True:
+                remaining = deadline - time.monotonic()
+                diagnostics = (
+                    f"idle={idle} providerTitle={provider_title_seen} audit={audit_seen} "
+                    f"types={sorted(map(str, seen_types))} requests={len(MockModelHandler.requests)}"
+                )
+                if remaining <= 0:
+                    raise AssertionError(f"title-from-input timed out: {diagnostics}")
+                try:
+                    notification = subscription.next(timeout_seconds=remaining)
+                except TimeoutError as error:
+                    raise AssertionError(f"title-from-input timed out: {diagnostics}") from error
+                notifications.append(notification)
+                payload = notification.payload
+                if (notification.method == "session.status"
+                        and payload.get("sessionId") == session_id
+                        and payload.get("status") == "idle"):
+                    idle = True
+                    MockModelHandler.title_from_input_release.set()
+                if notification.method == "session.event" and payload.get("sessionId") == session_id:
+                    event = payload.get("event")
+                    if isinstance(event, dict):
+                        events.append(event)
+                        event_type = event.get("type")
+                        if isinstance(event_type, str):
+                            seen_types.add(event_type)
+                        data = event.get("data")
+                        source = data.get("source") if isinstance(data, dict) else None
+                        if (event_type == "session/title-from-input"
+                                and isinstance(source, dict)
+                                and source.get("kind") == "provider"):
+                            provider_title_seen = True
+                        elif event_type == "session/title-llm-request-from-input":
+                            audit_seen = True
+                if idle and provider_title_seen and audit_seen:
+                    return events, notifications
+    except BaseException:
+        # Keep the partial wire data even when the turn times out or the
+        # transport fails, instead of losing it with the temporary home.
+        write_title_from_input_evidence(
+            events, notifications, requests=MockModelHandler.requests[first_request:],
+        )
+        raise
 
 
 def smoke_sdk_dynamic_tools(base_url: str, executable: Path, update_snapshots: bool) -> None:
@@ -2749,6 +2986,360 @@ def build_dynamic_tools_snapshot_files(
         "pingResult": ping,
     }
     return {"tool-history.json": json.dumps(normalize_snapshot_value(evidence, replacements), indent=2, ensure_ascii=False) + "\n"}
+
+
+def write_title_from_input_evidence(
+    events: list[dict[str, object]],
+    notifications: "list[Notification]",
+    records: list[dict[str, object]] | None = None,
+    requests: list[dict[str, object]] | None = None,
+    cwd: Path | None = None,
+) -> None:
+    """Copy raw scenario artifacts into DSH_SMOKE_EVIDENCE_DIR before assertions run.
+
+    The temporary home disappears with its context manager, so a failing run
+    would otherwise retain only stdout. The caller supplies a unique run
+    directory; an unset variable keeps normal CI and local runs untouched.
+    """
+    directory = os.environ.get("DSH_SMOKE_EVIDENCE_DIR", "").strip()
+    if not directory:
+        return
+    path = Path(directory).expanduser()
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "raw-events.json").write_text(
+        json.dumps(events, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
+    )
+    (path / "raw-notifications.json").write_text(
+        json.dumps(
+            [{"method": notification.method, "payload": notification.payload}
+             for notification in notifications],
+            indent=2,
+            ensure_ascii=False,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    if records is not None:
+        (path / "raw-session.jsonl").write_text(render_jsonl(records), encoding="utf-8")
+    if requests is not None:
+        (path / "raw-requests.json").write_text(
+            json.dumps(requests, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
+        )
+    if cwd is not None:
+        (path / "raw-cwd.txt").write_text(str(cwd), encoding="utf-8")
+
+
+def write_title_from_input_session_evidence(records: list[dict[str, object]] | None) -> None:
+    """Keep the raw Session log of a turn that failed before the builder ran."""
+    directory = os.environ.get("DSH_SMOKE_EVIDENCE_DIR", "").strip()
+    if records is None or not directory:
+        return
+    path = Path(directory).expanduser()
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "raw-session.jsonl").write_text(render_jsonl(records), encoding="utf-8")
+
+
+def title_from_input_chain(records: list[dict[str, object]]) -> dict[str, object]:
+    """Assert the raw origin chain and return the facts the expected output pins."""
+    insertion: dict[str, object] | None = None
+    inserted_message: dict[str, object] | None = None
+    claim: dict[str, object] | None = None
+    admitted: dict[str, object] | None = None
+    provider_title: dict[str, object] | None = None
+    audit: dict[str, object] | None = None
+    fallback_titles = 0
+    provider_titles = 0
+    legacy_titles = 0
+    for record in records:
+        record_type = record.get("type")
+        data = record.get("data")
+        if not isinstance(data, dict):
+            continue
+        if record_type == "agent/inbox/spliced":
+            inserted = data.get("inserted")
+            if isinstance(inserted, list) and inserted:
+                human = [
+                    message
+                    for message in inserted
+                    if isinstance(message, dict)
+                    and isinstance(message.get("source"), dict)
+                    and message["source"].get("kind") == "user"
+                ]
+                if len(human) == 1:
+                    insertion = record
+                    inserted_message = human[0]
+            elif (insertion is not None and claim is None
+                    and data.get("target") == "next-turn"
+                    and data.get("removedCount") == 1
+                    and data.get("inserted") == []
+                    and data.get("outcome") is None):
+                claim = record
+        elif (record_type == "user/message" and inserted_message is not None
+              and data.get("id") == inserted_message.get("id")
+              and isinstance(data.get("source"), dict)
+              and data["source"].get("kind") != "user"):
+            admitted = record
+        elif (record_type == "session/title-from-input"
+              and isinstance(data.get("source"), dict)
+              and data["source"].get("kind") == "provider"):
+            provider_title = record
+            provider_titles += 1
+        elif (record_type == "session/title-from-input"
+              and isinstance(data.get("source"), dict)
+              and data["source"].get("kind") == "fallback"):
+            fallback_titles += 1
+        elif record_type == "session/title":
+            legacy_titles += 1
+        elif record_type == "session/title-llm-request-from-input":
+            if audit is not None:
+                raise AssertionError("title-from-input recorded more than one title request audit")
+            audit = record
+
+    if insertion is None or inserted_message is None:
+        raise AssertionError("title-from-input log has no human Inbox occurrence")
+    if claim is None:
+        raise AssertionError("title-from-input log has no claim splice for the human occurrence")
+    if admitted is None:
+        raise AssertionError("title-from-input log admitted no non-user rewrite of the human message")
+    if provider_title is None:
+        raise AssertionError("title-from-input log has no provider-derived title-from-input event")
+    if audit is None:
+        raise AssertionError("title-from-input log has no title-llm-request-from-input audit")
+    if legacy_titles != 0:
+        raise AssertionError("title-from-input log wrote a legacy session/title event")
+    if fallback_titles != 1 or provider_titles != 1:
+        raise AssertionError(
+            "title-from-input expected one fallback and one provider title, "
+            f"got {fallback_titles} and {provider_titles}",
+        )
+
+    insertion_seq = insertion.get("seq")
+    claim_seq = claim.get("seq")
+    admitted_seq = admitted.get("seq")
+    title_seq = provider_title.get("seq")
+    if not all(isinstance(seq, int) for seq in (insertion_seq, claim_seq, admitted_seq, title_seq)):
+        raise AssertionError("title-from-input chain events have no integer envelope seq")
+    assert insertion_seq < claim_seq < admitted_seq < title_seq, (
+        insertion_seq, claim_seq, admitted_seq, title_seq,
+    )
+
+    message_id = inserted_message.get("id")
+    if not isinstance(message_id, str) or not message_id:
+        raise AssertionError(f"the human occurrence has no message id: {inserted_message}")
+    data = provider_title["data"]
+    assert isinstance(data, dict)
+    refs = data.get("inputRefs")
+    expected_ref = {
+        "kind": "origin",
+        "originalInboxSeq": insertion_seq,
+        "messageId": message_id,
+        "claimSeq": claim_seq,
+        "admittedSeq": admitted_seq,
+    }
+    if not isinstance(refs, list) or refs != [expected_ref]:
+        raise AssertionError(f"title origin refs do not name the asserted chain: {refs} != [{expected_ref}]")
+
+    original_source = inserted_message.get("source")
+    admitted_data = admitted["data"]
+    assert isinstance(admitted_data, dict)
+    admitted_source = admitted_data.get("source")
+    if not isinstance(original_source, dict) or original_source != {"kind": "user"}:
+        raise AssertionError(f"the SDK caller source is not a plain human source: {original_source}")
+    if not isinstance(admitted_source, dict):
+        raise AssertionError(f"the admitted rewrite has no source: {admitted_data}")
+    if admitted_source.get("kind") in (None, "user"):
+        raise AssertionError(f"the admitted rewrite kept the human source kind: {admitted_source}")
+    if {key: value for key, value in admitted_source.items() if key != "kind"} != {
+        key: value for key, value in original_source.items() if key != "kind"
+    }:
+        raise AssertionError(
+            f"the rewrite changed source fields other than kind: {original_source} -> {admitted_source}",
+        )
+
+    original_text = message_text(inserted_message.get("content"))
+    effective_text = message_text(admitted_data.get("content"))
+    if original_text != TITLE_FROM_INPUT_PROMPT:
+        raise AssertionError(f"the claimed occurrence is not the caller input: {original_text!r}")
+    if not effective_text or effective_text == original_text:
+        raise AssertionError(f"the admitted rewrite did not replace the human text: {effective_text!r}")
+
+    audit_data = audit["data"]
+    assert isinstance(audit_data, dict)
+    if audit_data.get("inputRefs") != refs:
+        raise AssertionError("the title request audit cites different refs than the title event")
+    audit_messages = audit_data.get("messages")
+    if not isinstance(audit_messages, list) or len(audit_messages) != 1:
+        raise AssertionError(f"the title request audit must hold one message: {audit_messages}")
+    audit_message = audit_messages[0]
+    if not isinstance(audit_message, dict) or audit_message.get("source") != {
+        "kind": "dsh-session-title-llm",
+    }:
+        raise AssertionError(f"the title request audit has an unexpected message: {audit_message}")
+    content = audit_message.get("content")
+    if (not isinstance(content, list) or len(content) != 1
+            or not isinstance(content[0], dict) or content[0].get("type") != "text"):
+        raise AssertionError(f"the title request audit has an unexpected input: {content}")
+    prefix, separator, encoded = content[0]["text"].partition("\n")
+    if prefix != TITLE_FROM_INPUT_REQUEST_PREFIX or not separator:
+        raise AssertionError(f"the title request input is not framed by the provider: {prefix!r}")
+    if json.loads(encoded) != [{"seq": admitted_seq, "text": original_text}]:
+        raise AssertionError(f"the title request did not carry exactly the original input: {encoded}")
+
+    title = data.get("title")
+    if title != TITLE_FROM_INPUT_MODEL_TITLE:
+        raise AssertionError(f"the title model output was not accepted: {title!r}")
+    return {
+        "message_id": message_id,
+        "original_text": original_text,
+        "effective_text": effective_text,
+        "title": title,
+        "original_inbox_seq": insertion_seq,
+        "claim_seq": claim_seq,
+        "admitted_seq": admitted_seq,
+        "title_data": data,
+        "audit_data": audit_data,
+    }
+
+
+def build_title_from_input_snapshot_files(
+    events: list[dict[str, object]],
+    notifications: "list[Notification]",
+    records: list[dict[str, object]],
+    requests: list[dict[str, object]],
+    cwd: Path,
+) -> dict[str, str]:
+    """Pin the rewritten turn, its two title events, and both actual model inputs."""
+    write_title_from_input_evidence(events, notifications, records, requests, cwd)
+    chain = title_from_input_chain(records)
+    message_id = str(chain["message_id"])
+    original_text = str(chain["original_text"])
+    effective_text = str(chain["effective_text"])
+
+    title_events = [
+        event for event in events
+        if event.get("type") == "session/title-from-input"
+        and isinstance(event.get("data"), dict)
+        and isinstance(event["data"].get("source"), dict)
+        and event["data"]["source"].get("kind") == "provider"
+    ]
+    if len(title_events) != 1 or title_events[0].get("data") != chain["title_data"]:
+        raise AssertionError("the SDK notifications do not carry the provider title-from-input event")
+    audit_events = [
+        event for event in events
+        if event.get("type") == "session/title-llm-request-from-input"
+    ]
+    if len(audit_events) != 1 or audit_events[0].get("data") != chain["audit_data"]:
+        raise AssertionError("the SDK notifications do not carry the title request audit event")
+    finals = [
+        message_text(event["data"]["message"].get("content"))
+        for event in events
+        if event.get("type") == "assistant/message" and isinstance(event.get("data"), dict)
+        and isinstance(event["data"].get("message"), dict)
+    ]
+    if not finals or finals[-1] != TITLE_FROM_INPUT_FINAL_TEXT:
+        raise AssertionError(f"the rewritten main turn did not finish with its expected text: {finals}")
+
+    main_requests: list[dict[str, object]] = []
+    title_requests: list[dict[str, object]] = []
+    for body in requests:
+        messages = body.get("messages")
+        if not isinstance(messages, list):
+            raise AssertionError(f"title-from-input model request has no messages: {body}")
+        texts = [
+            message_text(message.get("content"))
+            for message in messages
+            if isinstance(message, dict) and message.get("role") == "user"
+        ]
+        if any(TITLE_FROM_INPUT_REQUEST_PREFIX in text for text in texts):
+            title_requests.append(body)
+        else:
+            main_requests.append(body)
+    if len(main_requests) != 1 or len(title_requests) != 1:
+        raise AssertionError(
+            "title-from-input expected one main and one title request, "
+            f"got {len(main_requests)} and {len(title_requests)}",
+        )
+    main_messages = json.dumps(main_requests[0]["messages"], ensure_ascii=False)
+    if effective_text not in main_messages or original_text in main_messages:
+        raise AssertionError("the main model request did not see only the effective rewrite")
+
+    title_messages = title_requests[0].get("messages")
+    if not isinstance(title_messages, list) or len(title_messages) != 1:
+        raise AssertionError(
+            f"the title request must carry exactly one user message: {title_messages}",
+        )
+    actual_title_message = title_messages[0]
+    if not isinstance(actual_title_message, dict) or actual_title_message.get("role") != "user":
+        raise AssertionError(f"the title request message is not a user message: {actual_title_message}")
+    actual_content = actual_title_message.get("content")
+    if (not isinstance(actual_content, list) or len(actual_content) != 1
+            or not isinstance(actual_content[0], dict)
+            or actual_content[0].get("type") != "text"
+            or not isinstance(actual_content[0].get("text"), str)):
+        raise AssertionError(f"the title request input is not one text block: {actual_content}")
+    actual_framed = actual_content[0]["text"]
+    audit_data = chain["audit_data"]
+    audit_messages = audit_data.get("messages")
+    if not isinstance(audit_messages, list) or len(audit_messages) != 1:
+        raise AssertionError(f"the title audit has an unexpected message list: {audit_messages}")
+    audit_message = audit_messages[0]
+    audit_content = audit_message.get("content") if isinstance(audit_message, dict) else None
+    if (not isinstance(audit_content, list) or len(audit_content) != 1
+            or not isinstance(audit_content[0], dict)
+            or not isinstance(audit_content[0].get("text"), str)):
+        raise AssertionError(f"the title audit has an unexpected input: {audit_content}")
+    audit_framed = audit_content[0]["text"]
+    if actual_framed != audit_framed:
+        raise AssertionError("the actual title request input differs from the recorded audit input")
+    if title_requests[0].get("system") != audit_data.get("system"):
+        raise AssertionError("the actual title request system prompt differs from the recorded audit")
+    prefix, separator, encoded = actual_framed.partition("\n")
+    if prefix != TITLE_FROM_INPUT_REQUEST_PREFIX or not separator:
+        raise AssertionError(f"the actual title request input is not framed by the provider: {prefix!r}")
+    if json.loads(encoded) != [{"seq": chain["admitted_seq"], "text": original_text}]:
+        raise AssertionError(
+            f"the actual title request did not carry exactly the original input and chain seq: {encoded}",
+        )
+    title_messages_json = json.dumps(title_messages, ensure_ascii=False)
+    if original_text not in title_messages_json or effective_text in title_messages_json:
+        raise AssertionError("the title model request did not see only the original input")
+
+    replacements = snapshot_directory_replacements(cwd, "{{cwd}}") + [
+        (message_id, "{{message:title-input}}"),
+    ]
+    requests_value = {
+        "main": {
+            "system": "{{system}}",
+            "messages": normalize_snapshot_value(main_requests[0]["messages"], replacements),
+        },
+        "title": {
+            "system": normalize_snapshot_value(title_requests[0].get("system"), replacements),
+            "messages": normalize_snapshot_value(title_messages, replacements),
+        },
+    }
+    result_value = {
+        "session_id": TITLE_FROM_INPUT_SESSION_ID,
+        "final_response": TITLE_FROM_INPUT_FINAL_TEXT,
+        "events": events,
+        "notifications": [
+            {"method": notification.method, "payload": notification.payload}
+            for notification in notifications
+        ],
+    }
+    log_records = project_session_snapshot([
+        normalize_snapshot_value(record, replacements) for record in records
+    ])
+    session_content = render_jsonl(log_records)
+    session_version = session_header_version(session_content, "title-from-input")
+    assert_current_session_version(session_version, "title-from-input")
+    return {
+        "result.json": json.dumps(
+            normalize_snapshot_value(result_value, replacements), indent=2, ensure_ascii=False,
+        ) + "\n",
+        "requests.json": json.dumps(
+            normalize_snapshot_value(requests_value, replacements), indent=2, ensure_ascii=False,
+        ) + "\n",
+        snapshot_session_filename(0, session_version): session_content,
+    }
 
 
 def build_minimal_snapshot_files(

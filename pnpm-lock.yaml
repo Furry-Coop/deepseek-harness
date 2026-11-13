@@ -7790,6 +7790,15 @@ importers:
       '@deepseek-ai/dsh-session-projection':
         specifier: workspace:*
         version: link:../../session/session-projection
+      '@deepseek-ai/dsh-session-title':
+        specifier: workspace:*
+        version: link:../../session/session-title
+      '@deepseek-ai/dsh-session-title-all-prompts-llm':
+        specifier: workspace:*
+        version: link:../../experimental/session-title-all-prompts-llm
+      '@deepseek-ai/dsh-session-title-first-prompt-llm':
+        specifier: workspace:*
+        version: link:../../session/session-title-first-prompt-llm
       '@deepseek-ai/dsh-system-prompt':
         specifier: workspace:*
         version: link:../system-prompt

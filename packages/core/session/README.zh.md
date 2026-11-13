@@ -83,6 +83,10 @@ session.deriveMessages()         // the derived model history
 
 逻辑 `SessionHeader.isSeeded` 字段报告是否存在 fork 历史，而不公开位置整数。`Session.inheritedEventCount` 保留经过校验的精确 `SessionLogOffset`；`ownEvents()` 返回从该切点开始的事件，`isOwnSeq(seq)` 只接受已存在且由子会话拥有的位置。底层带 seed 构造必须显式提供 `seed` 与 `inheritedEventCount`，因为构造 seed 可以在继承前缀之后包含子会话自有的设置事件。
 
+### 共享 Inbox 准入策略
+
+`@deepseek-ai/dsh-session/inbox-admission` 是一个浏览器安全的纯模块，用于证明被改写的真人 Inbox occurrence 的持久 claim 与进入步骤：它分类已提交的 splice，跨 `step/start`、`step/end` 与 `turn/end` 跟踪 claim 窗口，并按 source 与请求 correlation 匹配同 id 的已准入改写。它只依赖 Session/LLM 类型，并通过结构化只读视图读取 splice 中它消费的字段。`@deepseek-ai/dsh-agent/inbox-admission` 为 Client echo、prompt 幂等与标题消费方转出该模块，持久化后端也复用它，在发布存储日志前校验 required 的 title-input 事件。
+
 ### 刷新持久状态
 
 `ctx.sessions.flush(session)` 分发需等待完成的持久性检查点：每个持久化监听器都会刷新，调用在所有监听器结算后完成。需要立即持久性屏障的生产方应等待它，而不是假定延后写入已经排空。
@@ -113,6 +117,7 @@ session.deriveMessages()         // the derived model history
 | [`src/types.ts`](src/types.ts) | `SessionEventMap`、`SessionEvent`、`UserMessage`、`SessionHeader`、`TurnEndReasonMap` |
 | [`src/surface.ts`](src/surface.ts) | 有序 surface 投影、替换校验、`deriveEventMessage` |
 | [`src/request-header.ts`](src/request-header.ts) | `request/header` 折叠与重建 |
+| [`src/inbox-admission.ts`](src/inbox-admission.ts) | 浏览器安全的纯 Inbox claim/准入策略，供 Client echo、prompt 幂等、标题输入与冷读校验共享 |
 | [`dsh-util-values`](../../util/values/README.zh.md) | 共享无损 JSON 校验与分离式快照 |
 | [`src/repair.ts`](src/repair.ts) | 失败步骤、中断日志与 fork 种子共享的工具结果恢复 |
 

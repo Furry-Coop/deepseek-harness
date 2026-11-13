@@ -3,14 +3,14 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write docs/subsystems/session-title.md
 /session-titles:
-  en: 40ede027d4f62b35
-  zh: 0efd7cb0710a0ed9
+  en: d3a8287c100c898a
+  zh: f728425cf8443165
 /session-titles/durable-title-state:
-  en: c6be2d86647daa6f
-  zh: fb259d9fb4738f39
+  en: eeebdebcf3797fdc
+  zh: 1073c69548f40ad1
 /session-titles/auxiliary-request-record:
-  en: e5d5045ddfa7e771
-  zh: 8c989ef59853cce4
+  en: fe447934ff55f103
+  zh: d4367152475cbde9
 /session-titles/provider-input-and-output:
-  en: 28ee84e62db773f0
-  zh: 93beca6fbcd02c4e
+  en: 5f70b6b15a00cadc
+  zh: 595b56b3e52f7b3d

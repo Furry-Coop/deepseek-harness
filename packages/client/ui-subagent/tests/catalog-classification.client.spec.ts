@@ -16,6 +16,33 @@ function fixture() {
   return { ctx, menu: new SubagentCatalogPresentation(ctx) }
 }
 
+/**
+ * A real typed classification Map whose iteration is replaced by a hostile
+ * implementation: reading the answer throws before any entry is yielded. The
+ * own `has` override preserves the original fixture's reported absence.
+ */
+function unreadableAnswer(): Map<SessionId, 'support'> {
+  const answer = new Map<SessionId, 'support'>()
+  Object.defineProperty(answer, 'has', { value: () => false })
+  Object.defineProperty(answer, Symbol.iterator, {
+    value: () => { throw new Error('unreadable answer') },
+  })
+  return answer
+}
+
+/** A real typed answer whose iteration yields one entry and then throws. */
+function halfIteratedAnswer(): Map<SessionId, 'support'> {
+  const answer = new Map<SessionId, 'support'>()
+  Object.defineProperty(answer, 'has', { value: () => false })
+  Object.defineProperty(answer, Symbol.iterator, {
+    value: function* () {
+      yield [NORMAL, 'support'] as const
+      throw new Error('failed after one entry')
+    },
+  })
+  return answer
+}
+
 function input(): SubagentCatalogClassificationInput {
   return {
     parentSessionId: PARENT,
@@ -93,10 +120,7 @@ describe('Subagent catalog presentation classification', () => {
     menu.register({ id: 'healthy', classify: healthy, revision: createSnapshotStore(0) })
     menu.register({
       id: 'unreadable',
-      classify: () => ({
-        [Symbol.iterator]() { throw new Error('unreadable answer') },
-        has: () => false,
-      }) as unknown as Map<SessionId, 'support'>,
+      classify: unreadableAnswer,
       revision: createSnapshotStore(0),
     })
     expect([...menu.classify(input())]).toEqual([[SUPPORT, 'support']])
@@ -115,13 +139,7 @@ describe('Subagent catalog presentation classification', () => {
     })
     menu.register({
       id: 'half',
-      classify: () => ({
-        *[Symbol.iterator]() {
-          yield [NORMAL, 'support' as const]
-          throw new Error('failed after one entry')
-        },
-        has: () => false,
-      }) as unknown as Map<SessionId, 'support'>,
+      classify: halfIteratedAnswer,
       revision: createSnapshotStore(0),
     })
     // The failing contribution leaves no partial classification behind; the

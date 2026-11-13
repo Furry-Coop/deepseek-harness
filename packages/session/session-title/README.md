@@ -29,7 +29,7 @@ Mount the service to give sessions titles that clients can display and that neve
 
 ### Choosing a title source
 
-Titles come from three sources, newest wins. The built-in fallback derives from the first eligible human message's leading words within the configured caps; a registered provider generates a title over eligible messages; an explicit `rename()` accepts a user-supplied title. Only text blocks from human `user/message` events are eligible, and empty or non-text prompts wait for later eligible input. A user-sourced latest title pins the session — later user messages schedule no automatic revision, and an explicit `refresh()` remains the deliberate unpin.
+Titles come from three sources, newest wins. The built-in fallback derives from the first eligible human message's leading words within the configured caps; a registered provider generates a title over eligible messages; an explicit `rename()` accepts a user-supplied title. Eligible text comes from human `user/message` events and from a human Inbox occurrence that the Host claims and then admits under a rewritten source; the latter supplies the original text, and its title is recorded by `session/title-from-input` with exact frozen input refs. Empty or non-text inputs wait for later eligible input. A user-sourced latest title pins the session — later user messages schedule no automatic revision, and an explicit `refresh()` remains the deliberate unpin.
 
 ### Minimal configuration
 
@@ -58,7 +58,7 @@ One optional asynchronous provider may be registered through `ctx.sessionTitle.r
 
 ### Reading titles
 
-`get(session)` reads the latest folded title from one live or replayed session, and `foldSessionTitle(events)` is the pure fold over a log. The service requires `ctx.sessionProjections` and registers two units: the client-visible `title` unit (the accepted title string for client list rows) and the host-only `titleInput` unit, which folds the first and latest eligible messages plus their count so scheduling and fallback reads are O(1) through `stateOf()`; the full eligible prefix for one provider generation is scanned from the session log at execution time. An explicit `refresh(session)` materializes the fallback when needed, then explicitly runs the registered provider over the current eligible messages.
+`get(session)` reads the latest folded title from one live or replayed session, and `foldSessionTitle(events)` is the pure fold over a log. The service requires `ctx.sessionProjections` and registers two units: the client-visible `title` unit (the accepted title string for client list rows) and the host-only `titleInput` unit, which folds the first and latest eligible inputs, their count, and the bounded pending/claimed occurrence window so scheduling and fallback reads are O(1) through `stateOf()`; the full eligible prefix for one provider generation is scanned from the session log at execution time. An explicit `refresh(session)` materializes the fallback when needed, then explicitly runs the registered provider over the current eligible inputs.
 
 ### Failures and recovery
 
@@ -76,7 +76,7 @@ This section explains the title design; the observable behavior is fully covered
 
 ### Design concept
 
-Titles are durable, log-only state: every accepted revision is a `session/title` event, and `foldSessionTitle()` selects the latest, so a title survives replay, resume, and paging exactly like any other session event. The service owns scheduling, supersession, and acceptance; providers own generation.
+Titles are durable, log-only state: every accepted revision is a `session/title` or `session/title-from-input` event, and `foldSessionTitle()` selects the latest, so a title survives replay, resume, and paging exactly like any other session event. The service owns scheduling, supersession, and acceptance; providers own generation.
 
 ### Source map
 

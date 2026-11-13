@@ -1,0 +1,12 @@
+version: 1
+scenario: session-title-from-input
+profile: sdk
+composition: sdk-title-from-input
+recording: authored
+header:
+  class: sdk-title-from-input
+  pin: true
+  systemPromptSource: first-step-wake
+  toolSchemasSource: first-step-wake
+replay:
+  override: true

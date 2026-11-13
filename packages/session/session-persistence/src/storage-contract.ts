@@ -18,6 +18,7 @@ import {
   sessionFormatVersionRefusal,
   type SessionLocation,
 } from './errors.ts'
+import { validateTitleInputEvents } from './title-input-validation.ts'
 
 /** Build a format refusal that points at the raw artifact when the backend has one. */
 function unsupported(reason: string, location: SessionLocation | undefined): SessionFormatUnsupportedError {
@@ -59,6 +60,9 @@ export function assertVersion(
  * skipping an unknown required event could reconstruct a wrong session (the
  * envelope contract on `SessionEvent.ignorable`). Unknown required types and
  * retired pre-release shapes refuse here; this validator performs no migration.
+ * It also proves the frozen input references of the two required title-input
+ * event kinds before adopting any record, so a backend refuses an inconsistent
+ * log before publishing, executing, or repairing its raw file.
  * @param meta - the stored header the events belong to.
  * @param events - exclusively owned decoded events; validated in place.
  * @param location - the backend's artifact location for refusals, when one exists.
@@ -92,6 +96,7 @@ export function validateStoredEvents(
     }
   }
   try {
+    validateTitleInputEvents(events)
     for (const [index, event] of events.entries()) events[index] = adoptSessionEvent(event)
   } catch (error: unknown) {
     if (error instanceof SessionFormatUnsupportedError) throw error

@@ -708,7 +708,22 @@
     },
     {
       "doc": "docs/subsystems/session-title.md",
+      "symbol": "SessionTitleGeneratedSource",
+      "source": "packages/session/session-title/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/session-title.md",
       "symbol": "SessionTitleEventData",
+      "source": "packages/session/session-title/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/session-title.md",
+      "symbol": "SessionTitleInputRef",
+      "source": "packages/session/session-title/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/session-title.md",
+      "symbol": "SessionTitleFromInputEventData",
       "source": "packages/session/session-title/src/types.ts"
     },
     {
@@ -719,6 +734,16 @@
     {
       "doc": "docs/subsystems/session-title.md",
       "symbol": "SessionTitleLlmRequestEventData",
+      "source": "packages/session/session-title-llm/src/index.ts"
+    },
+    {
+      "doc": "docs/subsystems/session-title.md",
+      "symbol": "SessionTitleLlmRequestFromInputEventData",
+      "source": "packages/session/session-title-llm/src/index.ts"
+    },
+    {
+      "doc": "docs/subsystems/session-title.md",
+      "symbol": "SessionTitleLlmRequestMessage",
       "source": "packages/session/session-title-llm/src/index.ts"
     },
     {
