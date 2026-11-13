@@ -70,6 +70,7 @@ import { deriveReplayScript, parseSessionLog } from '@deepseek-ai/dsh-llm-replay
 
 const corpusRoot = fileURLToPath(new URL('../', import.meta.url))
 
+const SURFACE_HEAD_PROMPT = 'Reply with exactly SURFACE_HEAD_BEFORE_TURN_OK and do not use tools.'
 const MINIMAL_SYSTEM_PROMPT = 'You are the environment-selected minimal software engineer.'
 const MINIMAL_BASH_DESCRIPTION = `Run commands in a bash shell
 * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
@@ -151,9 +152,32 @@ interface SdkAssertions {
   expectedToolDescriptions?: Readonly<Record<string, string>>
   /** Expected runtime-context state in the real assembled request. */
   runtimeContext?: false | { includes: readonly string[]; excludes: readonly string[] }
+  /**
+   * Create the Session without a turn, let the scenario patch maintain the
+   * protected surface head, and only then send the first recorded prompt.
+   */
+  surfaceHead?: boolean
+  /** Write this scenario's wire goldens when they are not committed yet. */
+  writeWireGoldens?: boolean
+}
+
+/** The scenario patch's two maintenance results and the phase it observed. */
+interface SurfaceHeadEvidence {
+  readonly statusBefore: string
+  readonly statusAfter: string
+  readonly first: { readonly headSeq: number; readonly appended: boolean; readonly checkpointed: boolean }
+  readonly second: { readonly headSeq: number; readonly appended: boolean; readonly checkpointed: boolean }
+  readonly error?: string
+  readonly failure?: string
 }
 
 const SDK_ASSERTIONS: Readonly<Record<string, SdkAssertions>> = {
+  'surface-head-before-first-turn': {
+    surfaceHead: true,
+    writeWireGoldens: true,
+    modelRequestsFile: 'surface-head-requests.jsonl',
+  },
+
   'first-step-wake': {
     firstStepWake: true,
   },
@@ -751,6 +775,30 @@ function materializeInput(
   })
 }
 
+/**
+ * Read the scenario patch's maintenance evidence. The plugin writes one
+ * complete JSON line after both calls settle; a partial read retries.
+ *
+ * @param path - marker path under the scenario's private DSH home.
+ * @returns the parsed evidence once the patch has written it.
+ */
+async function waitForSurfaceHeadMarker(path: string): Promise<SurfaceHeadEvidence> {
+  const deadline = Date.now() + 60_000
+  let last = ''
+  while (Date.now() < deadline) {
+    if (existsSync(path)) {
+      last = await readFile(path, 'utf8')
+      try {
+        return JSON.parse(last) as SurfaceHeadEvidence
+      } catch {
+        // The plugin publishes the marker in one write; a concurrent read is retried.
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  throw new Error(`surface-head maintenance marker ${path} was not written: ${last}`)
+}
+
 function notificationEvent(notification: HarnessNotification): JsonObject | undefined {
   return notification.method === 'session.event' && notification.params.event !== null
     && typeof notification.params.event === 'object'
@@ -873,6 +921,7 @@ async function runScenario(scenario: CorpusScenario): Promise<{
   finalWorkspace: WorkspaceSnapshotEntry[]
   cwd: string
   modelRequests: JsonObject[]
+  surfaceHead?: SurfaceHeadEvidence
 }> {
   const workspaceParent = await realpath(tmpdir())
   let workspacePrefix = `sdk-snapshot-${scenario.name}-`
@@ -990,6 +1039,7 @@ async function runScenario(scenario: CorpusScenario): Promise<{
     ...onUserQuestion === undefined ? {} : { onUserQuestion },
   })
   let harness = createHarness()
+  let surfaceHead: SurfaceHeadEvidence | undefined
   try {
     const notifications: HarnessNotification[] = []
     const observedMethods = new Set<string>()
@@ -1051,6 +1101,28 @@ async function runScenario(scenario: CorpusScenario): Promise<{
         }
       } else {
         let session = harness.session(sessionId)
+        if (assertions.surfaceHead === true) {
+          // Creating the Session does not start a turn. The scenario patch claims
+          // the true idle phase, establishes the head, and confirms the no-op
+          // second call before this driver sends the recorded first prompt.
+          await session.getWorkingDirectory()
+          surfaceHead = await waitForSurfaceHeadMarker(join(dshHome, 'surface-head-maintenance.json'))
+          if (surfaceHead.error !== undefined) {
+            throw new Error(`${scenario.name}: surface-head maintenance failed: ${surfaceHead.error}`)
+          }
+          while (true) {
+            const notification = await subscription.next()
+            notifications.push(notification)
+            observe(notification)
+            const event = notificationEvent(notification)
+            if (event?.type === 'system/message'
+              && (event.data as JsonObject | undefined)?.maintenance === true) break
+          }
+          for (let notification = subscription.tryNext(); notification !== undefined; notification = subscription.tryNext()) {
+            notifications.push(notification)
+            observe(notification)
+          }
+        }
         for (const action of actions) {
           if (action.kind === 'command') {
             const execution = await session.run(assertions.commandAttachments === true ? [
@@ -1205,7 +1277,17 @@ async function runScenario(scenario: CorpusScenario): Promise<{
       ? records(await readFile(join(dshHome, assertions.modelRequestsFile), 'utf8'))
       : []
     if (planReviews !== undefined) expect(planReviews).toEqual([])
-    return { results, notifications, observedMethods, logs, initialWorkspace, finalWorkspace, cwd, modelRequests }
+    return {
+      results,
+      notifications,
+      observedMethods,
+      logs,
+      initialWorkspace,
+      finalWorkspace,
+      cwd,
+      modelRequests,
+      ...surfaceHead === undefined ? {} : { surfaceHead },
+    }
   } finally {
     await harness.close()
     await rm(cwd, { recursive: true, force: true })
@@ -1376,8 +1458,9 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
       const retained = scenario.manifest.sessionFormat !== undefined
       const notificationsExpectedPath = join(scenarioDir, retained ? 'notifications.current.expected.jsonl' : 'notifications.expected.jsonl')
       const resultExpectedPath = join(scenarioDir, 'result.expected.json')
-      const hasWireGoldens = existsSync(notificationsExpectedPath) || existsSync(resultExpectedPath)
       const assertions = SDK_ASSERTIONS[scenario.name] ?? {}
+      const hasWireGoldens = assertions.writeWireGoldens === true
+        || existsSync(notificationsExpectedPath) || existsSync(resultExpectedPath)
       const writesSessionFixtures = writesCurrentSessionFixtures(scenario.manifest, sessionWriteMode)
 
       let files = await fixtureFiles(scenario)
@@ -1387,7 +1470,7 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
         expect(writerFiles, 'native writer oracle inventory').toEqual(retained
           ? files.map((_, index) => writerSnapshotName(index)).sort() : [])
       }
-      const { results, notifications, observedMethods, logs, initialWorkspace, finalWorkspace, cwd, modelRequests } = await runScenario(scenario)
+      const { results, notifications, observedMethods, logs, initialWorkspace, finalWorkspace, cwd, modelRequests, surfaceHead } = await runScenario(scenario)
       const ordered = orderLogs(
         logs,
         recording ? logs.length : files.length,
@@ -1439,6 +1522,81 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
           .toEqual(events.slice(observedStart))
         expect(finalResult.finalResponse, 'sdk-cancel: the answered response survives the abort')
           .toBe('CANCEL_TURN_BEFORE_ABORT')
+      }
+
+      if (scenario.name === 'surface-head-before-first-turn') {
+        const parent = ordered[0]
+        if (parent === undefined) throw new Error('surface-head scenario has no persisted Session')
+        const events = records(parent.content)
+        const heads = events.filter(event => event.type === 'system/message')
+        expect(heads, 'the maintenance call establishes exactly one system head').toHaveLength(1)
+        const head = heads[0]!
+        const headData = head.data as JsonObject
+        expect(headData.maintenance, 'the head records its maintenance author').toBe(true)
+        expect(headData, 'a maintenance head carries no turn').not.toHaveProperty('turn')
+        expect(headData, 'a maintenance head carries no step').not.toHaveProperty('step')
+        const headText = ((headData.message as JsonObject).content as JsonObject[])[0]!.text
+        const headSeq = head.seq
+        if (typeof headSeq !== 'number') throw new Error('surface-head head has no numeric seq')
+        expect(surfaceHead, 'the scenario patch reports both maintenance calls').toBeDefined()
+        expect(surfaceHead).toMatchObject({
+          statusBefore: 'idle',
+          statusAfter: 'idle',
+          first: { headSeq, appended: true, checkpointed: true },
+          second: { headSeq, appended: false, checkpointed: true },
+        })
+        const caller = events.find(event => event.type === 'user/message'
+          && ((event.data as JsonObject).source as JsonObject).kind === 'user')
+        if (caller === undefined) throw new Error('surface-head scenario has no caller message')
+        const callerSeq = caller.seq
+        if (typeof callerSeq !== 'number') throw new Error('surface-head caller message has no numeric seq')
+        const step = events.find(event => event.type === 'step/start')
+        const turn = events.find(event => event.type === 'turn/start')
+        if (step === undefined || turn === undefined) throw new Error('surface-head scenario has no turn or step')
+        const stepSeq = step.seq
+        const turnSeq = turn.seq
+        if (typeof stepSeq !== 'number' || typeof turnSeq !== 'number') {
+          throw new Error('surface-head turn or step has no numeric seq')
+        }
+        expect(headSeq, 'the head precedes the first caller message').toBeLessThan(callerSeq)
+        expect(headSeq, 'the head precedes the first step').toBeLessThan(stepSeq)
+        expect(headSeq, 'the head precedes the first turn').toBeLessThan(turnSeq)
+        expect(events.filter(event => event.type === 'turn/start'), 'one turn').toHaveLength(1)
+        expect(events.filter(event => event.type === 'step/start'), 'one step').toHaveLength(1)
+        expect(events.filter(event => event.type === 'request/header'), 'one main request header').toHaveLength(1)
+        expect(events.filter(event => event.type === 'assistant/message'), 'one model reply').toHaveLength(1)
+        expect(events.filter(event => event.type === 'session/title'),
+          'the ordinary title path still derives from the caller input').toHaveLength(1)
+        const titleText = (events.find(event => event.type === 'session/title')!.data as JsonObject).title
+        if (typeof titleText !== 'string' || !SURFACE_HEAD_PROMPT.startsWith(titleText)) {
+          throw new Error(`surface-head title did not derive from the caller prompt: ${String(titleText)}`)
+        }
+        expect((caller.data as JsonObject).content).toEqual([{ type: 'text', text: SURFACE_HEAD_PROMPT }])
+        expect(modelRequests, 'the turn spends exactly one main request').toHaveLength(1)
+        const request = modelRequests[0]!
+        expect(request.purpose, 'the request is the ordinary main purpose').toBeUndefined()
+        const requestMessages = request.messages as JsonObject[]
+        expect(requestMessages[0]?.role).toBe('system')
+        expect(((requestMessages[0]!.content as JsonObject[])[0]!).text,
+          'the request system prompt is the recorded maintenance head').toBe(headText)
+        const requestCallers = requestMessages.filter(message => message.role === 'user'
+          && (message.source as JsonObject | undefined)?.kind === 'user')
+        expect(requestCallers, 'the request carries the caller input once').toHaveLength(1)
+        expect((requestCallers[0]!.content as JsonObject[])[0]!.text).toBe(SURFACE_HEAD_PROMPT)
+        for (const message of requestMessages.slice(1)) {
+          expect(message.role, 'runtime context is the only non-caller user contribution').toBe('user')
+          expect((message.source as JsonObject | undefined)?.kind, 'no unrecorded user source reaches the model')
+            .toMatch(/^(user|runtime-context)$/u)
+        }
+        const notifiedHead = notifications.findIndex((notification) => {
+          const event = notificationEvent(notification)
+          return event?.type === 'system/message' && (event.data as JsonObject).maintenance === true
+        })
+        const notifiedTurn = notifications.findIndex((notification) => {
+          return notificationEvent(notification)?.type === 'turn/start'
+        })
+        expect(notifiedHead, 'the SDK notified the maintenance head').toBeGreaterThanOrEqual(0)
+        expect(notifiedHead, 'the SDK notified the head before the turn').toBeLessThan(notifiedTurn)
       }
 
       if (scenario.name === 'command-attachments') {

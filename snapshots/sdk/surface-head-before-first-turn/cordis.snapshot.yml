@@ -1,0 +1,4 @@
+# Keyless replay over the authored composition: the scenario patch supplies both
+# the deterministic model boundary and the pre-turn head maintenance, so no
+# recorded model script or replay provider replaces the live composition.
+[]

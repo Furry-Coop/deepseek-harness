@@ -1,0 +1,62 @@
+# TypeScript SDK patch over `dsh --profile sdk`: a platform-neutral composition,
+# one deterministic model boundary, and the pre-turn head maintenance this
+# scenario records. The maintenance plugin is also read by the Python SDK
+# scenario; only this composition enables its `llm/stream` reply.
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    includeDefaultRoots: false
+
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek-api-key'
+  config:
+    thinking: enabled
+    reasoningEffort: max
+
+- id: session-persistence-jsonl
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js dshHomePath('sessions')
+    compression: !!js "process.env.DSH_SNAPSHOT === undefined ? 'zstd' : 'none'"
+
+# The scenario proves the head position and the first model input, not shell
+# execution, skill discovery, workspace instructions, plugin inventory, or
+# wall-clock sampling. Each of those contributes platform- or deployment-
+# dependent prompt text or tools that the recorded session must not pin.
+- id: session-log-deepseek
+  config:
+    enabled: false
+
+- id: plugin-package-inventory-deepseek
+  config:
+    enabled: false
+
+- id: agent-instructions
+  disabled: true
+
+- id: workspace-dependencies
+  disabled: true
+
+- id: skill-office
+  disabled: true
+
+- id: tool-bash
+  disabled: true
+
+- id: tool-pwsh
+  disabled: true
+
+- id: tool-skill
+  disabled: true
+
+- id: time-context
+  disabled: true
+
+- insert:
+    - id: surface-head-fixture
+      name: ./maintain-surface-head.mjs
+      config:
+        resultPath: !!js dshHomePath('surface-head-maintenance.json')
+        capturePath: !!js dshHomePath('surface-head-requests.jsonl')
+        provider: deepseek-official
+        reply: SURFACE_HEAD_BEFORE_TURN_OK

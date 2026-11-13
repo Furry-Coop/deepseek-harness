@@ -1,0 +1,8 @@
+version: 1
+scenario: surface-head-before-first-turn
+profile: sdk
+composition: sdk-surface-head-before-first-turn
+recording: authored
+header:
+  class: sdk-surface-head-before-first-turn
+  pin: true

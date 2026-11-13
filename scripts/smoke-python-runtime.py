@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Literal
 
 if TYPE_CHECKING:
-    from deepseek_harness import DeepSeekHarness, Notification, RunResult
+    from deepseek_harness import DeepSeekHarness, Notification, RunResult, Session
 
 
 EXPECTED_TEXT = "runtime smoke ok"
@@ -143,6 +143,19 @@ TITLE_FROM_INPUT_SNAPSHOT_DIRECTORY = (
     Path(__file__).resolve().parent / "snapshots" / "python-sdk-single-exe" / "title-from-input"
 )
 TITLE_FROM_INPUT_SNAPSHOT_FILENAMES = ("result.json", "requests.json", "session.v4.jsonl")
+SURFACE_HEAD_PROMPT = "Reply with exactly SURFACE_HEAD_BEFORE_TURN_OK and do not use tools."
+SURFACE_HEAD_TEXT = "SURFACE_HEAD_BEFORE_TURN_OK"
+SURFACE_HEAD_SESSION_ID = "surface-head-before-first-turn"
+SURFACE_HEAD_PLUGIN = (
+    REPO_ROOT / "snapshots" / "sdk" / "surface-head-before-first-turn" / "maintain-surface-head.mjs"
+)
+SURFACE_HEAD_SNAPSHOT_DIRECTORY = (
+    Path(__file__).resolve().parent
+    / "snapshots"
+    / "python-sdk-single-exe"
+    / "surface-head-before-first-turn"
+)
+SURFACE_HEAD_SNAPSHOT_FILENAMES = ("result.json", "requests.json", "session.v4.jsonl")
 SNAPSHOT_WORKFLOW_SCRIPT = (
     "phase('Delegate')\n"
     f"const reply = await agent('{SNAPSHOT_WORKFLOW_CHILD_PROMPT}', {{ label: 'workflow-child' }})\n"
@@ -405,6 +418,9 @@ def completion_chunks(body: dict[str, object]) -> list[dict[str, object]]:
             raise AssertionError("title-from-input main response did not observe the title request")
         return text_chunks(TITLE_FROM_INPUT_FINAL_TEXT)
 
+    if SURFACE_HEAD_PROMPT in message_text(latest.get("content")):
+        return text_chunks(SURFACE_HEAD_TEXT)
+
     recovery_prompt = next((
         block.get("text")
         for block in latest.get("content", [])
@@ -535,6 +551,7 @@ def completion_chunks(body: dict[str, object]) -> list[dict[str, object]]:
         AUTHORING_PROMPT,
         DYNAMIC_TOOLS_PROMPT,
         CANCEL_PROMPT,
+        SURFACE_HEAD_PROMPT,
         "check missing plugin package manager",
     }
     prompt = next(
@@ -913,7 +930,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--scenario",
-        choices=("all", "sdk-default", "sdk-custom", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-title-from-input", "sdk-fs-search", "sdk-spawn-node", "sdk-mcp", "sdk-snapshot", "sdk-recovery", "sdk-cancel", "sdk-restart", "sdk-profile-plugin", "sdk-plugin-manager", "sdk-office", "sdk-authoring", "sdk-live", "runner", "direct"),
+        choices=("all", "sdk-default", "sdk-custom", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-title-from-input", "sdk-surface-head", "sdk-fs-search", "sdk-spawn-node", "sdk-mcp", "sdk-snapshot", "sdk-recovery", "sdk-cancel", "sdk-restart", "sdk-profile-plugin", "sdk-plugin-manager", "sdk-office", "sdk-authoring", "sdk-live", "runner", "direct"),
         default="all",
     )
     parser.add_argument("--exe", type=Path)
@@ -934,8 +951,8 @@ def main() -> None:
         args.exe = assert_installed_wheel_environment()
     if args.scenario in {"all", "sdk-custom", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-fs-search", "sdk-spawn-node", "sdk-snapshot", "sdk-recovery", "sdk-cancel", "sdk-restart", "sdk-office", "sdk-authoring", "sdk-plugin-manager", "runner", "direct"} and args.exe is None:
         parser.error("--exe is required for custom, minimal, dynamic-tools, fs-search, spawn-node, snapshot, recovery, cancel, restart, office, runner, and direct scenarios")
-    if args.update_snapshots and args.scenario not in {"all", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-title-from-input", "sdk-snapshot", "sdk-recovery", "sdk-cancel", "sdk-restart", "sdk-authoring"}:
-        parser.error("--update-snapshots requires --scenario sdk-minimal, sdk-minimal-in-history, sdk-dynamic-tools, sdk-title-from-input, sdk-snapshot, sdk-recovery, sdk-cancel, sdk-restart, sdk-authoring, or all")
+    if args.update_snapshots and args.scenario not in {"all", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-title-from-input", "sdk-surface-head", "sdk-snapshot", "sdk-recovery", "sdk-cancel", "sdk-restart", "sdk-authoring"}:
+        parser.error("--update-snapshots requires --scenario sdk-minimal, sdk-minimal-in-history, sdk-dynamic-tools, sdk-title-from-input, sdk-surface-head, sdk-snapshot, sdk-recovery, sdk-cancel, sdk-restart, sdk-authoring, or all")
     if args.exe is not None and not args.exe.is_file():
         parser.error(f"runtime executable does not exist: {args.exe}")
 
@@ -984,6 +1001,8 @@ def main() -> None:
             smoke_sdk_dynamic_tools(model.url, args.exe.resolve(), args.update_snapshots)
         if args.scenario in {"all", "sdk-title-from-input"}:
             smoke_sdk_title_from_input(model.url, args.update_snapshots)
+        if args.scenario in {"all", "sdk-surface-head"}:
+            smoke_sdk_surface_head(model.url, args.update_snapshots)
         if args.scenario in {"all", "sdk-fs-search"}:
             assert args.exe is not None
             smoke_sdk_fs_search(model.url, args.exe.resolve())
@@ -1662,13 +1681,13 @@ def smoke_sdk_title_from_input(base_url: str, update_snapshots: bool) -> None:
                     partial_logs = read_session_logs(sessions).get(TITLE_FROM_INPUT_SESSION_ID)
                 except Exception:
                     partial_logs = None
-                write_title_from_input_session_evidence(partial_logs)
+                write_snapshot_session_evidence(partial_logs)
                 raise
 
             try:
                 logs = read_session_logs(sessions)
             except BaseException:
-                write_title_from_input_evidence(
+                write_snapshot_evidence(
                     events, notifications,
                     requests=MockModelHandler.requests[first_request:],
                 )
@@ -1750,10 +1769,220 @@ def drive_title_from_input(
     except BaseException:
         # Keep the partial wire data even when the turn times out or the
         # transport fails, instead of losing it with the temporary home.
-        write_title_from_input_evidence(
+        write_snapshot_evidence(
             events, notifications, requests=MockModelHandler.requests[first_request:],
         )
         raise
+
+
+def smoke_sdk_surface_head(base_url: str, update_snapshots: bool) -> None:
+    """Drive the built SDK so the surface head exists before the first user turn."""
+    from deepseek_harness import DeepSeekHarness
+
+    if not SURFACE_HEAD_PLUGIN.is_file():
+        raise AssertionError(f"the surface-head scenario requires {SURFACE_HEAD_PLUGIN}")
+    if not BUILT_DSH_CLI.is_file():
+        raise AssertionError(
+            f"the surface-head scenario requires the built checkout CLI at {BUILT_DSH_CLI}; "
+            "run `pnpm run build:artifacts` first",
+        )
+    node = shutil.which("node")
+    if node is None:
+        raise AssertionError("the surface-head scenario requires Node on PATH")
+
+    first_request = len(MockModelHandler.requests)
+    with tempfile.TemporaryDirectory(prefix="dsh-sdk-surface-head-") as temporary:
+        root = Path(temporary).resolve()
+        dsh_home = root / "home"
+        sessions = dsh_home / "sessions"
+        user_home = root / "user-home"
+        user_home.mkdir()
+        marker = dsh_home / "surface-head-maintenance.json"
+        patch = write_profile_patch(root, "surface-head.patch.json", sessions, [
+            # Keep the fixture platform-neutral and independent of the developer's
+            # checkout, skills, plugin inventory, shell, and wall clock.
+            {"id": "session-log-deepseek", "config": {"enabled": False}},
+            {"id": "plugin-package-inventory-deepseek", "config": {"enabled": False}},
+            {"id": "agent-instructions", "disabled": True},
+            {"id": "workspace-dependencies", "disabled": True},
+            {"id": "skill-office", "disabled": True},
+            {"id": "tool-bash", "disabled": True},
+            {"id": "tool-pwsh", "disabled": True},
+            {"id": "tool-skill", "disabled": True},
+            {"id": "time-context", "disabled": True},
+            {"insert": [{
+                "id": "surface-head-fixture",
+                "name": str(SURFACE_HEAD_PLUGIN),
+                "config": {
+                    "resultPath": str(marker),
+                },
+            }]},
+        ])
+        try:
+            with DeepSeekHarness(
+                provider="deepseek-official",
+                model="deepseek-v4-flash",
+                cwd=str(root),
+                runtime_cwd=str(root),
+                dsh_home=str(dsh_home),
+                _launch_args=(node, str(BUILT_DSH_CLI), "--profile", "sdk", "--patch", str(patch)),
+                env={
+                    "DSH_HOME": str(dsh_home),
+                    "DSH_PERMISSION_MODE": "danger-full-access",
+                    "DSH_TELEMETRY_DISABLED": "1",
+                    "HOME": str(user_home),
+                    "USERPROFILE": str(user_home),
+                    "DSH_AGENTS_HOME": str(user_home / ".agents"),
+                    "DSH_PRIMARY_RUNTIME": "",
+                    "DSH_BUNDLED_SKILL_DIR": "",
+                    "DSH_BUNDLED_OFFICE_CLI": "",
+                    "DSH_RESOURCE_CACHE": str(root / "resource-cache"),
+                },
+                api_key="sk-keyless-smoke",
+                base_url=base_url,
+                initialize_timeout_seconds=120,
+                request_timeout_seconds=120,
+                shutdown_timeout_seconds=5,
+            ) as harness:
+                session = harness.start_session(SURFACE_HEAD_SESSION_ID)
+                events, notifications, maintenance = drive_surface_head(harness, session, marker, first_request)
+        except BaseException:
+            # The temporary home still exists here; keep the raw Session log even
+            # when the turn fails before expected-output construction.
+            try:
+                partial_logs = read_session_logs(sessions).get(SURFACE_HEAD_SESSION_ID)
+            except Exception:
+                partial_logs = None
+            write_snapshot_session_evidence(partial_logs)
+            raise
+
+        try:
+            logs = read_session_logs(sessions)
+        except BaseException:
+            write_snapshot_evidence(
+                events, notifications, requests=MockModelHandler.requests[first_request:],
+            )
+            raise
+        if set(logs) != {SURFACE_HEAD_SESSION_ID}:
+            raise AssertionError(f"surface-head wrote unexpected Session logs: {sorted(logs)}")
+        files = build_surface_head_snapshot_files(
+            events,
+            notifications,
+            logs[SURFACE_HEAD_SESSION_ID],
+            MockModelHandler.requests[first_request:],
+            maintenance,
+            root,
+        )
+    compare_snapshot_files(
+        files, update_snapshots, SURFACE_HEAD_SNAPSHOT_DIRECTORY, SURFACE_HEAD_SNAPSHOT_FILENAMES,
+    )
+
+
+def drive_surface_head(
+    harness: "DeepSeekHarness",
+    session: "Session",
+    marker: Path,
+    first_request: int,
+) -> tuple[list[dict[str, object]], list["Notification"], dict[str, object]]:
+    """Create the Session, observe both maintenance calls, then send the first prompt."""
+    events: list[dict[str, object]] = []
+    notifications: list["Notification"] = []
+    try:
+        head_seen = False
+        deadline = time.monotonic() + 120
+        with harness.client.subscribe_session_notifications(SURFACE_HEAD_SESSION_ID) as subscription:
+            session.get_working_directory()
+            while not head_seen:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError("surface-head timed out waiting for the maintenance head")
+                notification = subscription.next(timeout_seconds=remaining)
+                notifications.append(notification)
+                if notification.method == "session.event":
+                    event = notification.payload.get("event")
+                    if isinstance(event, dict):
+                        events.append(event)
+                        data = event.get("data")
+                        if (event.get("type") == "system/message"
+                                and isinstance(data, dict) and data.get("maintenance") is True):
+                            head_seen = True
+            maintenance = wait_surface_head_marker(marker)
+            first = maintenance.get("first")
+            second = maintenance.get("second")
+            if not isinstance(first, dict) or not isinstance(second, dict):
+                raise AssertionError(f"surface-head marker has no maintenance results: {maintenance}")
+            if maintenance.get("error") is not None:
+                raise AssertionError(f"surface-head maintenance failed: {maintenance}")
+            if (first.get("appended") is not True or first.get("checkpointed") is not True
+                    or second.get("appended") is not False or second.get("checkpointed") is not True
+                    or second.get("headSeq") != first.get("headSeq")
+                    or maintenance.get("statusBefore") != "idle"
+                    or maintenance.get("statusAfter") != "idle"):
+                raise AssertionError(f"surface-head maintenance reported an unexpected result: {maintenance}")
+            harness.client.session_prompt(
+                SURFACE_HEAD_SESSION_ID, [{"type": "text", "text": SURFACE_HEAD_PROMPT}],
+            )
+            idle = False
+            title_seen = False
+            assistant_seen = False
+            deadline = time.monotonic() + 120
+            while not (idle and title_seen and assistant_seen):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError(
+                        f"surface-head timed out after the prompt: idle={idle} "
+                        f"title={title_seen} assistant={assistant_seen}",
+                    )
+                notification = subscription.next(timeout_seconds=remaining)
+                notifications.append(notification)
+                if notification.method == "session.event":
+                    event = notification.payload.get("event")
+                    if isinstance(event, dict):
+                        events.append(event)
+                        if event.get("type") == "session/title":
+                            title_seen = True
+                        if event.get("type") == "assistant/message":
+                            assistant_seen = True
+                elif (notification.method == "session.status"
+                        and notification.payload.get("sessionId") == SURFACE_HEAD_SESSION_ID
+                        and notification.payload.get("status") == "idle"):
+                    idle = True
+            # Keep every notification that arrived before the idle response settled.
+            while True:
+                try:
+                    notification = subscription.next(timeout_seconds=0)
+                except TimeoutError:
+                    break
+                notifications.append(notification)
+                if notification.method == "session.event":
+                    event = notification.payload.get("event")
+                    if isinstance(event, dict):
+                        events.append(event)
+        return events, notifications, maintenance
+    except BaseException:
+        # Keep the partial wire data before the temporary home disappears, so a
+        # refused maintenance or a broken turn still leaves reviewable evidence.
+        write_snapshot_evidence(
+            events, notifications, requests=MockModelHandler.requests[first_request:],
+        )
+        raise
+
+
+def wait_surface_head_marker(path: Path) -> dict[str, object]:
+    """Read the scenario patch's one-line maintenance evidence."""
+    deadline = time.monotonic() + 60
+    last = ""
+    while time.monotonic() < deadline:
+        if path.exists():
+            last = path.read_text(encoding="utf-8")
+            try:
+                value = json.loads(last)
+            except json.JSONDecodeError:
+                value = None
+            if isinstance(value, dict):
+                return value
+        time.sleep(0.05)
+    raise AssertionError(f"surface-head maintenance marker {path} was not written: {last}")
 
 
 def smoke_sdk_dynamic_tools(base_url: str, executable: Path, update_snapshots: bool) -> None:
@@ -2988,7 +3217,7 @@ def build_dynamic_tools_snapshot_files(
     return {"tool-history.json": json.dumps(normalize_snapshot_value(evidence, replacements), indent=2, ensure_ascii=False) + "\n"}
 
 
-def write_title_from_input_evidence(
+def write_snapshot_evidence(
     events: list[dict[str, object]],
     notifications: "list[Notification]",
     records: list[dict[str, object]] | None = None,
@@ -3028,7 +3257,7 @@ def write_title_from_input_evidence(
         (path / "raw-cwd.txt").write_text(str(cwd), encoding="utf-8")
 
 
-def write_title_from_input_session_evidence(records: list[dict[str, object]] | None) -> None:
+def write_snapshot_session_evidence(records: list[dict[str, object]] | None) -> None:
     """Keep the raw Session log of a turn that failed before the builder ran."""
     directory = os.environ.get("DSH_SMOKE_EVIDENCE_DIR", "").strip()
     if records is None or not directory:
@@ -3208,7 +3437,7 @@ def build_title_from_input_snapshot_files(
     cwd: Path,
 ) -> dict[str, str]:
     """Pin the rewritten turn, its two title events, and both actual model inputs."""
-    write_title_from_input_evidence(events, notifications, records, requests, cwd)
+    write_snapshot_evidence(events, notifications, records, requests, cwd)
     chain = title_from_input_chain(records)
     message_id = str(chain["message_id"])
     original_text = str(chain["original_text"])
@@ -3331,6 +3560,158 @@ def build_title_from_input_snapshot_files(
     session_content = render_jsonl(log_records)
     session_version = session_header_version(session_content, "title-from-input")
     assert_current_session_version(session_version, "title-from-input")
+    return {
+        "result.json": json.dumps(
+            normalize_snapshot_value(result_value, replacements), indent=2, ensure_ascii=False,
+        ) + "\n",
+        "requests.json": json.dumps(
+            normalize_snapshot_value(requests_value, replacements), indent=2, ensure_ascii=False,
+        ) + "\n",
+        snapshot_session_filename(0, session_version): session_content,
+    }
+
+
+def build_surface_head_snapshot_files(
+    events: list[dict[str, object]],
+    notifications: "list[Notification]",
+    records: list[dict[str, object]],
+    requests: list[dict[str, object]],
+    maintenance: dict[str, object],
+    cwd: Path,
+) -> dict[str, str]:
+    """Pin the pre-turn maintenance head and the first ordinary model request."""
+    write_snapshot_evidence(events, notifications, records, requests, cwd)
+    heads = [record for record in records if record.get("type") == "system/message"]
+    if len(heads) != 1:
+        raise AssertionError(f"surface-head recorded {len(heads)} system heads, expected one")
+    head = heads[0]
+    head_data = head.get("data")
+    if not isinstance(head_data, dict) or head_data.get("maintenance") is not True:
+        raise AssertionError(f"surface-head head is not a maintenance head: {head}")
+    if "turn" in head_data or "step" in head_data:
+        raise AssertionError(f"surface-head maintenance head carries turn or step: {head}")
+    head_text = message_text(head_data.get("message", {}).get("content"))
+    if not head_text:
+        raise AssertionError(f"surface-head maintenance head has no rendered prompt: {head}")
+    head_seq = head.get("seq")
+    if not isinstance(head_seq, int):
+        raise AssertionError(f"surface-head maintenance head has no integer seq: {head}")
+
+    caller = next((
+        record for record in records
+        if record.get("type") == "user/message"
+        and isinstance(record.get("data"), dict)
+        and isinstance(record["data"].get("source"), dict)
+        and record["data"]["source"].get("kind") == "user"
+    ), None)
+    if caller is None:
+        raise AssertionError("surface-head recorded no caller user message")
+    caller_data = caller.get("data")
+    assert isinstance(caller_data, dict)
+    caller_seq = caller.get("seq")
+    if not isinstance(caller_seq, int) or not head_seq < caller_seq:
+        raise AssertionError(f"surface-head head {head_seq} does not precede the caller message {caller_seq}")
+    caller_text = message_text(caller_data.get("content"))
+    if caller_text != SURFACE_HEAD_PROMPT:
+        raise AssertionError(f"surface-head caller text is not the scenario prompt: {caller_text!r}")
+
+    step = next((record for record in records if record.get("type") == "step/start"), None)
+    turn = next((record for record in records if record.get("type") == "turn/start"), None)
+    if step is None or turn is None:
+        raise AssertionError("surface-head recorded no turn or step")
+    step_seq = step.get("seq")
+    turn_seq = turn.get("seq")
+    if not isinstance(step_seq, int) or not isinstance(turn_seq, int):
+        raise AssertionError("surface-head turn or step has no integer seq")
+    if not head_seq < step_seq or not head_seq < turn_seq:
+        raise AssertionError(
+            f"surface-head head {head_seq} does not precede turn {turn_seq} and step {step_seq}",
+        )
+    for event_type, expected in (
+        ("turn/start", 1),
+        ("step/start", 1),
+        ("request/header", 1),
+        ("assistant/message", 1),
+        ("session/title", 1),
+    ):
+        actual = sum(record.get("type") == event_type for record in records)
+        if actual != expected:
+            raise AssertionError(f"surface-head recorded {actual} {event_type} events, expected {expected}")
+    title = next(record for record in records if record.get("type") == "session/title")
+    title_data = title.get("data")
+    title_text = title_data.get("title") if isinstance(title_data, dict) else None
+    if not isinstance(title_text, str) or not SURFACE_HEAD_PROMPT.startswith(title_text):
+        raise AssertionError(f"surface-head title did not derive from the caller prompt: {title_text!r}")
+
+    finals = [
+        message_text(record["data"]["message"].get("content"))
+        for record in records
+        if record.get("type") == "assistant/message" and isinstance(record.get("data"), dict)
+        and isinstance(record["data"].get("message"), dict)
+    ]
+    if finals != [SURFACE_HEAD_TEXT]:
+        raise AssertionError(f"surface-head main turn did not finish with its expected text: {finals}")
+
+    main_requests = [body for body in requests if isinstance(body.get("messages"), list)]
+    if len(main_requests) != 1:
+        raise AssertionError(f"surface-head spent {len(main_requests)} main model requests, expected one")
+    body = main_requests[0]
+    system_text = message_text(body.get("system"))
+    if system_text != head_text:
+        raise AssertionError("the main model request did not carry the recorded maintenance head")
+    messages = body["messages"]
+    if not isinstance(messages, list):
+        raise AssertionError(f"surface-head model request has no messages: {body}")
+    texts = [
+        block.get("text")
+        for message in messages
+        if isinstance(message, dict) and message.get("role") == "user"
+        for block in message.get("content", [])
+        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+    ]
+    if texts.count(SURFACE_HEAD_PROMPT) != 1:
+        raise AssertionError(f"the main model request did not carry the caller prompt once: {texts}")
+    others = [text for text in texts if text != SURFACE_HEAD_PROMPT]
+    if any(not text.startswith("Current runtime context.") for text in others):
+        raise AssertionError(f"the main model request carried an unrecorded user contribution: {others}")
+
+    first = maintenance.get("first")
+    second = maintenance.get("second")
+    if not isinstance(first, dict) or not isinstance(second, dict):
+        raise AssertionError(f"surface-head maintenance evidence is incomplete: {maintenance}")
+    if (first.get("appended") is not True or first.get("checkpointed") is not True
+            or second.get("appended") is not False or second.get("checkpointed") is not True
+            or second.get("headSeq") != head_seq or first.get("headSeq") != head_seq):
+        raise AssertionError(f"surface-head maintenance evidence disagrees with the log: {maintenance}")
+
+    replacements = snapshot_directory_replacements(cwd, "{{cwd}}")
+    requests_value = {
+        "system": "{{system}}",
+        "messages": normalize_snapshot_value(messages, replacements),
+    }
+    result_value = {
+        "session_id": SURFACE_HEAD_SESSION_ID,
+        "final_response": SURFACE_HEAD_TEXT,
+        "maintenance": {
+            "statusBefore": maintenance.get("statusBefore"),
+            "statusAfter": maintenance.get("statusAfter"),
+            "headSeq": head_seq,
+            "firstAppended": first.get("appended"),
+            "secondAppended": second.get("appended"),
+            "checkpointed": first.get("checkpointed") and second.get("checkpointed"),
+        },
+        "events": events,
+        "notifications": [
+            {"method": notification.method, "payload": notification.payload}
+            for notification in notifications
+        ],
+    }
+    log_records = project_session_snapshot([
+        normalize_snapshot_value(record, replacements) for record in records
+    ])
+    session_content = render_jsonl(log_records)
+    session_version = session_header_version(session_content, "surface-head")
+    assert_current_session_version(session_version, "surface-head")
     return {
         "result.json": json.dumps(
             normalize_snapshot_value(result_value, replacements), indent=2, ensure_ascii=False,
