@@ -135,7 +135,7 @@ session.deriveMessages()         // the derived model history
 
 ### 派生历史
 
-`deriveMessages()` 缓存深度冻结的派生消息，每次调用返回新数组。surface 事件类型（`system/message`、`developer/message`、`user/message`、`assistant/message`、`tool/result`）提供记录的消息身份和内容，空内容的 system 和 developer 节点不派生消息。插件拥有的投影修改派生内容，不修改记录的消息。`surface/order` 事件记录当前节点的一次完整置换——头部固定、顺序确有改变——只移动这些节点，不复制、不重录、不丢弃任何一个；后续追加落在置换后的尾部，后续替换按该顺序解析端点。替换、排序与投影决策都会使缓存失效。嵌入式 Assistant stream 与 `assistant/attempt` 事件只保留回放和诊断数据。普通提示与注入上下文在派生时不会按类型或来源自动添加包装。生产方负责记录内容中的所有框定格式。
+`deriveMessages()` 缓存深度冻结的派生消息，每次调用返回新数组。surface 事件类型（`system/message`、`developer/message`、`user/message`、`assistant/message`、`tool/result`）提供记录的消息身份和内容，空内容的 system、developer 和 user 节点不派生消息。判定对象是记录的块数组，因此 user 替换可以只保留 surface 位置而不贡献线上消息；image、file 等非 text 块，以及空的 text 块，仍原样派生。插件拥有的投影修改派生内容，不修改记录的消息。`surface/order` 事件记录当前节点的一次完整置换——头部固定、顺序确有改变——只移动这些节点，不复制、不重录、不丢弃任何一个；后续追加落在置换后的尾部，后续替换按该顺序解析端点。替换、排序与投影决策都会使缓存失效。嵌入式 Assistant stream 与 `assistant/attempt` 事件只保留回放和诊断数据。普通提示与注入上下文在派生时不会按类型或来源自动添加包装。生产方负责记录内容中的所有框定格式。
 
 ### 请求头
 

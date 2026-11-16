@@ -15,8 +15,8 @@
   en: 788fc16ecdedc252
   zh: 14d05c2a1272de5d
 /agent-note-session-surface-an-ordered-projection-over-the-event-log/decision/surfaceop-two-operations:
-  en: ff075eec0881094a
-  zh: 1f7768f28b8996d5
+  en: e0780e63590c01ac
+  zh: 459e51e5c24d174a
 /agent-note-session-surface-an-ordered-projection-over-the-event-log/decision/surfacemanager-delta-based-not-full-rebuild:
   en: 0b10fd9c5166d17b
   zh: 02de01f70c03f70e
@@ -30,8 +30,11 @@
   en: 98f39e77083d67b7
   zh: 634a9227fc2a7ec9
 /agent-note-session-surface-an-ordered-projection-over-the-event-log/alternatives-considered:
-  en: 193157129e65e487
-  zh: a0a73b8a9cbd78e6
+  en: 3dac56ad4c4d5470
+  zh: 6eaa3e9e503ea73d
 /agent-note-session-surface-an-ordered-projection-over-the-event-log/consequences:
   en: 801b67f8da564a22
   zh: 3c0433ed07083050
+/agent-note-session-surface-an-ordered-projection-over-the-event-log/testing:
+  en: e4609201f7da94ad
+  zh: b3a8bb6f4f730b16

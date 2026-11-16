@@ -27,6 +27,8 @@ The [source-backed `SurfaceOp` reference](../../../../docs/subsystems/session.md
 
 2. **Replace** — remove entries from `startSeq` through `endSeq` (both inclusive) and insert the new event seq in their place. Both `startSeq` and `endSeq` must be present in the current surface; `startSeq === endSeq` replaces one entry. The event's `sourceEventSeqs` must contain every shadowed surface seq. The shadowed events remain in the log but are no longer on the surface.
 
+**Empty user content is a positional carrier.** A `user/message` whose recorded `content` array is empty remains a surface node and a log record, but `deriveEventMessage()` derives no message for it, so a replacement can hold the range it shadowed without adding model-visible text. The recorded block array is the criterion, not rendered text or the producer: image, file, and other non-text blocks, and a `text` block whose `text` is empty, still derive the recorded message unchanged. Live derivation, cold replay over the same events, and request assembly read this rule from the same function, so they cannot disagree.
+
 ### SurfaceManager: delta-based, not full rebuild
 
 A `Session` owns one `SurfaceManager` that maintains an ordered `SessionSeq[]` of event seqs. The manager validates each seed or append candidate without applying it before commit, then processes only committed events since its previous synchronization rather than rescanning the entire log. `Session.surface` exposes the same manager through the readonly `SessionSurface` contract, so acceptance, derived history, compaction, and workspace context share one incremental state. Replace locates its inclusive endpoints by array position and splices the replacement seq into that range; no second manager, link objects, or seq-to-node map duplicates the order.
@@ -52,6 +54,8 @@ Every surface-eligible event must carry `surfaceOp` or it would disappear from d
 ## Alternatives considered
 
 - **Per-plugin `agent/request` wrapping** (the pre-surface pattern for history manipulation) — listener-ordering fragility, no durable record of what was changed, and every new manipulation forces another change to core `deriveMessages()`.
+- **Put a textual placeholder in the replacement** (for example a cleanup notice) — rejected: the placeholder is sent to the provider on every later request, accumulating context the producer never meant to contribute, and consumers would have to recognize the text. An empty block array states the positional intent directly.
+- **Special-case a producer's source kind or placeholder text** — rejected: the same surface rule must hold for every plugin; keying it to a source or a text value would make the same durable event derive differently when another producer reuses the pattern.
 - **Half-open `[start, endExclusive)` replace ranges** — rejected: endpoints are named by surface event seqs, and single-entry replacement (`startSeq === endSeq`) reads naturally with inclusive semantics.
 - **Linked node objects plus a seq map** — rejected: production did not read predecessor links, the only successor use was the next array position, and replacement already required linear `indexOf` lookup. A single seq array preserves the same asymptotic behavior with one representation to validate.
 - **Full rebuild behind a dirty flag** instead of delta processing — O(N²) over a session's lifetime: every single-event append would rescan all prior events.
@@ -66,3 +70,7 @@ Every surface-eligible event must carry `surfaceOp` or it would disappear from d
 The surface is the foundation history manipulation ships on — dsh-compaction's compaction rides it. A compaction or tool-result-pruner plugin appends one of the existing message-producing event types (a `user/message` carrying the summary, say) with `surfaceOp: { op: 'replace', startSeq, endSeq }` and `sourceEventSeqs` covering the shadowed entries — the new event takes the range's place on the surface while the plugin's own trace events (e.g. `compaction/start`, `compaction/end`) stay off it. Replay preserves the decision deterministically.
 
 A `tool/result` replacement may rewrite exactly one current `tool/result` and must preserve every data field except `content`. Session acceptance enforces this rule together with positional range and cited source-event validation, independent of optional diagnostic plugins.
+
+## Testing
+
+`packages/core/session/tests/surface.spec.ts` pins the empty carrier's live derivation, cold re-derivation, consecutive replacements, and unchanged derivation of image, file, and empty-text content. `packages/session/session-persistence-jsonl/tests/empty-user-carrier-restore.spec.ts` writes the same shape through the real JSONL backend and cold-reopens it, checking carrier positions, absent derived carrier messages, and preserved surrounding material.

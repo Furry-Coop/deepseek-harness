@@ -27,6 +27,8 @@ surface 元数据仅属于四种 surface 事件类型（`system/message`、`user
 
 2. **Replace**：移除从 `startSeq` 到 `endSeq`（两端包含）的条目，并在其位置插入新事件的 seq。`startSeq` 和 `endSeq` 都必须存在于当前 surface；`startSeq === endSeq` 表示替换单个条目。该事件的 `sourceEventSeqs` 必须包含所有被遮蔽的 surface seq。被遮蔽的事件仍留在日志中，但不再出现在 surface 上。
 
+**空的 user 内容是位置载体。** 记录的 `content` 数组为空的 `user/message` 仍保留为 surface 节点和日志记录，但 `deriveEventMessage()` 不为它派生消息，因此替换可以占住被遮蔽的范围而不增加模型可见文本。判定对象是记录的块数组，而不是渲染文本或生产方：image、file 等非 text 块，以及 `text` 为空的 `text` 块，仍原样派生记录的消息。实时派生、对相同事件的冷回放和请求装配都从同一个函数读取该规则，因此不会产生分歧。
+
 ### SurfaceManager：基于增量，而非全量重建
 
 一个 `Session` 拥有一个 `SurfaceManager`，后者维护事件 seq 的有序 `SessionSeq[]`。管理器会在提交前校验每个种子或追加候选项而不应用它，然后只处理上次同步之后已经提交的事件，而不重新扫描整个日志。`Session.surface` 通过只读的 `SessionSurface` 约定暴露同一个管理器，因此接纳、派生历史、压缩与工作区上下文共享同一份增量状态。Replace 按数组位置定位两个端点（均包含在范围内），并把替换 seq splice 到该范围；不会用第二个管理器、链接对象或 seq 到节点的 map 来重复表达顺序。
@@ -52,6 +54,8 @@ surface 元数据仅属于四种 surface 事件类型（`system/message`、`user
 ## 曾考虑的替代方案
 
 - **逐插件的 `agent/request` 包装**（surface 之前的历史操纵模式）：监听器排序脆弱、无法持久记录改动内容，且每种新操纵都迫使核心 `deriveMessages()` 再次修改。
+- **在替换中携带文本占位**（例如清理提示）：否决。占位文本会在之后的每次请求中被发送给提供方，累积生产方从未打算贡献的上下文，消费者还必须识别该文本。空的块数组直接表达位置意图。
+- **按生产方 source kind 或占位文本特判**：否决。同一条 surface 规则必须适用于所有插件；以来源或文本值作为判定条件，会让同一个耐久事件在其他生产方复用该做法时派生出不同结果。
 - **半开区间 `[start, endExclusive)` 的 replace 范围**：否决。端点由 surface 事件 seq 命名，单条目替换（`startSeq === endSeq`）在闭区间语义下读起来更自然。
 - **链接节点对象加 seq map**：否决。生产代码不读取前驱链接，唯一的后继用途就是数组中的下一个位置，而替换本来就需要线性 `indexOf` 查找。单个 seq 数组在保留相同渐进复杂度的同时，只留下一个需要校验的表示。
 - **脏标记后全量重建**替代增量处理：在会话生命周期内为 O(N²)，每次单事件追加都要重新扫描所有先前事件。
@@ -66,3 +70,7 @@ surface 元数据仅属于四种 surface 事件类型（`system/message`、`user
 surface 是历史操纵赖以落地的基础——dsh-compaction 的压缩就搭载于其上。压缩或 tool-result-pruner 插件追加一个既有的消息产出事件类型（例如一条携带摘要的 `user/message`），附带 `surfaceOp: { op: 'replace', startSeq, endSeq }` 和覆盖被遮蔽条目的 `sourceEventSeqs`——新事件在 surface 上取代该范围的位置，而插件自身的 trace 事件（如 `compaction/start`、`compaction/end`）不进入 surface。回放以确定性方式保留该决策。
 
 一次 `tool/result` 替换只能改写当前的一个 `tool/result`，并且必须保留除 `content` 以外的每个数据字段。Session 接纳会与位置范围和引用的源事件校验一起强制这条规则，不依赖可选的诊断插件。
+
+## 测试
+
+`packages/core/session/tests/surface.spec.ts` 固定空载体的实时派生、冷重派生、连续替换，以及 image、file 和空 text 内容不变的派生结果。`packages/session/session-persistence-jsonl/tests/empty-user-carrier-restore.spec.ts` 通过真实 JSONL 后端写入相同形态并冷重开，检查载体位置、不派生载体消息以及周边材料保留。

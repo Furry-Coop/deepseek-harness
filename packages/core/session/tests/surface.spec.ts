@@ -23,7 +23,7 @@ import {
   createUserMessage,
   freezeMessage,
 } from '@deepseek-ai/dsh-llm'
-import type { ContextFormed, MessageSource } from '@deepseek-ai/dsh-llm'
+import type { ContextFormed, FileBlock, ImageBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -715,6 +715,103 @@ describe('deriveMessages with surface', () => {
     expect(messages).toHaveLength(2)
     expect(messages[0]!.content).toEqual([{ type: 'text', text: 'file changed' }])
     expect(messages[1]!.content).toEqual([{ type: 'text', text: 'focus' }])
+  })
+})
+
+describe('empty user surface carriers', () => {
+  /** An empty-content user replacement: a durable carrier that contributes no message. */
+  function emptyCarrier() {
+    return createUserMessage({ content: [], source: { kind: 'test' } })
+  }
+
+  it('an empty-content user replacement keeps its surface position but derives no message', () => {
+    const s = Session.create(SessionId('cleanup-carrier'))
+    s.append('turn/start', { turn: 1 })
+    s.append('step/start', { turn: 1, step: 1 })
+    const question = s.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'old question' }], source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    const answer = s.append('assistant/message', {
+      stream: [],
+      turn: 1, step: 1,
+      message: createMessage({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'old answer' }],
+        source: { kind: 'model', ...{ provider: 'mock', model: 'mock' } },
+      }),
+    }, { surfaceOp: 'append' })
+    // Cache the pre-replacement derivation so the replacement also exercises the live rebuild.
+    expect(s.deriveMessages().map(message => message.role)).toEqual(['user', 'assistant'])
+    const carrier = s.append('user/message', emptyCarrier(), {
+      surfaceOp: surfaceOp({ op: 'replace', startSeq: question.seq, endSeq: answer.seq }),
+      sourceEventSeqs: sourceSeqs(question.seq, answer.seq),
+    })
+    // The carrier owns the surface position; the record it replaced stays in the log.
+    expect(s.surface.nodes).toEqual([carrier.seq])
+    expect(s.snapshotEvents().map(event => event.type)).toEqual([
+      'turn/start', 'step/start', 'user/message', 'assistant/message', 'user/message',
+    ])
+    expect(s.deriveEventMessage(carrier)).toBeNull()
+    expect(s.deriveMessages()).toEqual([])
+    // A cold fold of the same log applies the same rules.
+    const replayed = Session.create(SessionId('cleanup-carrier-replayed'), s.snapshotEvents())
+    expect(replayed.surface.nodes).toEqual([carrier.seq])
+    expect(replayed.deriveMessages()).toEqual([])
+  })
+
+  it('consecutive empty carriers never revive shadowed content', () => {
+    const s = Session.create(SessionId('cleanup-chain'))
+    const ask = (text: string) => s.append('user/message', createUserMessage({
+      content: [{ type: 'text', text }], source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    const first = ask('first question')
+    const second = ask('second question')
+    const firstCarrier = s.append('user/message', emptyCarrier(), {
+      surfaceOp: surfaceOp({ op: 'replace', startSeq: first.seq, endSeq: first.seq }),
+      sourceEventSeqs: sourceSeqs(first.seq),
+    })
+    const secondCarrier = s.append('user/message', emptyCarrier(), {
+      surfaceOp: surfaceOp({ op: 'replace', startSeq: second.seq, endSeq: second.seq }),
+      sourceEventSeqs: sourceSeqs(second.seq),
+    })
+    expect(s.surface.nodes).toEqual([firstCarrier.seq, secondCarrier.seq])
+    expect(s.deriveMessages()).toEqual([])
+    const replayed = Session.create(SessionId('cleanup-chain-replayed'), s.snapshotEvents())
+    expect(replayed.surface.nodes).toEqual([firstCarrier.seq, secondCarrier.seq])
+    expect(replayed.deriveMessages()).toEqual([])
+  })
+
+  it('keeps non-text and empty-text user content as messages', () => {
+    const image: ImageBlock = {
+      type: 'image',
+      attachment: {
+        attachmentId: 'att-image' as ImageBlock['attachment']['attachmentId'],
+        mediaType: 'image/png',
+        bytes: 1,
+        width: 1,
+        height: 1,
+      },
+    }
+    const file: FileBlock = {
+      type: 'file',
+      attachment: {
+        attachmentId: 'att-file' as FileBlock['attachment']['attachmentId'],
+        name: 'notes.txt',
+        bytes: 3,
+      },
+    }
+    const s = Session.create(SessionId('non-text-content'))
+    s.append('user/message', createUserMessage({ content: [image], source: { kind: 'user' } }), { surfaceOp: 'append' })
+    s.append('user/message', createUserMessage({ content: [file], source: { kind: 'user' } }), { surfaceOp: 'append' })
+    // An empty text block is not an empty content array.
+    s.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: '' }], source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    expect(s.deriveMessages().map(message => message.content)).toEqual([
+      [image],
+      [file],
+      [{ type: 'text', text: '' }],
+    ])
   })
 })
 

@@ -110,7 +110,7 @@ export function isReplacementSurfaceEvent(
 /**
  * Project a single event into the LLM message it derives to, or null when it
  * produces none — a non-surface event (attempt, boundary, log-only record) or an
- * empty-content system, developer, or assistant message. A caller
+ * empty-content message. A caller
  * reconstructing model input supplies the same prefix's `projectedMessages`
  * from {@link foldSurface}; without that map this function reads original
  * event content. Session instance methods apply the live projection. Messages
@@ -130,8 +130,13 @@ export function deriveEventMessage(
   // data.
   switch (event.type) {
     // Ordinary prompts and injected context retain producer-owned framing.
-    // See Derived history in packages/core/session/README.md.
+    // See Derived history in packages/core/session/README.md. An empty content
+    // array is a positional carrier for a replacement: the node keeps its log
+    // record and surface position but adds no wire message. Content is the
+    // recorded block array, so an empty text block and non-text blocks still
+    // derive the message unchanged.
     case 'user/message': {
+      if (event.data.content.length === 0) return null
       return event.data
     }
     // Empty system and developer nodes retain their surface positions without
