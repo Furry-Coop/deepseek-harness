@@ -12,7 +12,7 @@ Status: implemented
 
 ## Decision
 
-`Agent.maintainSurfaceHead()` 在真正空闲阶段建立或核对受保护 system 头，不写入任何消息。它占用与 `runMaintenance()`、`maintainIdleHistory()` 相同的维护阶段，共用它们的 scoped 装配与渲染、唯一的维护头追加，以及实时与取消复核。头位置来自会话的宿主内部维护准入，该准入同时回答只看头的读取。空 surface 上，该调用提交一条带 `maintenance: true`、没有 turn 或 step 的 `system/message`。本操作最多追加这一个头，绝不重复追加；之后的提示词更新仍遵循现有提示词准入的路由与序列策略，该策略不变。已有头（包括空渲染）绝不替换、重复或移动。持有任何节点却没有受保护 system 头的 surface 会作为 `history-conflict` 被拒绝，因为在那里补头会重排其它写入方的消息。
+`Agent.maintainSurfaceHead()` 在真正空闲阶段或拥有该 Agent 的维护任务中建立或核对受保护 system 头，不写入任何消息。处于真正空闲时，它占用与 `runMaintenance()`、`maintainIdleHistory()` 相同的维护阶段；从该任务的异步上下文调用时则加入该任务，沿用其占用与取消信号。两种路径都与它们共用 scoped 装配与渲染、唯一的维护头追加，以及实时与取消复核。头位置来自会话的宿主内部维护准入，该准入同时回答只看头的读取。空 surface 上，该调用提交一条带 `maintenance: true`、没有 turn 或 step 的 `system/message`。本操作最多追加这一个头，绝不重复追加；之后的提示词更新仍遵循现有提示词准入的路由与序列策略，该策略不变。已有头（包括空渲染）绝不替换、重复或移动。持有任何节点却没有受保护 system 头的 surface 会作为 `history-conflict` 被拒绝，因为在那里补头会重排其它写入方的消息。
 
 提交与持久化检查点是两个独立结局，无操作路径也运行同一检查点：头存在本身并不证明它已持久。提交之后的检查点失败、取消或属主被替换，会在 `SurfaceHeadError.head` 中报告已提交位置，而不是声称什么都没写；后续调用核对持久性，不再追加第二个头。持久化检查点是第二个 await 边界，因此无操作路径与首次追加路径都会在它之后再次执行同一活身份与取消校验：否则在检查点监听器里取消会让过期的初始化结算为已确认成功。该操作不开启请求、轮次或步骤，也不写正式历史消息。
 
@@ -20,7 +20,7 @@ Status: implemented
 
 ## Producer of the maintenance alternative
 
-为空闲历史维护引入的 `system/message` 变体新增第二个生产者：`maintainSurfaceHead()`。两个生产者都只在真正空闲时运行，且只作为空 surface 的第 0 号节点；普通轮次循环仍写轮次提交形态。持久负载、其判别字段（`maintenance: true` 且没有 `turn` 或 `step`）与已发布读取器都不变，因此这是同版本的生成者变更，而不是新的表示，该变体对应的既有确认继续描述该类型。只建头的生产者不写 user 消息，因此不会出现新的记录种类或判别字段。
+为空闲历史维护引入的 `system/message` 变体新增第二个生产者：`maintainSurfaceHead()`。两个生产者都只在取得合法维护占用时运行——新领取的真正空闲阶段，或授权加入调用的维护任务——且只作为空 surface 的第 0 号节点；普通轮次循环仍写轮次提交形态。持久负载、其判别字段（`maintenance: true` 且没有 `turn` 或 `step`）与已发布读取器都不变，因此这是同版本的生成者变更，而不是新的表示，该变体对应的既有确认继续描述该类型。只建头的生产者不写 user 消息，因此不会出现新的记录种类或判别字段。
 
 ## 初始化维护自己的 Agent
 

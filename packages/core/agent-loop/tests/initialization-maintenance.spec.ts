@@ -411,7 +411,10 @@ describe('agent initialization maintenance', () => {
     const proceed = Promise.withResolvers<undefined>()
     const phaseA = agent.runMaintenance(async () => {
       abandoned = agent.maintainSurfaceHead!().catch((error: unknown) => error)
-      await firstGate.entered
+      // Bounded: a regression that refuses the joined call before it assembles
+      // never enters this gate, and this task must still settle so the test can
+      // release both gates from its `finally`.
+      expect(await reached(firstGate.entered)).toBe(true)
     })
     const startPhaseB = (): Promise<{
       readonly firstJoin: SurfaceHeadResult
@@ -433,7 +436,8 @@ describe('agent initialization maintenance', () => {
     })
     let phaseB: ReturnType<typeof startPhaseB> | undefined
     try {
-      await phaseA
+      // Bounded for the same reason: a failed expectation must reach `finally`.
+      expect(await reached(phaseA.then(() => undefined))).toBe(true)
       // Phase A released while its joined body is still suspended in assembly.
       phaseB = startPhaseB()
       expect(await reached(secondGate.entered)).toBe(true)
