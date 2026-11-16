@@ -39,8 +39,8 @@
   en: ec2bf804bd1a5439
   zh: 316e767507e859ef
 /deepseek-ai-dsh-agent-loop/understand-the-implementation/creation-and-teardown:
-  en: 925e3427b6b7c252
-  zh: 3da9655a0ea843d5
+  en: 5076a89e3a5229f0
+  zh: 00a581085812723c
 /deepseek-ai-dsh-agent-loop/understand-the-implementation/persistence-integration:
   en: 3b48a480036bd5df
   zh: 28cea2036b0dccee
@@ -48,11 +48,11 @@
   en: 8ec2be54442c6252
   zh: 2349efd0e646d62b
 /deepseek-ai-dsh-agent-loop/understand-the-implementation/idle-history-maintenance:
-  en: e26c91d4466ed11d
-  zh: b1af6d2ff8c773cc
+  en: 9a6dfa5b749642c8
+  zh: f5ef58f5b59daf1c
 /deepseek-ai-dsh-agent-loop/understand-the-implementation/protected-surface-head-maintenance:
-  en: 3267c420391fe7f9
-  zh: 38bc175b67d5d88d
+  en: 69d4d6a71a1d8871
+  zh: c427c29a607c7253
 /deepseek-ai-dsh-agent-loop/understand-the-implementation/failure-and-cancellation:
   en: eea56903c4ff82f5
   zh: c0d5abb5767780ed

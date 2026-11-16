@@ -104,6 +104,9 @@ interface Agent {
    * synchronously after claiming that phase; later waking input remains in the
    * inbox until the task settles, while public status stays `idle`.
    * `whenIdle()` follows both the task and any waking work released behind it.
+   * The task's own async context may use this agent's `maintainIdleHistory()` and
+   * `maintainSurfaceHead()` under that same claim: they inherit the task's
+   * cancellation signal instead of claiming a second phase.
    * @param task - operation whose fulfillment or rejection is preserved, with a signal aborted by {@link cancel}.
    * @throws synchronously when turn-driving or another maintenance task already owns the agent.
    * @returns the task promise.
@@ -125,6 +128,15 @@ interface Agent {
    * head — including an empty rendering — is never replaced or duplicated. With no
    * head it assembles and renders the real scoped prompt, so a maintenance head
    * carries the current prompt registry rather than a cached rendering.
+   *
+   * Called from the maintenance task that owns this agent — its
+   * `runMaintenance()` job, or an awaited `agent/created` listener during creation
+   * or resume — the call joins that task under the same claim and cancellation
+   * signal instead of claiming another phase, so per-agent initialization can
+   * record its history before the first turn. A second primitive already running
+   * on that task is refused as `not-idle`. Ownership and cancellation are
+   * rechecked before the appends; once they commit, the call settles through the
+   * durability checkpoint, which reports the committed positions on failure.
    *
    * The message id is the stable request identity. A retry that finds the exact
    * same message already recorded appends nothing and reports its position; the
@@ -150,25 +162,34 @@ interface Agent {
    * cannot persist the head, so a caller must treat absence as an unsupported
    * capability rather than a silent no-op.
    *
-   * The call claims the same maintenance phase as `runMaintenance()` and
-   * `maintainIdleHistory()`, so a running turn or another maintenance task
-   * refuses it as `not-idle` instead of trusting the public `idle` status a
-   * maintenance deliberately keeps. On an empty surface it assembles and renders
-   * the real scoped prompt and commits one `system/message` carrying
-   * `maintenance: true` and no turn or step. This operation appends at most that
-   * one head and never a second; later prompt updates keep following the existing
-   * route and series policy of prompt admission, which it does not change. An
-   * existing head — including an empty rendering — is never
-   * replaced, duplicated, or moved. A surface that holds any node without a
-   * protected system head is refused as `history-conflict`.
+   * From any other context the call claims the same maintenance phase as
+   * `runMaintenance()` and `maintainIdleHistory()`, so a running turn or another
+   * maintenance task refuses it as `not-idle` instead of trusting the public
+   * `idle` status a maintenance deliberately keeps. Called from the maintenance
+   * task that owns this agent — its `runMaintenance()` job, or an awaited
+   * `agent/created` listener during creation or resume — the call instead joins
+   * that task under its claim and cancellation signal, with only one joined
+   * primitive running at a time. The creation maintenance holds queued input
+   * until that listener returns, so the listener is the awaited barrier that
+   * establishes the head before the first turn without waiting for idle.
+   *
+   * On an empty surface it assembles and renders the real scoped prompt and
+   * commits one `system/message` carrying `maintenance: true` and no turn or
+   * step. This operation appends at most that one head and never a second; later
+   * prompt updates keep following the existing route and series policy of prompt
+   * admission, which it does not change. An existing head — including an empty
+   * rendering — is never replaced, duplicated, or moved. A surface that holds
+   * any node without a protected system head is refused as `history-conflict`.
    *
    * The commit and its durability checkpoint are separate outcomes, and the
    * no-op path runs the same checkpoint: a head being present does not by itself
    * confirm that it is durable. A failed checkpoint raises an error carrying the
    * committed head position, so a later call verifies durability instead of
-   * appending a second head. Cancellation or an owner change after the commit is
-   * reported with the committed position as recovery state; the error never
-   * claims a committed head was not written.
+   * appending a second head. Ownership and cancellation are rechecked before the
+   * append and after the checkpoint; a cancellation, a replaced owner, or a
+   * joined task that ends after the commit is reported with the committed
+   * position as recovery state, and the error never claims a committed head was
+   * not written.
    * @returns the head position, whether this call appended it, and the checkpoint outcome.
    * @throws a `SurfaceHeadError` naming the refused phase, identity, surface, or checkpoint.
    */
@@ -1003,7 +1024,7 @@ Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/s
 
 #### `agent/created` — serial
 
-An entered agent is ready for per-agent initialization after factory setup. Listeners run in order and are awaited before creation resolves. AgentLoop holds queued input until all listeners finish. A throw or rejection fails creation and skips later listeners. Disposal retains the scope and session until dispatch settles; listeners must not await agent.whenIdle() or their own owner's disposal.
+An entered agent is ready for per-agent initialization after factory setup. Listeners run in order and are awaited before creation resolves. AgentLoop holds queued input until all listeners finish. A throw or rejection fails creation and skips later listeners. Disposal retains the scope and session until dispatch settles; listeners must not await agent.whenIdle() or their own owner's disposal. A listener may complete its plugin's first-write initialization here through `agent.maintainSurfaceHead()` or `agent.maintainIdleHistory()`: those calls join the creation maintenance that dispatched this event, inherit its cancellation, and write before the first turn instead of waiting for idle.
 
 ```ts cordis-catalog
 /**
@@ -1013,6 +1034,10 @@ An entered agent is ready for per-agent initialization after factory setup. List
  * creation and skips later listeners. Disposal retains the scope and session
  * until dispatch settles; listeners must not await agent.whenIdle() or their
  * own owner's disposal.
+ * A listener may complete its plugin's first-write initialization here through
+ * `agent.maintainSurfaceHead()` or `agent.maintainIdleHistory()`: those calls
+ * join the creation maintenance that dispatched this event, inherit its
+ * cancellation, and write before the first turn instead of waiting for idle.
  * @param payload.agent - the newly registered agent with its live session and completed setup.
  * @param payload.source - fresh creation, resume, clear, or compaction source.
  * @param payload.signal - creation cancellation signal for listeners. It aborts

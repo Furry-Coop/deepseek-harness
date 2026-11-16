@@ -34,9 +34,11 @@ export interface SurfaceHeadResult extends SurfaceHeadPosition {
 /**
  * What prevented one surface-head maintenance from completing:
  *
- * - `not-idle`: a turn or another maintenance task owns the agent. Public
+ * - `not-idle`: a turn or another maintenance task owns the agent, or another
+ *   primitive already runs on the maintenance task this call would join. Public
  *   `status` stays `idle` during maintenance, so this reports the phase.
- * - `aborted`: `cancel()` aborted the maintenance signal. A head this call
+ * - `aborted`: `cancel()` aborted the maintenance signal, or the maintenance
+ *   task that authorized this call ended before it settled. A head this call
  *   already committed stays as legal recovery state and is reported in
  *   {@link SurfaceHeadError.head}.
  * - `agent-changed`: this agent is no longer the live agent/session for its id.

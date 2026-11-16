@@ -46,13 +46,17 @@ export interface IdleHistoryResult extends IdleHistoryAppend {
 /**
  * What prevented one idle-history maintenance from completing:
  *
- * - `not-idle`: a turn or another maintenance task owns the agent. Public
+ * - `not-idle`: a turn or another maintenance task owns the agent, or another
+ *   primitive already runs on the maintenance task this call would join. Public
  *   `status` stays `idle` during maintenance, so this reports the phase, not the
  *   status.
- * - `aborted`: `cancel()` aborted the maintenance signal before the formal
- *   message append committed. A system head this call already established stays
- *   committed as recovery state; a later identical attempt appends only the
- *   message after it.
+ * - `aborted`: `cancel()` aborted the maintenance signal, or the maintenance
+ *   task that authorized this call ended, before the formal message append
+ *   committed. A system head this call already established stays committed as
+ *   recovery state; a later identical attempt appends only the message after it.
+ *   Once the appends commit, the call settles through its durability checkpoint
+ *   instead: a lost task is not reported as `aborted` there, and only a failed
+ *   checkpoint reports committed positions.
  * - `agent-changed`: this agent is no longer the live agent/session for its id.
  *   A system head this call already established stays committed as recovery
  *   state; this instance appends no message.

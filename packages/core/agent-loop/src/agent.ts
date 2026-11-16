@@ -44,6 +44,7 @@ import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import { ToolActivationError, ToolBatchExecutionError } from '@deepseek-ai/dsh-tools'
 import type { ResolvedToolSet } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { ReactLoopInbox, type PendingInboxSnapshot } from './inbox.ts'
 import { RuntimeContextProjection } from './runtime-context.ts'
 import { AssistantStreamAttempt } from './assistant-stream.ts'
@@ -84,6 +85,23 @@ type Phase =
   }
 
 type StepEndReason = Extract<TurnEndReason, { kind: 'completed' | 'max-tokens' }>
+
+/** One claimed maintenance phase owned by the driver. */
+type MaintenancePhase = Extract<Phase, { kind: 'maintenance' }>
+
+/** The maintenance task whose job is executing in this async context. */
+interface MaintenanceOwnership {
+  readonly agent: ReactLoopAgent
+  readonly phase: MaintenancePhase
+}
+
+/**
+ * Task ownership of the currently executing maintenance job. Idle-maintenance
+ * primitives use it to tell a call made by the task that owns the agent (which
+ * joins that task) from a concurrent call made by anything else (which keeps the
+ * ordinary refusal).
+ */
+const maintenanceOwnership = new AsyncLocalStorage<MaintenanceOwnership>()
 
 /** The exact batch a pre-step removed from the inbox until the step is admitted. */
 interface ClaimedBatch {
@@ -162,6 +180,8 @@ export class ReactLoopAgent implements Agent {
   private activityDone: Promise<void> = Promise.resolve()
   /** Batch removed from the inbox by the current pre-step, until the step is admitted or settled. */
   private pendingClaim: ClaimedBatch | undefined
+  /** The maintenance phase whose idle-maintenance body currently runs, if any. */
+  private occupiedPhase: MaintenancePhase | undefined
 
   /** The agent-scoped registration boundary; the lifecycle owner unwinds it after the driver exits. */
   readonly scope: Scope
@@ -332,7 +352,7 @@ export class ReactLoopAgent implements Agent {
   runMaintenance<T>(job: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.phase.kind !== 'idle') throw new Error(`agent "${this.id}" already has active work`)
     const done = Promise.withResolvers<void>()
-    const maintenance: Phase = {
+    const maintenance: MaintenancePhase = {
       kind: 'maintenance',
       abort: new AbortController(),
       lastTurn: this.phase.lastTurn,
@@ -343,7 +363,13 @@ export class ReactLoopAgent implements Agent {
     this.activityDone = done.promise
     return (async () => {
       try {
-        return await job(maintenance.abort.signal)
+        // The task's own async context is how its job (and every awaited
+        // `agent/created` listener below it) may run the agent's idle-maintenance
+        // primitives under this claim instead of being refused as not-idle.
+        return await maintenanceOwnership.run(
+          { agent: this, phase: maintenance },
+          () => job(maintenance.abort.signal),
+        )
       } finally {
         this.setPhase({ kind: 'idle', lastTurn: maintenance.lastTurn })
         // A failed initialization cancels with `disposed` while keeping the
@@ -354,6 +380,98 @@ export class ReactLoopAgent implements Agent {
         done.resolve()
       }
     })()
+  }
+
+  /**
+   * The claimed maintenance phase this call belongs to, while it still owns
+   * this agent.
+   *
+   * A maintenance primitive called from the maintenance task's own async
+   * context — its `runMaintenance()` job or an awaited `agent/created` listener
+   * the factory dispatches inside that job — answers that phase. Anything else,
+   * including a task that already released the phase, answers `undefined` and
+   * keeps the ordinary idle-or-refuse rule.
+   * @returns the owned phase, or undefined outside the task that owns this agent.
+   */
+  private ownedMaintenance(): MaintenancePhase | undefined {
+    const ownership = maintenanceOwnership.getStore()
+    if (ownership === undefined || ownership.agent !== this) return undefined
+    const phase = this.phase
+    return phase.kind === 'maintenance' && phase === ownership.phase ? phase : undefined
+  }
+
+  /**
+   * Run one idle-maintenance body under the claim that authorizes it.
+   *
+   * From the async context of the maintenance task that owns this agent the call
+   * joins that task: it inherits the task's cancellation signal and writes under
+   * the same claim, so the initialization maintenance that publishes an agent
+   * can complete that agent's per-plugin first-write initialization instead of
+   * deadlocking on an idle point it itself occupies. From anywhere else the
+   * agent must be truly idle, and a running turn or another maintenance task is
+   * refused as before.
+   *
+   * Single-writer occupancy covers both paths and binds to the exact phase: a
+   * body that claimed the phase itself and a body that joined someone else's
+   * claim are the same slot, so a callback one of them awaits (a prompt assembly
+   * or a durability checkpoint, whose async context carries the same ownership)
+   * cannot start a second primitive on that phase. A later phase is never blocked
+   * by an earlier phase's abandoned body, and that body's settlement clears only
+   * its own phase.
+   *
+   * The joined body does not extend the task: after the phase moves on, the
+   * ownership recheck in {@link maintenanceRefusal} refuses its remaining
+   * writes instead of appending them outside a claim. Both primitives place that
+   * recheck before every append; a body whose appends already committed settles
+   * through its durability checkpoint, which reports committed positions on
+   * failure (see {@link IdleHistoryError} and {@link SurfaceHeadError}).
+   * @param body - maintenance work, runnable under either claim.
+   * @param refuse - builds the typed refusal for the operation that called this.
+   * @returns the body's settled result.
+   */
+  private async runIdleMaintenance<T>(
+    body: (signal: AbortSignal) => Promise<T>,
+    refuse: () => Error,
+  ): Promise<T> {
+    const owned = this.ownedMaintenance()
+    if (owned !== undefined) {
+      return await this.occupyMaintenance(owned, owned.abort.signal, body, refuse)
+    }
+    if (this.phase.kind !== 'idle') throw refuse()
+    return await this.runMaintenance(async (signal) => {
+      // The claimed body runs inside this phase's ownership context; its own
+      // occupancy must cover the claiming call too, so no callback it awaits can
+      // start a second primitive on the same phase.
+      const claimed = this.ownedMaintenance()
+      /* v8 ignore next -- runMaintenance claims the phase before invoking its job */
+      if (claimed === undefined) throw refuse()
+      return await this.occupyMaintenance(claimed, signal, body, refuse)
+    })
+  }
+
+  /**
+   * Take the phase's single-writer slot for one idle-maintenance body.
+   * @param phase - the maintenance phase that authorizes this body.
+   * @param signal - that phase's cancellation signal.
+   * @param body - the maintenance work to run.
+   * @param refuse - builds the typed refusal when a body already holds the slot.
+   * @returns the body's settled result.
+   */
+  private async occupyMaintenance<T>(
+    phase: MaintenancePhase,
+    signal: AbortSignal,
+    body: (signal: AbortSignal) => Promise<T>,
+    refuse: () => Error,
+  ): Promise<T> {
+    if (this.occupiedPhase === phase) throw refuse()
+    this.occupiedPhase = phase
+    try {
+      return await body(signal)
+    } finally {
+      // Only the phase that owns the slot may clear it: an abandoned body from an
+      // earlier phase must not release a later phase's running body.
+      if (this.occupiedPhase === phase) this.occupiedPhase = undefined
+    }
   }
 
   /**
@@ -379,14 +497,12 @@ export class ReactLoopAgent implements Agent {
     // The request object is only structurally readonly: capture the exact message
     // now, before any await can interleave with caller mutation.
     const message = freezeMessage(request.message)
-    if (this.phase.kind !== 'idle') {
-      throw new IdleHistoryError(
+    return await this.runIdleMaintenance(
+      signal => this.recordIdleHistory(message, signal),
+      () => new IdleHistoryError(
         `agent "${this.id}" cannot record idle history: ${this.phase.kind === 'maintenance' ? 'a maintenance task' : 'a turn'} already owns it`,
         'not-idle',
-      )
-    }
-    return await this.runMaintenance(
-      signal => this.recordIdleHistory(message, signal),
+      ),
     )
   }
 
@@ -408,14 +524,12 @@ export class ReactLoopAgent implements Agent {
    * @returns the head position, whether this call appended it, and the checkpoint outcome.
    */
   async maintainSurfaceHead(): Promise<SurfaceHeadResult> {
-    if (this.phase.kind !== 'idle') {
-      throw new SurfaceHeadError(
+    return await this.runIdleMaintenance(
+      signal => this.recordSurfaceHead(signal),
+      () => new SurfaceHeadError(
         `agent "${this.id}" cannot maintain its surface head: ${this.phase.kind === 'maintenance' ? 'a maintenance task' : 'a turn'} already owns it`,
         'not-idle',
-      )
-    }
-    return await this.runMaintenance(
-      signal => this.recordSurfaceHead(signal),
+      ),
     )
   }
 
@@ -617,6 +731,15 @@ export class ReactLoopAgent implements Agent {
     }
     if (this.loopCtx.agents.get(this.id) !== this || this.loopCtx.sessions.get(this.id) !== this.session) {
       return { failure: 'agent-changed', message: `agent "${this.id}" is no longer the live agent for its session` }
+    }
+    // The claim that authorized this work must still be the current phase. A
+    // joined call that outlived its maintenance task is refused here so it can
+    // never append after the claim ended and another activity took over.
+    if (this.ownedMaintenance() === undefined) {
+      return {
+        failure: 'aborted',
+        message: `agent "${this.id}" ${subject} outlived the maintenance task that owns it`,
+      }
     }
     return undefined
   }
