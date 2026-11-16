@@ -614,6 +614,52 @@ describe('malformed replay and listener lifecycle', () => {
     expectRepeatedFailure(meter(), session, /invalid current range/)
   })
 
+  it('moves the priced surface with a recorded ordering without repricing', () => {
+    const service = meter()
+    const session = Session.create(SessionId('surface-order'))
+    const first = session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'first' }],
+      source: { kind: 'user' },
+    }), { surfaceOp: 'append' }).seq
+    const second = session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'second message with more text' }],
+      source: { kind: 'user' },
+    }), { surfaceOp: 'append' }).seq
+    const third = session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'third' }],
+      source: { kind: 'user' },
+    }), { surfaceOp: 'append' }).seq
+    const before = service.measure(session)
+
+    session.append('surface/order', { nodes: [first, third, second] })
+
+    const after = service.measure(session)
+    // The positional mirror follows the logged permutation; each node keeps its
+    // identity and price, and the total is unchanged.
+    expect(after.nodes.map(node => node.seq)).toEqual([first, third, second])
+    expect(after.nodes.map(node => node.tokens)).toEqual([0, 2, 1].map(index => before.nodes[index]!.tokens))
+    expect(after.surfaceTokens).toBe(before.surfaceTokens)
+  })
+
+  it('rejects an ordering that names a node the priced surface does not hold', () => {
+    const session = Session.create(SessionId('bad-order'))
+    const head = session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'head' }],
+      source: { kind: 'user' },
+    }), { surfaceOp: 'append' }).seq
+    session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'tail' }],
+      source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    appendUnchecked(session, {
+      type: 'surface/order',
+      seq: SessionSeq(session.seq),
+      time: 0,
+      data: { nodes: [head, SessionSeq(99)] },
+    })
+    expectRepeatedFailure(meter(), session, /token surface: order at seq \d+ names 99/)
+  })
+
   it('handles earlier-reader catch-up, eager observation, and service reload', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)

@@ -1,0 +1,8 @@
+version: 1
+scenario: history-assembly-order
+profile: headless
+composition: pwsh
+recording: live
+header:
+  class: pwsh
+platform: pwsh

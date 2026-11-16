@@ -1159,7 +1159,28 @@ export class ReactLoopAgent implements Agent {
         this.session.append('user/message', context, { surfaceOp: 'append' })
       }
       firstAttempt = false
-      const request = this.buildRequest(config, preparedCall, assembly.tools, { turn, step }, startsRequestSeries, signal)
+      // The continuation builds and freezes this attempt's request inside the
+      // listener's own serialized write, so no queued session update can enter
+      // between that write and the snapshot. A listener must pass the frozen
+      // request straight through: the loop never dispatches an unfrozen one.
+      let frozenRequest: GenerateOptions | undefined
+      const request = await this.dispatch.waterfall(
+        'agent/history-assembling', { turn, step, signal },
+        () => {
+          // A listener may have awaited durable work: a turn cancelled during
+          // that wait freezes no request and logs no header for it.
+          signal.throwIfAborted()
+          const built = this.buildRequest(config, preparedCall, assembly.tools, { turn, step }, startsRequestSeries, signal)
+          frozenRequest = built
+          return Promise.resolve(built)
+        },
+      )
+      if (frozenRequest === undefined || request !== frozenRequest) {
+        throw new Error(`agent "${this.id}": agent/history-assembling must call next() and return the frozen request it builds`)
+      }
+      // A listener may still be cleaning up after the continuation returned:
+      // cancellation during that window must not reach the provider.
+      signal.throwIfAborted()
       const live = new AssistantStreamAttempt(
         this.session.id,
         ++this.assistantAttemptCounter,

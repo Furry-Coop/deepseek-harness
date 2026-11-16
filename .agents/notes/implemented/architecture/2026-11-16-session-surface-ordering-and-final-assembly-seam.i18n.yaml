@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-11-16-session-surface-ordering-and-final-assembly-seam.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-16-session-surface-ordering-and-final-assembly-seam.md
+/agent-note-session-surface-ordering-and-the-final-assembly-seam:
+  en: ab03c5f39f36a77f
+  zh: 2ce962609d5d18a8
+/agent-note-session-surface-ordering-and-the-final-assembly-seam/problem:
+  en: f194b8dfeff37075
+  zh: e56f91572b7426e0
+/agent-note-session-surface-ordering-and-the-final-assembly-seam/decision:
+  en: 9ef3cca0f0ee5705
+  zh: f58dd5e55a460eb0
+/agent-note-session-surface-ordering-and-the-final-assembly-seam/alternatives-considered:
+  en: 0d502eadbdeb46bb
+  zh: c31ba7106bb98640
+/agent-note-session-surface-ordering-and-the-final-assembly-seam/consequences:
+  en: 935a5df1c1990de4
+  zh: d8716ef6d8e73e99
+/agent-note-session-surface-ordering-and-the-final-assembly-seam/testing:
+  en: fafd6f2992b1841d
+  zh: 8e08ef528269be4e

@@ -8,7 +8,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Scoped } from '@deepseek-ai/dsh-scope'
 import type {
-  LlmAttemptId, LlmCallConfig, LlmFailure, MessageId, ReasoningEffortId, ResolvedRetryPolicy, StreamChunk,
+  GenerateOptions, LlmAttemptId, LlmCallConfig, LlmFailure, MessageId, ReasoningEffortId, ResolvedRetryPolicy, StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import type { AgentCancelCause, Session, SessionSeq, UserMessage } from '@deepseek-ai/dsh-session'
 export type { AgentCancelCause } from '@deepseek-ai/dsh-session'
@@ -479,6 +479,38 @@ declare module '@deepseek-ai/cordis' {
      * @mode waterfall
      */
     'agent/pre-step'(this: Scoped<Agent>, payload: { agent: Agent; messages: UserMessage[]; turn: number; step: number; signal: AbortSignal; modelSelection: Readonly<ModelSelection> }, next: () => Promise<PreStepDecision>): Promise<PreStepDecision>
+    /**
+     * The final snapshot point for one attempt's model-visible history: this
+     * attempt's system-prompt commits, accepted user batch, and refreshed
+     * runtime-context snapshot are already committed, and `next()` logs
+     * `request/header`, `request/context`, tool-change records, then derives and
+     * freezes the message array.
+     *
+     * `next()` is the continuation, not a notification: it runs the built-in
+     * build synchronously in the calling tick and returns the frozen request.
+     * That lets a listener hold its own serialized writer across the snapshot —
+     * it may await durable work first (for example appending a `surface/order`
+     * permutation or a `replace`), then call `next()` while still holding the
+     * writer, so no queued update can enter between its commit and the frozen
+     * request. A listener MUST call `next()` exactly once and return its value
+     * unchanged; the loop rejects a different return value rather than dispatch
+     * an unfrozen request. The network call happens after the last listener, so
+     * a writer must be released before returning.
+     *
+     * Message order is model-visible, so only logged events change it; this
+     * event records nothing itself. A cancellation before or during dispatch
+     * sends no request. A throw fails the attempt like other step-preparation
+     * failures. A retry fires this event again and freezes a new request, so each
+     * attempt reflects its own order, series, and tool baseline.
+     * @param payload.agent - the agent whose attempt is assembling history.
+     * @param payload.turn - the open turn number.
+     * @param payload.step - the step whose request this is.
+     * @param payload.signal - the current turn's cancellation signal.
+     * @param next - continues to the built-in synchronous build and yields the frozen request.
+     * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+     * @mode waterfall
+     */
+    'agent/history-assembling'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; signal: AbortSignal }, next: () => Promise<GenerateOptions>): Promise<GenerateOptions>
     /**
      * Replace the frozen call configuration. `await next()` yields the config
      * the machine would use (the step's model selection with agent options on

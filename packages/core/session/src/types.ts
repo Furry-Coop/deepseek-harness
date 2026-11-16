@@ -402,6 +402,27 @@ export interface SessionEventMap {
     meta?: JsonValue
   }
   /**
+   * A full permutation of the current surface nodes, applied as a positional
+   * rewrite of the model-visible order. The event is log-only and affects no
+   * recorded message: identities, roles, sources, and content bytes stay with
+   * the nodes it moves, exactly as logged, and the ordered surface remains the
+   * sole source of derived history.
+   *
+   * `nodes` must permute the complete set of surface nodes that exists when the
+   * event commits, with no additions, omissions, or duplicates, and must keep the
+   * current first node first: surface node 0 is the protected head. The
+   * permutation covers only the nodes present at that moment: a later append
+   * joins the permuted tail, and a later replacement resolves its endpoints in
+   * the then-current order. Replay applies the same rewrite, so live and
+   * reopened derivations agree.
+   *
+   * The event changes positions, never membership: moving a node out of later
+   * requests is still a `replace`. Because a reader that ignores it would
+   * assemble a different request, the event is required on read rather than
+   * `ignorable`.
+   */
+  'surface/order': { nodes: SessionSeq[] }
+  /**
    * Full header for the next request, appended inside its step before dispatch.
    * It is log-only; the latest snapshot reconstructs the request header.
    */

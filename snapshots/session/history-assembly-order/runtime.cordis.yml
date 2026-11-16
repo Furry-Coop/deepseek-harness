@@ -1,0 +1,6 @@
+# Controlled history-ordering scenario on the pwsh snapshot composition. The
+# composition's own model route keeps live recording and keyless replay aligned.
+
+- insert:
+    - id: history-assembly-order
+      name: './order-seam.ts'

@@ -285,6 +285,18 @@ export class TokenMeter extends Service {
       })
     }
     const plan = isSurfaceEvent(event) ? planSurfaceTokens(state.surface, event) : undefined
+    if (event.type === 'surface/order') {
+      // The priced surface mirrors model-visible order, so a recorded
+      // permutation moves the same node identities and prices.
+      const bySeq = new Map(state.surface.map(node => [node.seq, node]))
+      state.surface = event.data.nodes.map((seq) => {
+        const node = bySeq.get(seq)
+        if (node === undefined) {
+          throw new Error(`token surface: order at seq ${event.seq} names ${seq}, which is not a priced surface node`)
+        }
+        return node
+      })
+    }
     if (event.type === 'assistant/message') {
       state.anchorNodes = [...state.surface]
       state.anchorHeader = state.header

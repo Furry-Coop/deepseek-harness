@@ -139,6 +139,61 @@ describe('mandatory V4 lifecycle restoration', () => {
   })
 })
 
+describe('mandatory V4 surface ordering restoration', () => {
+  /** One identified prompt node on the surface. */
+  const prompt = (id: string): Row => ({
+    ...row('user/message', { id, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: id }] }),
+    surfaceOp: 'append',
+  })
+  /** Four prompt nodes at seq 1-4, in recorded append order. */
+  const prompts = (): Row[] => [prompt('a'), prompt('b'), prompt('c'), prompt('d')]
+
+  it('replays a recorded ordering before a later multi-node replacement', () => {
+    // Surface [2,3,4,5] → ordering [2,4,3,5]: the replacement then covers the
+    // contiguous permuted span of nodes at positions 2..3 (seqs 3 and 5), whose
+    // recorded sources are exactly {3,5}. Reading the ordering as append order
+    // would span {3,4,5} and refuse the log.
+    const rows = [
+      ...begin(),
+      ...prompts(),
+      row('surface/order', { nodes: [2, 4, 3, 5] }),
+      { ...prompt('merged'), surfaceOp: { op: 'replace', startSeq: 3, endSeq: 5 }, sourceEventSeqs: [3, 5] },
+      ...end(),
+    ]
+    const reopened = reopen(rows)
+    expect(reopened.artifact.events.filter(event => event.type === 'surface/order')).toHaveLength(1)
+    expect(reopened.messages.map(message => message.id)).toEqual(['a', 'c', 'merged'])
+  })
+
+  it('keeps replacement source coverage mandatory over the reordered surface', () => {
+    const rows = [
+      ...begin(),
+      ...prompts(),
+      row('surface/order', { nodes: [2, 4, 3, 5] }),
+      // Node 5 is shadowed in the current order but cited by nothing.
+      { ...prompt('merged'), surfaceOp: { op: 'replace', startSeq: 3, endSeq: 5 }, sourceEventSeqs: [3] },
+      ...end(),
+    ]
+    expect(() => reopen(rows)).toThrow('replacement sourceEventSeqs omit a shadowed surface node')
+  })
+
+  it.each([
+    ['an ordering without a surface', [row('surface/order', { nodes: [0] })]],
+    ['a shorter ordering', [...begin(), ...prompts(), row('surface/order', { nodes: [2, 4, 3] })]],
+    ['an unknown node', [...begin(), ...prompts(), row('surface/order', { nodes: [2, 4, 3, 0] })]],
+    ['a repeated node', [...begin(), ...prompts(), row('surface/order', { nodes: [2, 4, 3, 3] })]],
+    ['a moved head', [...begin(), ...prompts(), row('surface/order', { nodes: [4, 2, 3, 5] })]],
+    ['an unchanged order', [...begin(), ...prompts(), row('surface/order', { nodes: [2, 3, 4, 5] })]],
+  ] satisfies Array<[string, Row[]]>)('rejects %s', (_name, rows) => {
+    expect(() => reopen(rows)).toThrow()
+  })
+
+  it('refuses an ordering that cites its own event', () => {
+    const rows = [...begin(), ...prompts(), row('surface/order', { nodes: [2, 4, 3, 6] })]
+    expect(() => reopen(rows)).toThrow('surface order node must name an earlier event')
+  })
+})
+
 describe('mandatory V4 compaction restoration', () => {
   it('retains matching checkpoint sources and inherited unfinished compactions', () => {
     expect(reopen(compact()).messages[0]?.source).toEqual({ kind: 'compact-checkpoint', compactionId: 'c', sourceCommandId: 'cmd' })

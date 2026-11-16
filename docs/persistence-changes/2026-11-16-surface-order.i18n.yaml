@@ -1,0 +1,28 @@
+# Bilingual-pair consistency record for 2026-11-16-surface-order.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/persistence-changes/2026-11-16-surface-order.md
+/:
+  en: 3d5a424ae7d7e46b
+  zh: c22a8e4a62d8cc1a
+/2026-11-16-surface-order:
+  en: d8c3b88f0c74f5a1
+  zh: 8a142cd64f868e01
+/2026-11-16-surface-order/summary:
+  en: 728682ae26094408
+  zh: 705991efaa1d618d
+/2026-11-16-surface-order/table-of-contents:
+  en: 6cf314a069ceb451
+  zh: 9adff678e9ecab3b
+/2026-11-16-surface-order/declaration:
+  en: 6907136f28e48c90
+  zh: 02f8298485f3d8e7
+/2026-11-16-surface-order/compatibility:
+  en: 82514eab1b0e742f
+  zh: 69aea7e472bc8e87
+/2026-11-16-surface-order/verification:
+  en: eb0e9793eb73b3a4
+  zh: 8f74dc27d7e6f6b3
+/2026-11-16-surface-order/dev-note:
+  en: b75c8458928b72b9
+  zh: 003ba4e17b4b5269

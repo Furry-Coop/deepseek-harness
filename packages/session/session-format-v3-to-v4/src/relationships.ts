@@ -7,7 +7,7 @@ import type { SessionFormatArtifact, SessionFormatEvent, SessionFormatJsonObject
 const SURFACE_TYPES = new Set(['system/message', 'user/message', 'developer/message', 'assistant/message', 'tool/result'])
 const STEP_EVENT_TYPES = new Set(['system/message', 'developer/message', 'assistant/attempt'])
 const RELATIONSHIP_TYPES = new Set([
-  ...SURFACE_TYPES, ...STEP_EVENT_TYPES, 'turn/start', 'turn/end', 'step/start', 'step/end',
+  ...SURFACE_TYPES, 'surface/order', ...STEP_EVENT_TYPES, 'turn/start', 'turn/end', 'step/start', 'step/end',
   'tool/call', 'request/header', 'request/context', 'tool/ptc-dispatch-start', 'tool/ptc-dispatch',
   'llm/retry', 'llm/retry-started', 'session/title', 'session/title-llm-request', 'command/run',
   'command/done', 'compaction/start', 'compaction/summary', 'compaction/end', 'compaction/prune', 'session/end-seed',
@@ -150,7 +150,43 @@ class Relationships {
     }
   }
 
-  foldSurface(event: SessionFormatEvent): void {
+  /**
+   * Replay one recorded surface-order permutation before later relationships
+   * read surface positions. A replacement resolves its endpoints in the order in
+   * force when it commits, so skipping the ordering would compare later ranges
+   * against a sequence the writer never had. The rules match the writer's own
+   * admission: the list permutes exactly the current nodes, keeps the first node
+   * first, and changes the order.
+   * @param event - candidate `surface/order` event.
+   * @param data - validated event payload.
+   */
+  surfaceOrder(event: SessionFormatEvent, data: SessionFormatJsonObject): void {
+    const nodes = array(data['nodes'], 'surface order nodes')
+      .map(value => earlier(value, event.seq, 'surface order node'))
+    const current = this.surface
+    if (current.length === 0) throw new SessionFormatError('surface/order requires an existing surface')
+    if (nodes.length !== current.length) {
+      throw new SessionFormatError('surface/order must permute every current surface node')
+    }
+    const expected = new Set(current)
+    const seen = new Set<number>()
+    for (const node of nodes) {
+      if (!expected.has(node)) throw new SessionFormatError(`surface/order names ${node}, which is not a current surface node`)
+      if (seen.has(node)) throw new SessionFormatError(`surface/order repeats surface node ${node}`)
+      seen.add(node)
+    }
+    if (nodes[0] !== current[0]) throw new SessionFormatError('surface/order must keep the protected first surface node at index 0')
+    if (nodes.every((node, index) => node === current[index])) {
+      throw new SessionFormatError('surface/order must change the current surface order')
+    }
+    this.surface = nodes
+  }
+
+  foldSurface(event: SessionFormatEvent, data: SessionFormatJsonObject): void {
+    if (event.type === 'surface/order') {
+      this.surfaceOrder(event, data)
+      return
+    }
     if (!SURFACE_TYPES.has(event.type)) return
     if (event.type === 'system/message' && this.surface.length > 0 && this.protectedHead === undefined) {
       throw new SessionFormatError('system/message requires a protected first surface head')
@@ -300,7 +336,7 @@ class Relationships {
     if (event.type.startsWith('turn/') && this.compaction !== undefined && !this.orphanCompactions.has(this.compaction.seq)) {
       throw new SessionFormatError(`${event.type} crosses an open compaction`)
     }
-    this.foldSurface(event)
+    this.foldSurface(event, data)
     switch (event.type) {
       case 'turn/start':
         if (this.turn !== null || data['turn'] !== this.nextTurn) throw new SessionFormatError('turn/start does not open the expected turn')

@@ -66,6 +66,7 @@ The [format references](persistence-changes/historical-formats/README.md) cover 
 | `event:subagent/catalog` | event | `53750b9abf61efb7992b0aadc3e247ec927449c63266df28230fd1139f5590ac` | [`{ type: "subagent/catalog" }`](#persistence-type-sha256-53750b9abf61efb7992b0aadc3e247ec927449c63266df28230fd1139f5590ac) |
 | `event:subagent/descriptor` | event | `b79ada42962cad0190a9d465805260567621fa3a4abd757eb31e6016b52d5ab5` | [`{ type: "subagent/descriptor" }`](#persistence-type-sha256-b79ada42962cad0190a9d465805260567621fa3a4abd757eb31e6016b52d5ab5) |
 | `event:subagent/model-selection-policy` | event | `a6567ccb2e530606b775371eb4fa31468d72084339968e8b0440a516a23b39dc` | [`{ type: "subagent/model-selection-policy" }`](#persistence-type-sha256-a6567ccb2e530606b775371eb4fa31468d72084339968e8b0440a516a23b39dc) |
+| `event:surface/order` | event | `8f57b214e35cb85cfac08f5270ebe1d69dca94847a9b6c6e222038e06f81d196` | [`{ type: "surface/order" }`](#persistence-type-sha256-8f57b214e35cb85cfac08f5270ebe1d69dca94847a9b6c6e222038e06f81d196) |
 | `event:system/message` | event | `d7512d48304c76194949f420847322fae40a8f520bfc897ec597686dc8ea7d08` | [`{ type: "system/message" }`](#persistence-type-sha256-d7512d48304c76194949f420847322fae40a8f520bfc897ec597686dc8ea7d08) |
 | `event:team/member` | event | `4fb59762612c3e3ac3a3bd4f84c9c148d3c3893bd422ba2b201cc039fabd49bc` | [`{ type: "team/member" }`](#persistence-type-sha256-4fb59762612c3e3ac3a3bd4f84c9c148d3c3893bd422ba2b201cc039fabd49bc) |
 | `event:team/message/delivered` | event | `48f9c19417a1abbedfa59f4667bba36b93ac2db407adf5e84cb3ba0de30942cb` | [`{ type: "team/message/delivered" }`](#persistence-type-sha256-48f9c19417a1abbedfa59f4667bba36b93ac2db407adf5e84cb3ba0de30942cb) |
@@ -162,7 +163,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 }[T]
 ```
 
-Sources: [`packages/core/session/src/types.ts:449`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:457`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:480`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:511`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:470`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:478`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:501`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:532`](../packages/core/session/src/types.ts)
 
 ## Events
 
@@ -781,7 +782,7 @@ Source: [`packages/plan/plan-mode/src/index.ts:53`](../packages/plan/plan-mode/s
 'request/context': RequestContext
 ```
 
-Source: [`packages/core/session/src/types.ts:420`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:441`](../packages/core/session/src/types.ts)
 
 <a id="requestheader--log-only"></a>
 
@@ -800,7 +801,7 @@ Source: [`packages/core/session/src/types.ts:420`](../packages/core/session/src/
 }
 ```
 
-Source: [`packages/core/session/src/types.ts:408`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:429`](../packages/core/session/src/types.ts)
 
 ### `sandbox/*`
 
@@ -877,7 +878,7 @@ Source: [`packages/schedule/schedule/src/types.ts:625`](../packages/schedule/sch
 'session/end-seed': { inherited?: true }
 ```
 
-Source: [`packages/core/session/src/types.ts:445`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:466`](../packages/core/session/src/types.ts)
 
 <a id="sessiontitle--log-only"></a>
 
@@ -1037,6 +1038,38 @@ Source: [`packages/subagent/subagent/src/descriptor.ts:38`](../packages/subagent
 ```
 
 Source: [`packages/subagent/tool-subagent/src/model-selection-state.ts:17`](../packages/subagent/tool-subagent/src/model-selection-state.ts)
+
+### `surface/*`
+
+<a id="surfaceorder--log-only"></a>
+
+#### `surface/order` — log-only
+
+```ts persistence-catalog
+/**
+ * A full permutation of the current surface nodes, applied as a positional
+ * rewrite of the model-visible order. The event is log-only and affects no
+ * recorded message: identities, roles, sources, and content bytes stay with
+ * the nodes it moves, exactly as logged, and the ordered surface remains the
+ * sole source of derived history.
+ *
+ * `nodes` must permute the complete set of surface nodes that exists when the
+ * event commits, with no additions, omissions, or duplicates, and must keep the
+ * current first node first: surface node 0 is the protected head. The
+ * permutation covers only the nodes present at that moment: a later append
+ * joins the permuted tail, and a later replacement resolves its endpoints in
+ * the then-current order. Replay applies the same rewrite, so live and
+ * reopened derivations agree.
+ *
+ * The event changes positions, never membership: moving a node out of later
+ * requests is still a `replace`. Because a reader that ignores it would
+ * assemble a different request, the event is required on read rather than
+ * `ignorable`.
+ */
+'surface/order': { nodes: SessionSeq[] }
+```
+
+Source: [`packages/core/session/src/types.ts:424`](../packages/core/session/src/types.ts)
 
 ### `system/*`
 
@@ -2746,6 +2779,14 @@ SHA-256: `0a8a062bc9c3c0d97fd97742262f2ea53dd32297f834e81114870d38ac3dc6da`
 SHA-256: `511801b0a6470d98566e8385d3dffddb2b67f79fcf73ed6056f46c3cc0a245a7`
 
 `"success"`
+
+<a id="persistence-type-sha256-5d40dbb08b79628c89e5a7ccc97b1ae7cdb01308bfe0d701bc73f403c0443f12"></a>
+
+### `"surface/order"`
+
+SHA-256: `5d40dbb08b79628c89e5a7ccc97b1ae7cdb01308bfe0d701bc73f403c0443f12`
+
+`"surface/order"`
 
 <a id="persistence-type-sha256-8af841fc9b265ade3441caf9fe40dd24db24226befba48150e6d0eeccc1389c3"></a>
 
@@ -5118,7 +5159,7 @@ Sources: [`packages/subagent/subagent/src/continuation-messages.ts:29`](../packa
 
 SHA-256: `335e242de1fcc17b6ca920fc420d71bec2d76e53e37955c00948b65ab77f05c5`
 
-Sources: [`packages/core/session/src/types.ts:480`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:501`](../packages/core/session/src/types.ts)
 
 One of:
 
@@ -6512,7 +6553,7 @@ Sources: [`packages/compaction/compaction/src/types.ts:38`](../packages/compacti
 
 SHA-256: `bcf0caf62d964b2fcf5404bd5c909cfa9a21c3f3c96e6b7e36d9e33565223825`
 
-Sources: [`packages/core/session/src/types.ts:482`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:503`](../packages/core/session/src/types.ts)
 
 | Property | Presence | Type |
 |---|---|---|
@@ -6581,7 +6622,7 @@ Sources: [`packages/llm/llm/src/types.ts:168`](../packages/llm/llm/src/types.ts)
 
 SHA-256: `ad0c38a0adb82a94c925456df41586d9b5f9202fca18593eae2213d4445b4585`
 
-Sources: [`packages/core/session/src/types.ts:408`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:429`](../packages/core/session/src/types.ts)
 
 | Property | Presence | Type |
 |---|---|---|
@@ -6678,7 +6719,7 @@ SHA-256: `e3e77b26f0148755a505f5b8ea843a3be117827d4703bb5754d9dc8ddbef521f`
 
 SHA-256: `17d1afb770d9941936130996da00dc86782cfef731d8d6526162c301256a4ac3`
 
-Sources: [`packages/core/session/src/types.ts:445`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:466`](../packages/core/session/src/types.ts)
 
 | Property | Presence | Type |
 |---|---|---|
@@ -8209,6 +8250,18 @@ Sources: [`packages/sandbox/sandbox-policy/src/session-mode.ts:33`](../packages/
 | `mode` | required | [`SandboxMode`](#persistence-type-sha256-fab2bb09bc5e3b9db0685e8f5500b029af1a2b33e70bc703c1d5d0f596fbc1fd) |
 | `source` | optional | `"delegation"` |
 
+<a id="persistence-type-sha256-67c0cd7423ad9c862b05e6a52bee004a67aea0e6e5c1e5074a72076e4a26e1a2"></a>
+
+### `{ nodes }`
+
+SHA-256: `67c0cd7423ad9c862b05e6a52bee004a67aea0e6e5c1e5074a72076e4a26e1a2`
+
+Sources: [`packages/core/session/src/types.ts:424`](../packages/core/session/src/types.ts)
+
+| Property | Presence | Type |
+|---|---|---|
+| `nodes` | required | [`number[]`](#persistence-type-sha256-5d03ba38734809bcbd2a55221bd938b3b3fc34b49bb686c6113e9e4931e3aa78) |
+
 <a id="persistence-type-sha256-11f70b595aa76897fc4e25a352bfa718c659f44b799e5aa14e84e5a38fe72912"></a>
 
 ### `{ policy, source? }`
@@ -9169,6 +9222,22 @@ SHA-256: `a6567ccb2e530606b775371eb4fa31468d72084339968e8b0440a516a23b39dc`
 | `seq` | required | `number` |
 | `time` | required | `number` |
 | `type` | required | `"subagent/model-selection-policy"` |
+
+<a id="persistence-type-sha256-8f57b214e35cb85cfac08f5270ebe1d69dca94847a9b6c6e222038e06f81d196"></a>
+
+<a id="persistence-type-eventsurfaceorder"></a>
+
+### `{ type: "surface/order" }`
+
+SHA-256: `8f57b214e35cb85cfac08f5270ebe1d69dca94847a9b6c6e222038e06f81d196`
+
+| Property | Presence | Type |
+|---|---|---|
+| `data` | required | [`{ nodes }`](#persistence-type-sha256-67c0cd7423ad9c862b05e6a52bee004a67aea0e6e5c1e5074a72076e4a26e1a2) |
+| `ignorable` | optional | `true` |
+| `seq` | required | `number` |
+| `time` | required | `number` |
+| `type` | required | `"surface/order"` |
 
 <a id="persistence-type-sha256-d7512d48304c76194949f420847322fae40a8f520bfc897ec597686dc8ea7d08"></a>
 

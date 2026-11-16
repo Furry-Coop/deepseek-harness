@@ -135,7 +135,7 @@ A `session/event` observer cannot append: the log rejects a reentrant append so 
 
 ### Derived history
 
-`deriveMessages()` caches deep-frozen projections and returns a fresh array per call. The surface event types (`system/message`, `developer/message`, `user/message`, `assistant/message`, `tool/result`) supply their recorded message identities and content; empty-content system and developer nodes project to no message. Plugin-owned projections change derived content without mutating recorded messages. Replacements and projection decisions invalidate the cache. Embedded Assistant streams and `assistant/attempt` events remain replay and diagnostic data only. Ordinary prompts and injected context project without automatic type- or source-specific wrappers. Producers own any framing in their recorded content.
+`deriveMessages()` caches deep-frozen projections and returns a fresh array per call. The surface event types (`system/message`, `developer/message`, `user/message`, `assistant/message`, `tool/result`) supply their recorded message identities and content; empty-content system and developer nodes project to no message. Plugin-owned projections change derived content without mutating recorded messages. A `surface/order` event records a full permutation of the current nodes — head pinned, order genuinely changed — and moves those nodes without copying, re-recording, or dropping any of them; later appends join the permuted tail and later replacements resolve their endpoints in that order. Replacements, orderings, and projection decisions invalidate the cache. Embedded Assistant streams and `assistant/attempt` events remain replay and diagnostic data only. Ordinary prompts and injected context project without automatic type- or source-specific wrappers. Producers own any framing in their recorded content.
 
 ### The request header
 
@@ -173,7 +173,7 @@ Appended surface entries are resent on later steps. A `replace` surface operatio
 
 #### KV Cache effect
 
-Appended surface entries preserve reusable prefixes. A `replace` operation invalidates reuse from the first shadowed message even though the underlying event log stays append-only.
+Appended surface entries preserve reusable prefixes. A `replace` operation invalidates reuse from the first shadowed message even though the underlying event log stays append-only. A `surface/order` permutation invalidates reuse from the first position whose message changes, which is why the loop marks the following request as a new series.
 
 ### Tool-result recovery and fork results
 

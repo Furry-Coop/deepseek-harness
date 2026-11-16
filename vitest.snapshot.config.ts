@@ -1,4 +1,5 @@
 import { availableParallelism } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import tsconfigPaths from 'vite-tsconfig-paths'
 import { defineConfig } from 'vitest/config'
 import { standardDecoratorPlugin, vitestExecArgv } from './vitest.shared.ts'
@@ -32,7 +33,9 @@ const snapshotMaxWorkers = process.env.DSH_SNAPSHOT_MAX_WORKERS
 // environment or root `.env`.
 if (process.env.DSH_SNAPSHOT === 'record') {
   try {
-    process.loadEnvFile(new URL('.env', import.meta.url).pathname)
+    // A URL pathname is not a filesystem path on Windows (`/C:/…`), which made
+    // record load no .env at all; fileURLToPath yields the real absolute path.
+    process.loadEnvFile(fileURLToPath(new URL('.env', import.meta.url)))
   } catch (error) {
     // ENOENT (no .env) is fine — the key may already be in the environment.
     // Surface any other failure rather than silently recording with wrong env.

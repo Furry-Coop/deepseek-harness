@@ -274,9 +274,17 @@ export interface SurfaceFoldResult {
 export interface SessionSurface {
   /** Current surface event sequences in model-visible order. */
   readonly nodes: readonly SessionSeq[]
-  /** Monotonic count of committed positional replacements. */
+  /**
+   * Monotonic count of committed positional replacements and `surface/order`
+   * reorderings. Consumers that cache a sequence-to-position index rebuild
+   * when it advances.
+   */
   readonly replaceGeneration: number
-  /** Monotonic count of committed replacements and plugin-owned message changes. */
+  /**
+   * Monotonic count of committed replacements, `surface/order` reorderings, and
+   * plugin-owned message changes. Consumers that cache derived content rebuild
+   * when it advances.
+   */
   readonly contentGeneration: number
 }
 
@@ -344,6 +352,7 @@ interface SurfaceReplacePlan extends SurfaceFoldReplacement {
 type SurfacePlan =
   | { kind: 'append'; seq: SessionSeq; recorded: SurfaceRecordedNode }
   | SurfaceReplacePlan
+  | { kind: 'order'; nodes: SessionSeq[] }
   | { kind: 'project'; projection: SessionMessageProjection; messages: ReadonlyMap<SessionSeq, Message> }
 
 /** Create an empty surface fold state. */
@@ -514,6 +523,40 @@ function replacementRange(
   }
 }
 
+/** Validate one `surface/order` permutation against the current ordered surface. */
+function plannedSurfaceOrder(
+  state: SurfaceFoldState,
+  nodes: readonly SessionSeq[],
+  seq: SessionSeq,
+): SessionSeq[] {
+  const current = state.nodes
+  if (current.length === 0) {
+    throw new Error(`surface order at seq ${seq}: the surface has no nodes to reorder`)
+  }
+  if (nodes.length !== current.length) {
+    throw new Error(`surface order at seq ${seq}: must permute all ${current.length} current surface nodes, received ${nodes.length}`)
+  }
+  const expected = new Set(current)
+  const seen = new Set<SessionSeq>()
+  for (const node of nodes) {
+    if (!isEventSeq(node) || !expected.has(node)) {
+      throw new Error(`surface order at seq ${seq}: ${String(node)} is not a current surface node`)
+    }
+    if (seen.has(node)) {
+      throw new Error(`surface order at seq ${seq}: lists surface node ${node} more than once`)
+    }
+    seen.add(node)
+  }
+  const [head] = current
+  if (nodes[0] !== head) {
+    throw new Error(`surface order at seq ${seq}: node 0 holds the protected head and must stay at index 0`)
+  }
+  if (nodes.every((node, index) => node === current[index])) {
+    throw new Error(`surface order at seq ${seq}: the submitted order matches the current surface order`)
+  }
+  return [...nodes]
+}
+
 /**
  * Deep structural equality over the session-event JSON value domain
  * (null/boolean/number/string, arrays, plain objects). Replaces
@@ -625,6 +668,9 @@ function planSurfaceEvent(
   }
   const surfaceOp = validateSurfaceMetadata(event)
   assertDeveloperHeader(event, events, baseSeq)
+  if (event.type === 'surface/order') {
+    return { kind: 'order', nodes: plannedSurfaceOrder(state, event.data.nodes, event.seq) }
+  }
   const projection = projections.find(item => item.type === event.type)
   if (projection !== undefined) {
     return { kind: 'project', projection, messages: projection.project(event, {
@@ -681,6 +727,12 @@ function applySurfacePlan(
     for (const shadowed of plan.shadowedSeqs) state.recordedNodes.delete(shadowed)
     state.nodes.splice(plan.startIdx, plan.endIdx - plan.startIdx + 1, plan.seq)
     state.recordedNodes.set(plan.seq, plan.recorded)
+    state.replaceGeneration += 1
+    state.contentGeneration += 1
+  } else if (plan?.kind === 'order') {
+    // In-place so a caller holding the live node array sees the committed order,
+    // matching how appends and replacements advance that array.
+    state.nodes.splice(0, state.nodes.length, ...plan.nodes)
     state.replaceGeneration += 1
     state.contentGeneration += 1
   } else if (plan?.kind === 'project') {
