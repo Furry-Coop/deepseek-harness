@@ -147,7 +147,7 @@ async function uploadHarness(origin?: 'subagent', imageLimits: ImageAttachmentLi
   if (uploadRoute === undefined) throw new Error('file upload route was not registered')
   return {
     ctx,
-    controller: new SessionCommandController(ctx, agents, '/workspace', undefined, promptAdmission),
+    controller: new SessionCommandController(ctx, agents, '/workspace', promptAdmission),
     uploads,
     agent,
     followup,

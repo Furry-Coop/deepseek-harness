@@ -52,40 +52,8 @@ export class ApiSessionPresetConflict extends Error {
 /** A blank Session chosen for reuse started a turn before this Host acquired its writer. */
 class ApiSessionStartedSinceObserved extends Error {}
 
-/** Stage record the Agent Controller keeps for one create-or-reuse attempt. */
-interface ApiSessionCreateAttempt {
-  /** Set immediately before a factory call that may materialize a Session. */
-  enteredFactory: boolean
-  /** Actual identity once such a call returned, before any later failure. */
-  sessionId?: SessionId
-}
-
-/**
- * A failed create-or-reuse attempt with the Agent Controller's own stage
- * evidence.
- *
- * A plugin reached from inside the factory may throw any Remote failure,
- * including a preset code this Controller also uses to refuse before creating
- * anything, so the failure code alone never classifies the attempt.
- */
-export class ApiSessionCreationFailed extends Error {
-  /**
-   * @param enteredFactory - whether the attempt called a factory operation that may have materialized a Session.
-   * @param failure - the failure that ended the attempt, also carried as `cause`.
-   * @param sessionId - actual identity when the factory returned before the later failure.
-   */
-  constructor(
-    readonly enteredFactory: boolean,
-    readonly failure: unknown,
-    readonly sessionId?: SessionId,
-  ) {
-    super(failure instanceof Error ? failure.message : String(failure), { cause: failure })
-    this.name = 'ApiSessionCreationFailed'
-  }
-}
-
-/** Composition gates every Session this Controller creates applies. */
-const CREATION_COMPOSITION = { requireUserSelectable: true, requireUsable: true } as const
+/** Composition rule every user-facing Session creation applies: an internal preset is not a user choice. */
+const USER_SELECTION = { requireUserSelectable: true } as const
 
 /** Placement and Agent preset for one Session created for a new conversation. */
 export interface ApiSessionCreateRequest {
@@ -272,19 +240,11 @@ export class ApiSessionAgentController {
    * @throws ApiSessionPresetConflict when no roster is composed and the request names a preset for a reused Session.
    */
   async createSession(request: ApiSessionCreateRequest): Promise<ApiSessionCreated> {
-    // Whether a Session may already exist is the Controller's own fact: no
-    // failure carried out of a plugin decides it.
-    const attempt: ApiSessionCreateAttempt = { enteredFactory: false }
-    try {
-      const named = request.sessionId
-      if (named === undefined) {
-        const composition = await this.composeAgent(request.agentPreset, CREATION_COMPOSITION)
-        return this.created(await this.createMinted(request.cwd, composition, attempt))
-      }
-      return await this.inOrder(named, async () => this.created(await this.claim(named, request, attempt)))
-    } catch (error: unknown) {
-      throw new ApiSessionCreationFailed(attempt.enteredFactory, error, attempt.sessionId)
+    const named = request.sessionId
+    if (named === undefined) {
+      return this.created(await this.createMinted(request.cwd, await this.composeAgent(request.agentPreset, USER_SELECTION)))
     }
+    return this.inOrder(named, async () => this.created(await this.claim(named, request)))
   }
 
   /**
@@ -312,17 +272,14 @@ export class ApiSessionAgentController {
    * Resolve the preset id and pre-publication Agent setup for a create or resume.
    * @param presetId - requested preset or the configured default when omitted.
    * @param options - `requireUserSelectable` rejects a preset the roster hides from user
-   * choices; `requireUsable` also rejects a declared preset whose activation failed, reading
-   * the same diagnostic `mount` would report so the refusal lands before a factory call.
-   * Trusted cold-resume callers pass neither; fork applies only the user-selection rule.
+   * choices. Trusted cold-resume callers pass no option; creation and fork apply the rule.
    * @returns the resolved preset identity and Agent setup callback.
-   * @throws RemoteError `agent-preset/not-found` for an undeclared identity, `agent-preset/not-selectable`
-   * for one the roster hides from user choices, and, with `requireUsable`, `agent-preset/invalid`
-   * for one whose activation failed.
+   * @throws RemoteError `agent-preset/not-found` for an undeclared identity and
+   * `agent-preset/not-selectable` for one the roster hides from user choices.
    */
   async composeAgent(
     presetId: string | undefined,
-    options: { readonly requireUserSelectable?: boolean; readonly requireUsable?: boolean } = {},
+    options: { readonly requireUserSelectable?: boolean } = {},
   ): Promise<ApiSessionComposition> {
     const presets = this.ctx.get('agentPresets')
     if (presets === undefined) {
@@ -332,16 +289,6 @@ export class ApiSessionAgentController {
     if (options.requireUserSelectable === true && resolved.userSelectable === false) {
       throw new RemoteError('agent-preset/not-selectable', `Agent preset "${resolved.id}" is not user-selectable`, {
         agentPreset: resolved.id,
-      })
-    }
-    // `resolve` reports a declared preset whose activation failed instead of
-    // refusing the identity, so a broken composition only fails when `mount`
-    // runs inside the factory. Refusing the same diagnostic here keeps the
-    // proven pre-create stage for callers that must retry an operation.
-    if (options.requireUsable === true && resolved.broken !== undefined) {
-      throw new RemoteError('agent-preset/invalid', resolved.broken, {
-        agentPreset: resolved.id,
-        reason: resolved.broken,
       })
     }
     const resolvedId = resolved.id
@@ -428,11 +375,7 @@ export class ApiSessionAgentController {
   }
 
   /** @returns the reused Session, a new Session under `sessionId` when none is stored, or a new Session under a minted identity. */
-  private async claim(
-    sessionId: SessionId,
-    request: ApiSessionCreateRequest,
-    attempt: ApiSessionCreateAttempt,
-  ): Promise<Agent> {
+  private async claim(sessionId: SessionId, request: ApiSessionCreateRequest): Promise<Agent> {
     const attached = this.ctx.sessions.get(sessionId)
     const live = this.ctx.agents.get(sessionId)
     if (attached !== undefined && hasApiSessionSubagentOwner(this.ctx, attached, live)) {
@@ -442,8 +385,8 @@ export class ApiSessionAgentController {
       if (live.session.header.cwd !== request.cwd) {
         throw new ApiSessionCwdConflict(live.id, request.cwd, live.session.header.cwd)
       }
-      const composition = await this.composeAgent(request.agentPreset, CREATION_COMPOSITION)
-      return await this.reuseLive(live, request, composition) ?? this.createMinted(request.cwd, composition, attempt)
+      const composition = await this.composeAgent(request.agentPreset, USER_SELECTION)
+      return await this.reuseLive(live, request, composition) ?? this.createMinted(request.cwd, composition)
     }
     let observation: SessionObservation
     try {
@@ -453,8 +396,7 @@ export class ApiSessionAgentController {
       return this.createAgent(
         sessionId,
         request.cwd,
-        await this.composeAgent(request.agentPreset, CREATION_COMPOSITION),
-        attempt,
+        await this.composeAgent(request.agentPreset, USER_SELECTION),
       )
     }
     let reusable: boolean
@@ -468,25 +410,22 @@ export class ApiSessionAgentController {
       }
       reusable = request.reusable(sessionId) && !observed.events.some(event => event.type === 'turn/start')
     }
-    const composition = await this.composeAgent(request.agentPreset, CREATION_COMPOSITION)
-    if (!reusable) return this.createMinted(request.cwd, composition, attempt)
+    const composition = await this.composeAgent(request.agentPreset, USER_SELECTION)
+    if (!reusable) return this.createMinted(request.cwd, composition)
     this.assertPresetApplicable(sessionId, request.agentPreset)
     try {
-      attempt.enteredFactory = true
-      const resumed = await this.ctx.agents.resume({
+      return (await this.ctx.agents.resume({
         resumeSessionId: sessionId,
         agentOptions: this.agentOptions(),
         setup: this.reuseSetup(composition),
-      })
-      attempt.sessionId = resumed.agent.id
-      return resumed.agent
+      })).agent
     } catch (error: unknown) {
-      if (error instanceof ApiSessionStartedSinceObserved) return this.createMinted(request.cwd, composition, attempt)
+      if (error instanceof ApiSessionStartedSinceObserved) return this.createMinted(request.cwd, composition)
       if (!(error instanceof Error) || error.name !== 'SessionAlreadyOwnedError') throw error
       // Another resume in this process may hold the writer for the Agent it published.
       return this.ctx.agents.get(sessionId) === undefined
-        ? this.createMinted(request.cwd, composition, attempt)
-        : this.claim(sessionId, request, attempt)
+        ? this.createMinted(request.cwd, composition)
+        : this.claim(sessionId, request)
     }
   }
 
@@ -546,27 +485,17 @@ export class ApiSessionAgentController {
     return { agent, agentPreset: this.presetForSession(agent.session) }
   }
 
-  private createMinted(
-    cwd: string,
-    composition: ApiSessionComposition,
-    attempt: ApiSessionCreateAttempt,
-  ): Promise<Agent> {
-    return this.createAgent(brandString<SessionId>(`session-${randomUUID()}`), cwd, composition, attempt)
+  private createMinted(cwd: string, composition: ApiSessionComposition): Promise<Agent> {
+    return this.createAgent(brandString<SessionId>(`session-${randomUUID()}`), cwd, composition)
   }
 
-  private async createAgent(
-    sessionId: SessionId,
-    cwd: string,
-    composition: ApiSessionComposition,
-    attempt: ApiSessionCreateAttempt,
-  ): Promise<Agent> {
+  private async createAgent(sessionId: SessionId, cwd: string, composition: ApiSessionComposition): Promise<Agent> {
     try {
       await mkdir(cwd, { recursive: true })
     } catch (error: unknown) {
       throw new Error(`failed to ensure project directory "${cwd}": ${String(error)}`, { cause: error })
     }
-    attempt.enteredFactory = true
-    const created = await this.ctx.agents.create({
+    return (await this.ctx.agents.create({
       sessionId,
       agentOptions: this.agentOptions(),
       meta: {
@@ -574,9 +503,7 @@ export class ApiSessionAgentController {
         ...(composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset }),
       },
       setup: composition.setup,
-    })
-    attempt.sessionId = created.agent.id
-    return created.agent
+    })).agent
   }
 
   private agentOptions(): AgentOptions {

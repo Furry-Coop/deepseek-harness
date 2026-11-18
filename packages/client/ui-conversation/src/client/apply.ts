@@ -118,7 +118,6 @@ interface WorkspaceNavigation {
   openWorkspace(
     workspaceId: Parameters<ConversationInjected['selectWorkspace']>[0],
     beforeOpen: (sessionId: SessionId) => void,
-    options?: { readonly sourceSessionId?: SessionId },
   ): Promise<void>
 }
 
@@ -388,7 +387,7 @@ export function apply(ctx: Context, config: Config = Config({})): void {
             }
           }
         }
-      }, sessionId === undefined ? {} : { sourceSessionId: sessionId }),
+      }),
     }),
   }, ConversationContent)
 

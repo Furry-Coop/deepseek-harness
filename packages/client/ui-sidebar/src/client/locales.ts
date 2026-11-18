@@ -4,8 +4,6 @@
 export const zh = {
   'session.new': '新会话',
   'session.new.label': '新建会话',
-  'session.new.group': '新建会话方式',
-  'session.new.actionFailed': '附加新建动作执行失败',
   'toggle.open': '打开侧边栏',
   'toggle.collapse': '收起侧边栏',
   'panels.label': '全局面板',
@@ -21,8 +19,6 @@ export type SidebarKey = keyof typeof zh
 export const en = {
   'session.new': 'New Session',
   'session.new.label': 'New session',
-  'session.new.group': 'New session methods',
-  'session.new.actionFailed': 'Extra New Session action failed',
   'toggle.open': 'Open sidebar',
   'toggle.collapse': 'Collapse sidebar',
   'panels.label': 'Global panels',
@@ -35,8 +31,6 @@ export const en = {
 export const ja = {
   'session.new': '新規セッション',
   'session.new.label': '新規セッション',
-  'session.new.group': '新規セッションの方法',
-  'session.new.actionFailed': '追加の新規セッション操作に失敗しました',
   'toggle.open': 'サイドバーを開く',
   'toggle.collapse': 'サイドバーを折りたたむ',
   'panels.label': 'グローバルパネル',
@@ -49,8 +43,6 @@ export const ja = {
 export const es = {
   'session.new': 'Nueva sesión',
   'session.new.label': 'Nueva sesión',
-  'session.new.group': 'Métodos de nueva sesión',
-  'session.new.actionFailed': 'La acción adicional de nueva sesión falló',
   'toggle.open': 'Abrir barra lateral',
   'toggle.collapse': 'Contraer barra lateral',
   'panels.label': 'Paneles globales',
@@ -63,8 +55,6 @@ export const es = {
 export const fr = {
   'session.new': 'Nouvelle séance',
   'session.new.label': 'Nouvelle séance',
-  'session.new.group': 'Méthodes de nouvelle séance',
-  'session.new.actionFailed': 'L’action supplémentaire de nouvelle séance a échoué',
   'toggle.open': 'Ouvrir la barre latérale',
   'toggle.collapse': 'Réduire la barre latérale',
   'panels.label': 'Panneaux globaux',
@@ -77,8 +67,6 @@ export const fr = {
 export const de = {
   'session.new': 'Neue Sitzung',
   'session.new.label': 'Neue Sitzung',
-  'session.new.group': 'Methoden für neue Sitzung',
-  'session.new.actionFailed': 'Zusätzliche Aktion für neue Sitzung fehlgeschlagen',
   'toggle.open': 'Seitenleiste öffnen',
   'toggle.collapse': 'Seitenleiste einklappen',
   'panels.label': 'Globale Bereiche',
@@ -91,8 +79,6 @@ export const de = {
 export const ru = {
   'session.new': 'Новая сессия',
   'session.new.label': 'Новая сессия',
-  'session.new.group': 'Способы создания сессии',
-  'session.new.actionFailed': 'Дополнительное действие новой сессии не выполнено',
   'toggle.open': 'Открыть боковую панель',
   'toggle.collapse': 'Свернуть боковую панель',
   'panels.label': 'Глобальные панели',
@@ -105,8 +91,6 @@ export const ru = {
 export const pt = {
   'session.new': 'Nova sessão',
   'session.new.label': 'Nova sessão',
-  'session.new.group': 'Métodos de nova sessão',
-  'session.new.actionFailed': 'A ação extra de nova sessão falhou',
   'toggle.open': 'Abrir barra lateral',
   'toggle.collapse': 'Recolher barra lateral',
   'panels.label': 'Painéis globais',

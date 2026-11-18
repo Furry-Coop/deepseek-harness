@@ -23,15 +23,12 @@ import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
 import { FiberState } from '@deepseek-ai/cordis'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
-import type { SessionOperationId } from '@deepseek-ai/dsh-api-session-controller'
-import { brandString } from '@deepseek-ai/dsh-brand'
 import {
   createAssistantMessage, createSystemMessage, createToolResultMessage, createUserMessage, LlmAdapter, ToolCallId,
   type GenerateOptions, type LlmModelInfo, type LlmProviderInfo, type LlmResolvedModelInfo, type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import { SESSION_FORMAT_VERSION, Session, SessionId, type SessionEvent, type SessionId as SessionIdValue } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-subagent'
-import type { WorkspaceId as WorkspaceIdValue } from '@deepseek-ai/dsh-workspace'
 import { createChatScrollFixture } from './chat-scroll-fixture.ts'
 import {
   launchWebScaffold, readPersistedEvents, seedSession, watchConsole, webSnapshotMode, type WebScaffold,
@@ -406,7 +403,6 @@ const REAL_NODES_EVIDENCE_PATH = fileURLToPath(
   new URL('../../../.artifacts/issue18-real-nodes-active-evidence.json', import.meta.url),
 )
 const NODES_PACKAGE_NAME = '@nodes/dsh-plugin'
-const NODES_POLICY_ID = '@nodes/dsh-plugin:conversation'
 
 /** Shared route surface for the controlled probe models. */
 abstract class ProbeLlmAdapter extends LlmAdapter {
@@ -637,25 +633,6 @@ async function mountNodes(ctx: WebScaffold['ctx']): Promise<string> {
     throw new Error(`real Nodes probe: Loader did not activate ${NODES_PACKAGE_NAME}`)
   }
   return entryId
-}
-
-/** Register the real Nodes ownership of one already-created Session. */
-async function registerNodesSession(
-  scaffold: WebScaffold,
-  workspaceId: WorkspaceIdValue,
-  sessionId: SessionIdValue,
-  operationId: string,
-): Promise<void> {
-  const policy = scaffold.ctx.sessionController.creationPolicies.get(NODES_POLICY_ID)
-  if (policy?.beginOperation === undefined) throw new Error('real Nodes probe: Nodes creation policy is missing')
-  const participant = await policy.beginOperation({
-    operationId: brandString<SessionOperationId>(operationId),
-    kind: 'new',
-    workspaceId,
-    reuseBlank: false,
-  })
-  await participant.prepareSession?.({ sessionId, workspaceId, reused: false })
-  await participant.finishOperation?.({ kind: 'created', sessionId, workspaceId, reused: false })
 }
 
 /** Read the presentation metadata written by the real Nodes submit tool. */
@@ -2549,7 +2526,9 @@ describe.skipIf(MODE === 'record' || NODES_REPO === undefined)('web e2e: issue 1
     })
     agent = handle
     await scaffold.ctx.sessions.flush(agent.agent.session)
-    await registerNodesSession(scaffold, workspace.id, SessionId(REAL_NODES_ID), 'real-nodes-op-1')
+    // Nodes attaches to the Agent its own lifecycle observer sees, so a Session
+    // created through the native registry after the plugin mounted needs no
+    // probe-side registration.
     // The browser lists Sessions by workspace membership, so the registered
     // Session must be a member of the workspace the page connects to.
     await workspace.attachSession(SessionId(REAL_NODES_ID))

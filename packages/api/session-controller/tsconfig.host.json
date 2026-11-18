@@ -14,7 +14,6 @@
     "src/catalog.ts",
     "src/commands.ts",
     "src/prompt-admission.ts",
-    "src/creation-policy.ts",
     "src/control.ts",
     "src/file-references.ts",
     "src/history.ts",

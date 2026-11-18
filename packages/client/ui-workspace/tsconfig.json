@@ -72,12 +72,6 @@
       "path": "../ui-session"
     },
     {
-      "path": "../../util/brand"
-    },
-    {
-      "path": "../../util/crypto"
-    },
-    {
       "path": "../../util/values"
     },
     {

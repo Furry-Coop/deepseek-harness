@@ -341,9 +341,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'target', description: 'known Session identity or durable direct-parent subagent address to display.' }],
       },
       {
-        signature: 'openWorkspace( workspaceId: WorkspaceId, beforeOpen?: (sessionId: SessionId) => void, options?: OpenWorkspaceOptions, ): Promise<void>',
-        description: 'Connect a Workspace and open its Session unless a later navigation supersedes it, continuing the named source Session\'s creation-policy identity into the Workspace the operator picked.',
-        parameters: [{ name: 'workspaceId', description: 'target Workspace.' }, { name: 'beforeOpen', description: 'optional synchronous preparation for the selected Session, skipped after supersession; a throw aborts the open and releases the retained reference.' }, { name: 'options', description: 'choices for the Session the connection creates or reuses, plus the source Session whose Workspace selection this continues.' }],
+        signature: 'openWorkspace( workspaceId: WorkspaceId, beforeOpen?: (sessionId: SessionId) => void, options?: Pick<StartSessionOptions, \'agentPreset\'>, ): Promise<void>',
+        description: 'Connect a Workspace and open its Session unless a later navigation supersedes it.',
+        parameters: [{ name: 'workspaceId', description: 'target Workspace.' }, { name: 'beforeOpen', description: 'optional synchronous preparation for the selected Session, skipped after supersession; a throw aborts the open and releases the retained reference.' }, { name: 'options', description: 'choices for the Session the connection creates or reuses.' }],
         returns: 'completion; a superseded request may create a Session but does not open it.',
         throws: ['on failure; a refused creation is also shown through the Workspace notice unless a later navigation or disposal superseded the request.'],
       },
@@ -361,8 +361,8 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'startSession(workspaceId?: WorkspaceId, options?: StartSessionOptions): void',
-        description: 'Open the Workspace blank `connectWorkspace` resolves, so New Session returns to that blank\'s unsent draft. A creation the Host refuses is shown through the Workspace notice and leaves the selection as it was. With `options.operation`, the call reports its actual outcome through the supplied callbacks instead of returning it: no target Workspace keeps the call waiting on the native New Session page until a Workspace is picked or a later navigation ends the wait.',
-        parameters: [{ name: 'workspaceId', description: 'explicit target; absent inherits the current or most recent Workspace.' }, { name: 'options', description: 'initial content, the blank\'s preset, and `whenDraftExists`, which decides whether existing text or attachments are kept, replaced, or followed by the prompt; `operation` adds this call\'s policy, lifetime, preparation, and final-outcome callbacks.' }],
+        description: 'Open the Workspace blank `connectWorkspace` resolves, so New Session returns to that blank\'s unsent draft. A creation the Host refuses is shown through the Workspace notice and leaves the selection as it was.',
+        parameters: [{ name: 'workspaceId', description: 'explicit target; absent inherits the current or most recent Workspace.' }, { name: 'options', description: 'initial content, the blank\'s preset, and `whenDraftExists`, which decides whether existing text or attachments are kept, replaced, or followed by the prompt.' }],
       },
       {
         signature: 'archiveSession(sessionId: SessionId, options?: { readonly stopActivity?: boolean }): Promise<void>',
@@ -677,7 +677,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ISessions',
-    declaration: 'export interface ISessions {\n    readonly list: ObservableSnapshot<SessionListState>;\n    retain(target: SessionTarget, options: SessionRetainOptions): SessionReference;\n    using<T>(target: SessionTarget, options: SessionRetainOptions, operation: (reference: SessionReference) => T | Promise<T>): Promise<T>;\n    retainInfo(id: SessionId): ObservableSnapshot<SessionRetainInfo>;\n    readonly searchResultLimit: number;\n    create(opts?: {\n        workspaceId?: WorkspaceId;\n        cwd?: string;\n        sessionId?: SessionId;\n        agentPreset?: string;\n        operation?: SessionCreateOperationContext;\n    }): Promise<SessionId>;\n    subagentAddress(id: SessionId): SubagentAddress | undefined;\n    refreshProjections(sessionId: SessionId): Promise<void>;\n    refresh(): Promise<void>;\n    search(query: string, signal: AbortSignal): Promise<RemoteResult<{\n        items: SessionSearchResultItem[];\n        hasMore: boolean;\n    }>>;\n    fork(opts: {\n        sessionId: SessionId;\n        atSeq?: number;\n        increaseTitle?: boolean;\n        onCreated?: (childId: SessionId) => void;\n        allowMigration?: boolean;\n    }): Promise<SessionId>;\n    scope(id: SessionId): AgentContext | undefined;\n    scopeOf(ctx: Context): SessionId | undefined;\n    sessionOf(ctx: Context): SessionFace | undefined;\n    binding(id: SessionId): SessionBinding | undefined;\n}',
+    declaration: 'export interface ISessions {\n    readonly list: ObservableSnapshot<SessionListState>;\n    retain(target: SessionTarget, options: SessionRetainOptions): SessionReference;\n    using<T>(target: SessionTarget, options: SessionRetainOptions, operation: (reference: SessionReference) => T | Promise<T>): Promise<T>;\n    retainInfo(id: SessionId): ObservableSnapshot<SessionRetainInfo>;\n    readonly searchResultLimit: number;\n    create(opts?: {\n        workspaceId?: WorkspaceId;\n        cwd?: string;\n        sessionId?: SessionId;\n        agentPreset?: string;\n    }): Promise<SessionId>;\n    subagentAddress(id: SessionId): SubagentAddress | undefined;\n    refreshProjections(sessionId: SessionId): Promise<void>;\n    refresh(): Promise<void>;\n    search(query: string, signal: AbortSignal): Promise<RemoteResult<{\n        items: SessionSearchResultItem[];\n        hasMore: boolean;\n    }>>;\n    fork(opts: {\n        sessionId: SessionId;\n        atSeq?: number;\n        increaseTitle?: boolean;\n        onCreated?: (childId: SessionId) => void;\n        allowMigration?: boolean;\n    }): Promise<SessionId>;\n    scope(id: SessionId): AgentContext | undefined;\n    scopeOf(ctx: Context): SessionId | undefined;\n    sessionOf(ctx: Context): SessionFace | undefined;\n    binding(id: SessionId): SessionBinding | undefined;\n}',
   },
   {
     name: 'KeyedHooksSources',
@@ -758,10 +758,6 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'OpenState',
     declaration: 'export type OpenState = \'cold\' | \'loading\' | \'open\' | \'error\';',
-  },
-  {
-    name: 'OpenWorkspaceOptions',
-    declaration: 'export interface OpenWorkspaceOptions extends Pick<StartSessionOptions, \'agentPreset\'> {\n    readonly sourceSessionId?: SessionId;\n}',
   },
   {
     name: 'OwnerOf',
@@ -896,10 +892,6 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SessionBinding {\n    readonly sessionId: SessionId;\n    readonly session: SessionFace;\n    readonly eventSource: SessionEventSource;\n    readonly ctx: AgentContext;\n}',
   },
   {
-    name: 'SessionCreateOperationContext',
-    declaration: 'export interface SessionCreateOperationContext {\n    readonly operationId: SessionOperationId;\n    readonly kind: \'new\' | \'workspace\' | \'restore\';\n    readonly policyId?: string;\n    readonly sourceSessionId?: SessionId;\n    readonly reuseBlank?: false;\n}',
-  },
-  {
     name: 'SessionEventChange',
     declaration: 'export type SessionEventChange = {\n    readonly kind: \'replace\';\n    readonly entries: readonly SessionEventLikeEntry[];\n} | {\n    readonly kind: \'prepend\';\n    readonly entries: readonly SessionEventLikeEntry[];\n} | {\n    readonly kind: \'append\';\n    readonly entries: readonly SessionEventLikeEntry[];\n} | {\n    readonly kind: \'settle-assistant\';\n    readonly attemptId: LlmAttemptId;\n    readonly entry?: SessionAssistantSettlementEntry;\n};',
   },
@@ -934,10 +926,6 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionMaybeStandardProps',
     declaration: 'export interface SessionMaybeStandardProps {\n}',
-  },
-  {
-    name: 'SessionOperationId',
-    declaration: 'export type SessionOperationId = Branded<\'session-operation-id\'>;',
   },
   {
     name: 'SessionProjectionSnapshot',
@@ -1040,24 +1028,8 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type SnapshotSelectorHook<T> = <S>(sel: (s: T) => S, eq?: (a: S, b: S) => boolean) => S;',
   },
   {
-    name: 'StartSessionOperation',
-    declaration: 'export interface StartSessionOperation {\n    readonly policyId?: string;\n    readonly operationId?: SessionOperationId;\n    readonly reuseBlank?: false;\n    readonly signal?: AbortSignal;\n    readonly prepareSession?: (preparation: StartSessionPreparation) => void | Promise<void>;\n    readonly onFinished?: (outcome: StartSessionOutcome) => void | Promise<void>;\n}',
-  },
-  {
     name: 'StartSessionOptions',
-    declaration: 'export interface StartSessionOptions extends DraftInitializationOptions {\n    readonly agentPreset?: string;\n    readonly operation?: StartSessionOperation;\n}',
-  },
-  {
-    name: 'StartSessionOutcome',
-    declaration: 'export type StartSessionOutcome = {\n    readonly kind: \'session\';\n    readonly sessionId: SessionId;\n    readonly workspaceId: WorkspaceId;\n    readonly navigation: \'opened\' | \'superseded\';\n} | {\n    readonly kind: \'cancelled\';\n    readonly reason: \'caller\' | \'superseded\';\n} | {\n    readonly kind: \'failed\';\n    readonly stage: StartSessionStage;\n    readonly message: string;\n    readonly creation: \'none\' | \'known\' | \'unknown\';\n    readonly sessionId?: SessionId;\n    readonly workspaceId?: WorkspaceId;\n};',
-  },
-  {
-    name: 'StartSessionPreparation',
-    declaration: 'export interface StartSessionPreparation {\n    readonly sessionId: SessionId;\n    readonly workspaceId: WorkspaceId;\n}',
-  },
-  {
-    name: 'StartSessionStage',
-    declaration: 'export type StartSessionStage = \'workspace\' | \'create\' | \'policy\' | \'prepare\' | \'open\' | \'extension\';',
+    declaration: 'export interface StartSessionOptions extends DraftInitializationOptions {\n    readonly agentPreset?: string;\n}',
   },
   {
     name: 'StoreDecl',

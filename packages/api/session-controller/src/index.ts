@@ -22,7 +22,6 @@ import {
 } from './agent.ts'
 import { SessionCommandController, hasPromptContent } from './commands.ts'
 import { PromptAdmissionReader } from './prompt-admission.ts'
-import { SessionCreationPolicyRegistry } from './creation-policy.ts'
 import { SessionControlController } from './control.ts'
 import { HistoryController } from './history/controller.ts'
 import { StateController } from './state/controller.ts'
@@ -69,18 +68,7 @@ import type {
 } from './types.ts'
 
 export type * from './types.ts'
-export type {
-  SessionCreationKnowledge,
-  SessionCreationOperation,
-  SessionCreationOutcome,
-  SessionCreationOwnership,
-  SessionCreationParticipant,
-  SessionCreationPolicy,
-  SessionCreationPreparation,
-  SessionCreationStage,
-} from './creation-policy.ts'
 export { ApiSessionNotFound } from './agent.ts'
-export { SessionCreationPolicyRegistry } from './creation-policy.ts'
 export { SessionFileReferences } from './file-references.ts'
 export { SessionSkillCatalog } from './skill-catalog.ts'
 
@@ -183,17 +171,6 @@ export class SessionController extends TypertRemoteService {
   private readonly canOpenPath: () => boolean
   private readonly listWorkSliceMs: number
   private readonly promotions = new Set<Promise<void>>()
-  /** Process-local ledger of creation policies registered by plugins. */
-  private readonly policyRegistry = new SessionCreationPolicyRegistry()
-
-  /**
-   * Read the live creation-policy ledger so a plugin can register its policy
-   * for its own activation lifetime. The Host never serializes this ledger.
-   * @returns the registry owned by this Session Controller.
-   */
-  get creationPolicies(): SessionCreationPolicyRegistry {
-    return this.policyRegistry
-  }
 
   /**
    * @param ctx - Host context containing the Session capability assembly.
@@ -217,9 +194,7 @@ export class SessionController extends TypertRemoteService {
     this.agents = new ApiSessionAgentController(ctx)
     this.agents.initialize()
     this.promptAdmission = new PromptAdmissionReader()
-    this.commands = new SessionCommandController(
-      ctx, this.agents, process.cwd(), this.policyRegistry, this.promptAdmission,
-    )
+    this.commands = new SessionCommandController(ctx, this.agents, process.cwd(), this.promptAdmission)
     ctx.effect(() => ctx.fileUploads.registerAgentResolver(async (sessionId) => {
       const result = await this.agents.resolveAgent(sessionId)
       if ('error' in result) throw result.error
@@ -328,11 +303,8 @@ export class SessionController extends TypertRemoteService {
   }
 
   /**
-   * Create one ordinary Session for a new conversation, reusing the named blank
-   * Session while it is reusable. An optional operation context selects the
-   * creation policy that prepares and registers the result.
-   * @param request - optional blank Session to reuse, location, Agent preset,
-   *   and an optional creation-policy operation context.
+   * Create one ordinary Session for a new conversation, reusing the named blank Session while it is reusable.
+   * @param request - optional blank Session to reuse, location, and Agent preset.
    * @returns the created or reused Session identity and its preset when configured.
    */
   @Remote('create')
